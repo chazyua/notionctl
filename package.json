@@ -11,6 +11,14 @@
     "automation"
   ],
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/chazyua/notionctl.git"
+  },
+  "bugs": {
+    "url": "https://github.com/chazyua/notionctl/issues"
+  },
+  "homepage": "https://github.com/chazyua/notionctl#readme",
   "type": "module",
   "engines": {
     "node": ">=18.0.0"
