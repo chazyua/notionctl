@@ -1,0 +1,24 @@
+name: Integration Tests
+
+on:
+  schedule:
+    - cron: '0 6 * * *'  # 06:00 UTC daily
+  workflow_dispatch:
+
+jobs:
+  integration:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20.x
+          cache: 'npm'
+      - run: npm ci
+      - run: npm run build
+      - name: Run integration tests
+        env:
+          NOTION_TOKEN: ${{ secrets.NOTION_TEST_TOKEN }}
+          NOTION_TEST_PAGE_ID: ${{ secrets.NOTION_TEST_PAGE_ID }}
+          NOTION_TEST_DB_ID: ${{ secrets.NOTION_TEST_DB_ID }}
+        run: node --test dist/test/integration/*.test.js
