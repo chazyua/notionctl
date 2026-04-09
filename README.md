@@ -1,26 +1,94 @@
 # notionctl
 
-A security-auditable, zero-dependency command-line interface for Notion, designed to be driven by AI coding agents (Claude Code, GitHub Copilot, Cursor, and others) via shell invocations.
+A security-auditable, zero-dependency command-line interface for Notion,
+designed to be driven by AI coding agents (Claude Code, GitHub Copilot,
+Cursor) via shell invocations.
 
-## Status
+## Install
 
-**Package name reserved. Active development in progress. First working release coming soon.**
+    npm install -g notionctl
 
-## What it will do
+Requires Node 18+.
 
-- **Full read/write coverage** of Notion pages, databases, blocks, and comments
-- **Round-trip Markdown ↔ Notion blocks** conversion with metadata preserved via sidecar comments, so blocks the converter doesn't natively understand are never destroyed on update
-- **Schema-driven property value DSL** covering all Notion property types, with a typed escape hatch for exotic cases
-- **Content-hashed `page sync`** for idempotent writes — re-running is a provable no-op if nothing changed
-- **Structured error model** with typed error codes, actionable suggestions, and distinct exit codes for programmatic consumers
-- **Raw REST escape hatch** (`notionctl api <METHOD> <path>`) so any Notion API endpoint is reachable even when no typed command wraps it
-- **Zero runtime dependencies**, fully auditable TypeScript source
-- **`npm install -g notionctl`**
+## Quick start
 
-## Why a CLI and not an MCP server
+    export NOTION_TOKEN=ntn_...         # or: notionctl auth set
+    notionctl whoami                    # verify the token
+    notionctl search "PRD"              # find pages
+    notionctl page get <url-or-id>      # read a page as markdown
+    notionctl page sync ./prd.md \
+      --parent <parent-page-id>         # push a local file to Notion
 
-CLI invocations are discrete, shell-logged, `--dry-run`-able, and sandboxable by an organization's existing tooling. Every action the agent takes is visible in terminal history and can be audited after the fact. An MCP server is a persistent process with broader privileges and a larger attack surface. For security-conscious teams, the CLI model is defensible in a formal review in a way the MCP model is not.
+## Why this exists
+
+AI coding agents work best when they can read the team's knowledge base
+(PRDs, specs, docs in Notion) and write back updates. MCP servers are one
+way to bridge this, but they require a persistent process with broader
+privileges and a larger attack surface, which many enterprise security
+teams disallow.
+
+`notionctl` is the alternative: a discrete shell command per operation,
+shell-logged, `--dry-run`-able, and auditable line-by-line. Every action
+an agent takes is a visible terminal invocation.
+
+## Security posture
+
+- **Zero runtime dependencies.** The entire source tree is hand-audited
+  TypeScript. No transitive supply chain.
+- **Single file for network I/O** (`src/http.ts`). Hardcoded to
+  `https://api.notion.com/v1`. No `--api-base` flag.
+- **Single file for secrets** (`src/auth.ts`). Token lives in
+  `$NOTION_TOKEN` or a mode-0600 config file, never in logs or errors.
+- **Dry-run universal.** Every write supports `--dry-run`.
+- **Content-hashed sync.** `page sync` is a provable no-op if nothing
+  changed locally (SHA-256 front-matter hash).
+- **No telemetry.** The CLI's only outbound traffic is
+  `api.notion.com`. Provable by `grep -r "https://" src/`.
+- **Automated security tests.** `npm run test:security` runs grep-based
+  assertions that encode the above rules and fails the build on drift.
+
+## Command surface
+
+### Reading
+
+    notionctl whoami                     Show integration info
+    notionctl search <query>             Search by title or content
+    notionctl resolve <url>              Notion URL → ID
+    notionctl page get <id>              Page as Markdown + front-matter
+    notionctl db query <id> [flags]      Query a database
+    notionctl db schema <id>             Show property types
+    notionctl db row get <id>            Single row as Markdown
+    notionctl block children <id>        List child blocks
+
+### Writing
+
+    notionctl page create --parent <id> --title "X" [--from file.md]
+    notionctl page append <id> [--from file.md]
+    notionctl page update <id> [--from file.md]
+    notionctl page sync <file.md>
+    notionctl db row create <db-id> [--prop Key=value ...]
+    notionctl db row update <page-id> [--prop Key=value ...]
+    notionctl comment add <page-id> --text "..."
+
+### Escape hatch
+
+    notionctl api GET /users/me
+    notionctl api POST /databases/<id>/query --body @filter.json
+
+Any Notion REST endpoint is reachable via `notionctl api`.
+
+## Inspired by
+
+`notionctl` was written from scratch, but the design drew on patterns from:
+
+- [4ier/notion-cli](https://github.com/4ier/notion-cli) — command taxonomy, filter DSL, `api` escape hatch
+- [Coastal-Programs/notion-cli](https://github.com/Coastal-Programs/notion-cli) — structured error model
+- [lox/notion-cli](https://github.com/lox/notion-cli) — `page sync` with frontmatter ID
 
 ## License
 
-MIT
+MIT. See `LICENSE`.
+
+## Security disclosure
+
+See `SECURITY.md` for the responsible disclosure process.
