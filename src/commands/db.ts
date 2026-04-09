@@ -62,9 +62,15 @@ function parseSimpleFilter(expr: string, schema: Record<string, PropertySchema>)
       return { property: key, status: { equals: value } };
     case "checkbox":
       return { property: key, checkbox: { equals: value === "true" } };
-    case "number":
-      return { property: key, number: { equals: Number(value) } };
+    case "number": {
+      const n = Number(value);
+      if (!Number.isFinite(n)) {
+        throw new NotionCliError(ErrorCode.USAGE, `Invalid number in filter: ${value}`);
+      }
+      return { property: key, number: { equals: n } };
+    }
     case "title":
+      return { property: key, title: { contains: value } };
     case "rich_text":
       return { property: key, rich_text: { contains: value } };
     case "date":
