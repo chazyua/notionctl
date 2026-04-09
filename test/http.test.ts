@@ -151,3 +151,82 @@ describe("http.ts base client", () => {
     }
   });
 });
+
+describe("http.ts retries", () => {
+  let originalFetch: typeof globalThis.fetch;
+
+  before(() => {
+    originalFetch = globalThis.fetch;
+    setTokenProvider(async () => ({ token: "ntn_retry_test", source: AuthSource.ENV }));
+  });
+
+  after(() => {
+    globalThis.fetch = originalFetch;
+    resetForTesting();
+  });
+
+  it("retries on 429 with exponential backoff", async () => {
+    let attempts = 0;
+    globalThis.fetch = mock.fn(async () => {
+      attempts++;
+      if (attempts < 3) {
+        return new Response("", { status: 429, headers: { "retry-after": "0" } });
+      }
+      return new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }) as typeof globalThis.fetch;
+
+    const result = await notionRequest("GET", "/users/me");
+    assert.deepEqual(result, { ok: true });
+    assert.equal(attempts, 3);
+  });
+
+  it("retries on 5xx up to max attempts then throws", async () => {
+    let attempts = 0;
+    globalThis.fetch = mock.fn(async () => {
+      attempts++;
+      return new Response("", { status: 503 });
+    }) as typeof globalThis.fetch;
+
+    await assert.rejects(
+      async () => notionRequest("GET", "/users/me"),
+      (err: unknown) => err instanceof NotionCliError,
+    );
+    assert.equal(attempts, 5, "expected 5 attempts (1 initial + 4 retries)");
+  });
+
+  it("does not retry on 4xx other than 429", async () => {
+    let attempts = 0;
+    globalThis.fetch = mock.fn(async () => {
+      attempts++;
+      return new Response(JSON.stringify({ message: "bad" }), { status: 400 });
+    }) as typeof globalThis.fetch;
+
+    await assert.rejects(async () => notionRequest("GET", "/users/me"));
+    assert.equal(attempts, 1);
+  });
+
+  it("respects Retry-After header", async () => {
+    let attempts = 0;
+    const timings: number[] = [];
+    let last = Date.now();
+    globalThis.fetch = mock.fn(async () => {
+      attempts++;
+      timings.push(Date.now() - last);
+      last = Date.now();
+      if (attempts < 2) {
+        return new Response("", { status: 429, headers: { "retry-after": "1" } });
+      }
+      return new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }) as typeof globalThis.fetch;
+
+    await notionRequest("GET", "/users/me");
+    // Second attempt should be at least ~1000ms after first
+    assert.ok(timings[1] >= 900, `retry-after not honored (gap: ${timings[1]}ms)`);
+  });
+});

@@ -25,6 +25,17 @@ const NOTION_VERSION = "2022-06-28";
 const DEFAULT_TIMEOUT_MS = 30_000;
 const USER_AGENT = "notionctl/0.1.0";  // TODO: read from package.json at build time
 
+const MAX_ATTEMPTS = 5;
+const BACKOFF_MS = [250, 500, 1000, 2000, 4000] as const;
+
+function shouldRetry(status: number): boolean {
+  return status === 429 || (status >= 500 && status < 600);
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 type TokenProvider = () => Promise<LoadedToken>;
 
 let tokenProvider: TokenProvider = loadToken;
@@ -89,31 +100,67 @@ export async function notionRequest<T = unknown>(
   }
 
   const timeoutMs = parseTimeoutEnv() ?? DEFAULT_TIMEOUT_MS;
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-  init.signal = controller.signal;
 
-  let response: Response;
-  try {
-    response = await fetch(url, init);
-  } catch (err) {
-    clearTimeout(timer);
-    if ((err as Error).name === "AbortError") {
-      throw new NotionCliError(
-        ErrorCode.NETWORK_ERROR,
-        `Request to ${path} timed out after ${timeoutMs}ms`,
-      );
+  let response: Response | undefined;
+  let lastError: Error | undefined;
+
+  for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    init.signal = controller.signal;
+
+    try {
+      response = await fetch(url, init);
+    } catch (err) {
+      clearTimeout(timer);
+      lastError = err as Error;
+      if ((err as Error).name === "AbortError") {
+        if (attempt === MAX_ATTEMPTS - 1) {
+          throw new NotionCliError(
+            ErrorCode.NETWORK_ERROR,
+            `Request to ${path} timed out after ${timeoutMs}ms (attempt ${attempt + 1}/${MAX_ATTEMPTS})`,
+          );
+        }
+      } else {
+        if (attempt === MAX_ATTEMPTS - 1) {
+          throw new NotionCliError(
+            ErrorCode.NETWORK_ERROR,
+            `Network error calling ${path}: ${(err as Error).message}`,
+            { cause: err },
+          );
+        }
+      }
+      await sleep(BACKOFF_MS[attempt] ?? 4000);
+      continue;
+    } finally {
+      clearTimeout(timer);
     }
-    throw new NotionCliError(
-      ErrorCode.NETWORK_ERROR,
-      `Network error calling ${path}: ${(err as Error).message}`,
-      { cause: err },
-    );
-  } finally {
-    clearTimeout(timer);
+
+    if (response.ok) {
+      return (await response.json()) as T;
+    }
+
+    if (!shouldRetry(response.status)) {
+      return parseResponse<T>(response, path);
+    }
+
+    if (attempt === MAX_ATTEMPTS - 1) {
+      return parseResponse<T>(response, path);
+    }
+
+    const retryAfter = response.headers.get("retry-after");
+    const retryAfterMs = retryAfter ? Number(retryAfter) * 1000 : undefined;
+    const backoff = retryAfterMs && Number.isFinite(retryAfterMs)
+      ? retryAfterMs
+      : (BACKOFF_MS[attempt] ?? 4000);
+    await sleep(backoff);
   }
 
-  return parseResponse<T>(response, path);
+  // Should be unreachable — the loop always returns or throws.
+  throw new NotionCliError(
+    ErrorCode.GENERIC,
+    `Internal error: retry loop exhausted without resolution (${lastError?.message ?? "unknown"})`,
+  );
 }
 
 async function parseResponse<T>(response: Response, path: string): Promise<T> {
