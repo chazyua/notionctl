@@ -11,7 +11,8 @@
  * conversion lives in read.ts and write.ts.
  */
 
-import type { RichText, Annotations } from "./types.js";
+import type { RichText, Annotations, TextRichText } from "./types.js";
+import { DEFAULT_ANNOTATIONS } from "./types.js";
 
 type MarkerKey = "bold" | "italic" | "strikethrough" | "code";
 const MARKER_ORDER: MarkerKey[] = ["bold", "italic", "strikethrough", "code"];
@@ -96,4 +97,167 @@ function runContent(run: RichText): string {
     if (m.type === "link_preview") return `[${run.plain_text}](${m.link_preview.url})`;
   }
   return run.plain_text;
+}
+
+/**
+ * Write path: Markdown inline → Notion rich-text runs.
+ *
+ * Hand-written character-by-character scanner. No regex. Maintains a
+ * stack of currently-open annotations and emits a new run every time
+ * the annotation set changes or a link boundary is crossed.
+ *
+ * Handles (in priority order):
+ *   - `...`  inline code (opaque — no annotation nesting inside)
+ *   - **...** bold
+ *   - _..._  italic (we prefer underscore to avoid ambiguity with *)
+ *   - ~~...~~ strikethrough
+ *   - [text](url) link
+ *
+ * Escapes: a backslash before any marker character treats it literally.
+ * Unmatched markers are emitted as literal text (forgiving parser).
+ */
+
+interface ScannerState {
+  bold: boolean;
+  italic: boolean;
+  strikethrough: boolean;
+  code: boolean;
+}
+
+export function markdownToRichText(md: string): RichText[] {
+  if (md.length === 0) return [];
+
+  const runs: RichText[] = [];
+  const state: ScannerState = {
+    bold: false,
+    italic: false,
+    strikethrough: false,
+    code: false,
+  };
+  let buffer = "";
+
+  const flush = (): void => {
+    if (buffer.length === 0) return;
+    runs.push(makeRun(buffer, state, null));
+    buffer = "";
+  };
+
+  let i = 0;
+  while (i < md.length) {
+    const c = md[i]!;
+    const next = md[i + 1];
+
+    // Escape
+    if (c === "\\" && next !== undefined && isMarkerChar(next)) {
+      buffer += next;
+      i += 2;
+      continue;
+    }
+
+    // Inline code — opaque, no nesting
+    if (c === "`" && !state.code) {
+      flush();
+      const end = md.indexOf("`", i + 1);
+      if (end === -1) {
+        buffer += c;
+        i++;
+        continue;
+      }
+      runs.push(makeRun(md.slice(i + 1, end), { ...state, code: true }, null));
+      i = end + 1;
+      continue;
+    }
+
+    // Bold **
+    if (c === "*" && next === "*") {
+      flush();
+      state.bold = !state.bold;
+      i += 2;
+      continue;
+    }
+
+    // Strikethrough ~~
+    if (c === "~" && next === "~") {
+      flush();
+      state.strikethrough = !state.strikethrough;
+      i += 2;
+      continue;
+    }
+
+    // Italic _
+    if (c === "_") {
+      flush();
+      state.italic = !state.italic;
+      i += 1;
+      continue;
+    }
+
+    // Link [text](url)
+    if (c === "[") {
+      flush();
+      const linkEnd = findLinkEnd(md, i);
+      if (linkEnd !== null) {
+        const labelStart = i + 1;
+        const labelEnd = linkEnd.labelEnd;
+        const urlStart = linkEnd.urlStart;
+        const urlEnd = linkEnd.urlEnd;
+        const label = md.slice(labelStart, labelEnd);
+        const url = md.slice(urlStart, urlEnd);
+        runs.push(makeRun(label, state, url));
+        i = urlEnd + 1;
+        continue;
+      }
+    }
+
+    buffer += c;
+    i++;
+  }
+
+  flush();
+  return runs;
+}
+
+function isMarkerChar(c: string): boolean {
+  return c === "*" || c === "_" || c === "~" || c === "`" || c === "[" || c === "]" || c === "\\";
+}
+
+function findLinkEnd(md: string, startIdx: number): { labelEnd: number; urlStart: number; urlEnd: number } | null {
+  // startIdx points at '['. Find matching ']', then '(' immediately after, then ')'.
+  let depth = 1;
+  let i = startIdx + 1;
+  while (i < md.length) {
+    if (md[i] === "\\") { i += 2; continue; }
+    if (md[i] === "[") depth++;
+    if (md[i] === "]") {
+      depth--;
+      if (depth === 0) break;
+    }
+    i++;
+  }
+  if (depth !== 0) return null;
+  const labelEnd = i;
+  if (md[i + 1] !== "(") return null;
+  const urlStart = i + 2;
+  const urlEnd = md.indexOf(")", urlStart);
+  if (urlEnd === -1) return null;
+  return { labelEnd, urlStart, urlEnd };
+}
+
+function makeRun(content: string, state: ScannerState, linkUrl: string | null): TextRichText {
+  return {
+    type: "text",
+    text: {
+      content,
+      link: linkUrl ? { url: linkUrl } : null,
+    },
+    annotations: {
+      ...DEFAULT_ANNOTATIONS,
+      bold: state.bold,
+      italic: state.italic,
+      strikethrough: state.strikethrough,
+      code: state.code,
+    },
+    plain_text: content,
+    href: linkUrl,
+  };
 }

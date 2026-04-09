@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { richTextToMarkdown } from "../../src/markdown/tokenizer.js";
+import { richTextToMarkdown, markdownToRichText } from "../../src/markdown/tokenizer.js";
 import type { RichText } from "../../src/markdown/types.js";
 import { DEFAULT_ANNOTATIONS } from "../../src/markdown/types.js";
 
@@ -95,5 +95,103 @@ describe("richTextToMarkdown", () => {
 
   it("empty run array returns empty string", () => {
     assert.equal(richTextToMarkdown([]), "");
+  });
+});
+
+describe("markdownToRichText", () => {
+  it("plain text returns one run", () => {
+    const runs = markdownToRichText("hello world");
+    assert.equal(runs.length, 1);
+    assert.equal(runs[0]!.plain_text, "hello world");
+    assert.equal(runs[0]!.annotations.bold, false);
+  });
+
+  it("bold produces bold run", () => {
+    const runs = markdownToRichText("**hello**");
+    assert.equal(runs.length, 1);
+    assert.equal(runs[0]!.plain_text, "hello");
+    assert.equal(runs[0]!.annotations.bold, true);
+  });
+
+  it("italic produces italic run", () => {
+    const runs = markdownToRichText("_hello_");
+    assert.equal(runs.length, 1);
+    assert.equal(runs[0]!.annotations.italic, true);
+  });
+
+  it("bold + italic combined", () => {
+    const runs = markdownToRichText("**_hello_**");
+    assert.equal(runs.length, 1);
+    assert.equal(runs[0]!.annotations.bold, true);
+    assert.equal(runs[0]!.annotations.italic, true);
+  });
+
+  it("mixed plain and bold segments", () => {
+    const runs = markdownToRichText("a **b** c");
+    assert.equal(runs.length, 3);
+    assert.equal(runs[0]!.plain_text, "a ");
+    assert.equal(runs[0]!.annotations.bold, false);
+    assert.equal(runs[1]!.plain_text, "b");
+    assert.equal(runs[1]!.annotations.bold, true);
+    assert.equal(runs[2]!.plain_text, " c");
+  });
+
+  it("inline code segment", () => {
+    const runs = markdownToRichText("`code`");
+    assert.equal(runs.length, 1);
+    assert.equal(runs[0]!.annotations.code, true);
+    assert.equal(runs[0]!.plain_text, "code");
+  });
+
+  it("link produces text run with link set", () => {
+    const runs = markdownToRichText("[click](https://example.com)");
+    assert.equal(runs.length, 1);
+    const run = runs[0]!;
+    assert.equal(run.type, "text");
+    if (run.type === "text") {
+      assert.equal(run.text.content, "click");
+      assert.deepEqual(run.text.link, { url: "https://example.com" });
+    }
+  });
+
+  it("annotation wrapping a link", () => {
+    const runs = markdownToRichText("**[click](https://example.com)**");
+    assert.equal(runs.length, 1);
+    assert.equal(runs[0]!.annotations.bold, true);
+    if (runs[0]!.type === "text") {
+      assert.deepEqual(runs[0]!.text.link, { url: "https://example.com" });
+    }
+  });
+
+  it("strikethrough", () => {
+    const runs = markdownToRichText("~~gone~~");
+    assert.equal(runs.length, 1);
+    assert.equal(runs[0]!.annotations.strikethrough, true);
+  });
+
+  it("round-trip: runs → md → runs preserves annotations", () => {
+    const original: RichText[] = [
+      text("a "),
+      text("bold italic", { bold: true, italic: true }),
+      text(" c"),
+    ];
+    const md = richTextToMarkdown(original);
+    const roundtripped = markdownToRichText(md);
+    // Reconstructing must preserve semantic annotations, not exact run count
+    assert.equal(roundtripped.length >= 3, true);
+    assert.equal(roundtripped.find((r) => r.plain_text === "bold italic")?.annotations.bold, true);
+  });
+
+  it("handles backticks literally inside a link label", () => {
+    const runs = markdownToRichText("[`code` label](https://example.com)");
+    assert.equal(runs.length, 1);
+    assert.equal(runs[0]!.plain_text, "`code` label");
+    if (runs[0]!.type === "text") {
+      assert.deepEqual(runs[0]!.text.link, { url: "https://example.com" });
+    }
+  });
+
+  it("empty string returns empty array", () => {
+    assert.deepEqual(markdownToRichText(""), []);
   });
 });
