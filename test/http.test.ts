@@ -2,6 +2,7 @@ import { describe, it, before, after, mock } from "node:test";
 import assert from "node:assert/strict";
 import { notionRequest, setTokenProvider, resetForTesting } from "../src/http.js";
 import { NotionCliError, ErrorCode } from "../src/errors.js";
+import { AuthSource } from "../src/auth.js";
 
 describe("http.ts base client", () => {
   let originalFetch: typeof globalThis.fetch;
@@ -10,7 +11,7 @@ describe("http.ts base client", () => {
     originalFetch = globalThis.fetch;
     setTokenProvider(async () => ({
       token: "ntn_test_token",
-      source: "env" as const,
+      source: AuthSource.ENV,
     }));
   });
 

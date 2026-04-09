@@ -17,7 +17,7 @@
  * when reviewing.
  */
 
-import { loadToken } from "./auth.js";
+import { loadToken, type LoadedToken } from "./auth.js";
 import { NotionCliError, ErrorCode } from "./errors.js";
 
 const API_BASE = "https://api.notion.com/v1";
@@ -25,7 +25,7 @@ const NOTION_VERSION = "2022-06-28";
 const DEFAULT_TIMEOUT_MS = 30_000;
 const USER_AGENT = "notionctl/0.1.0";  // TODO: read from package.json at build time
 
-type TokenProvider = () => Promise<{ token: string; source: string }>;
+type TokenProvider = () => Promise<LoadedToken>;
 
 let tokenProvider: TokenProvider = loadToken;
 let cachedToken: string | undefined;
