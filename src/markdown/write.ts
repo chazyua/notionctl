@@ -100,6 +100,119 @@ export function markdownToBlocks(md: string): Block[] {
       continue;
     }
 
+    // GFM alert (callout)
+    if (/^>\s+\[!(NOTE|TIP|WARNING|IMPORTANT|CAUTION)\]/i.test(trimmed)) {
+      const alertMatch = /^>\s+\[!(NOTE|TIP|WARNING|IMPORTANT|CAUTION)\]\s*(.*)$/i.exec(trimmed);
+      const calloutText = alertMatch?.[2] ?? "";
+      i++;
+      // Collect optional sidecar comments (icon, color)
+      let icon: { type: "emoji"; emoji: string } | null = null;
+      let color = "default";
+      while (i < lines.length) {
+        const next = lines[i]!.trim();
+        const iconMatch = /^<!--\s*icon:\s*(\S+)\s*-->$/.exec(next);
+        const colorMatch = /^<!--\s*color:\s*(\S+)\s*-->$/.exec(next);
+        if (iconMatch) { icon = { type: "emoji", emoji: iconMatch[1]! }; i++; continue; }
+        if (colorMatch) { color = colorMatch[1]!; i++; continue; }
+        break;
+      }
+      blocks.push({
+        object: "block",
+        id: "",
+        type: "callout",
+        has_children: false,
+        callout: {
+          rich_text: markdownToRichText(calloutText),
+          icon: icon ?? { type: "emoji", emoji: "💡" },
+          color,
+        },
+      } as unknown as Block);
+      continue;
+    }
+
+    // HTML toggle: <details><summary>...</summary>...</details>
+    if (/^<details>/i.test(trimmed)) {
+      const summaryMatch = /<summary>(.*?)<\/summary>/i.exec(trimmed);
+      const summary = summaryMatch?.[1] ?? "";
+      i++;
+      while (i < lines.length && !/<\/details>/i.test(lines[i]!)) i++;
+      i++;  // consume closing tag
+      blocks.push({
+        object: "block",
+        id: "",
+        type: "toggle",
+        has_children: false,
+        toggle: { rich_text: markdownToRichText(summary), color: "default" },
+      } as unknown as Block);
+      continue;
+    }
+
+    // Equation block
+    if (/^\$\$.*\$\$$/.test(trimmed)) {
+      const expr = trimmed.slice(2, -2);
+      blocks.push({
+        object: "block",
+        id: "",
+        type: "equation",
+        has_children: false,
+        equation: { expression: expr },
+      } as unknown as Block);
+      i++;
+      continue;
+    }
+
+    // Pass-through HTML comment
+    const passMatch = /^<!--\s*notion-block:\s*(\w+)\s+id=([\w-]+)\s*-->$/.exec(trimmed);
+    if (passMatch) {
+      blocks.push({
+        object: "block",
+        id: passMatch[2]!,
+        type: passMatch[1]! as Block["type"],
+        has_children: false,
+      } as Block);
+      i++;
+      continue;
+    }
+
+    // GFM table
+    if (/^\|.*\|$/.test(trimmed) && i + 1 < lines.length && /^\|\s*---/.test(lines[i + 1]!.trim())) {
+      const headerCells = parseTableRow(trimmed);
+      i += 2;  // skip header + separator
+      const rowBlocks: Block[] = [
+        {
+          object: "block",
+          id: "",
+          type: "table_row",
+          has_children: false,
+          table_row: { cells: headerCells.map((c) => markdownToRichText(c)) },
+        } as unknown as Block,
+      ];
+      while (i < lines.length && /^\|.*\|$/.test(lines[i]!.trim())) {
+        const rowCells = parseTableRow(lines[i]!.trim());
+        rowBlocks.push({
+          object: "block",
+          id: "",
+          type: "table_row",
+          has_children: false,
+          table_row: { cells: rowCells.map((c) => markdownToRichText(c)) },
+        } as unknown as Block);
+        i++;
+      }
+      blocks.push({
+        object: "block",
+        id: "",
+        type: "table",
+        has_children: true,
+        table: {
+          table_width: headerCells.length,
+          has_column_header: true,
+          has_row_header: false,
+          children: rowBlocks,
+        },
+      } as unknown as Block);
+      continue;
+    }
+
     // Default: paragraph (may span multiple lines until blank line)
     const paraLines: string[] = [line];
     i++;
@@ -214,4 +327,9 @@ function makeDividerBlock(): Block {
     has_children: false,
     divider: {},
   } as Block;
+}
+
+function parseTableRow(line: string): string[] {
+  const trimmed = line.trim().replace(/^\||\|$/g, "");
+  return trimmed.split("|").map((c) => c.trim());
 }
