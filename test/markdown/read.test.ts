@@ -106,3 +106,130 @@ describe("blocksToMarkdown basic blocks", () => {
     assert.equal(blocksToMarkdown(blocks).trim(), "- a\n- b\n- c");
   });
 });
+
+describe("blocksToMarkdown complex blocks", () => {
+  it("callout with emoji icon and color", () => {
+    const blocks: Block[] = [
+      mkBlock("callout", {
+        rich_text: [rt("This is a tip")],
+        icon: { type: "emoji", emoji: "💡" },
+        color: "blue_background",
+      }),
+    ];
+    const out = blocksToMarkdown(blocks);
+    assert.match(out, /> \[!NOTE\]/);
+    assert.match(out, /This is a tip/);
+    assert.match(out, /<!-- icon: 💡 -->/);
+    assert.match(out, /<!-- color: blue_background -->/);
+  });
+
+  it("toggle block", () => {
+    const blocks: Block[] = [
+      mkBlock("toggle", { rich_text: [rt("Summary text")], color: "default" }),
+    ];
+    const out = blocksToMarkdown(blocks);
+    assert.match(out, /<details><summary>Summary text<\/summary>/);
+    assert.match(out, /<\/details>/);
+  });
+
+  it("equation block", () => {
+    const blocks: Block[] = [
+      mkBlock("equation", { expression: "E = mc^2" }),
+    ];
+    assert.match(blocksToMarkdown(blocks), /\$\$E = mc\^2\$\$/);
+  });
+
+  it("image with caption", () => {
+    const blocks: Block[] = [
+      {
+        object: "block",
+        id: "img-1",
+        type: "image",
+        has_children: false,
+        image: {
+          type: "external",
+          external: { url: "https://example.com/pic.png" },
+          caption: [rt("A picture")],
+        },
+      } as Block,
+    ];
+    const out = blocksToMarkdown(blocks);
+    assert.match(out, /!\[A picture\]\(https:\/\/example\.com\/pic\.png\)/);
+    assert.match(out, /<!-- notion-block: image id=img-1 -->/);
+  });
+
+  it("synced_block passes through as HTML comment", () => {
+    const blocks: Block[] = [
+      {
+        object: "block",
+        id: "sync-1",
+        type: "synced_block",
+        has_children: true,
+        synced_block: { synced_from: null },
+      } as Block,
+    ];
+    const out = blocksToMarkdown(blocks);
+    assert.match(out, /<!-- notion-block: synced_block id=sync-1 -->/);
+  });
+
+  it("column_list passes through", () => {
+    const blocks: Block[] = [
+      {
+        object: "block",
+        id: "col-1",
+        type: "column_list",
+        has_children: true,
+        column_list: {},
+      } as Block,
+    ];
+    assert.match(blocksToMarkdown(blocks), /<!-- notion-block: column_list id=col-1 -->/);
+  });
+
+  it("unknown future block type passes through", () => {
+    const blocks: Block[] = [
+      {
+        object: "block",
+        id: "x-1",
+        type: "unsupported" as any,
+        has_children: false,
+        unsupported: {},
+      } as Block,
+    ];
+    assert.match(blocksToMarkdown(blocks), /<!-- notion-block: unsupported id=x-1 -->/);
+  });
+
+  it("GFM table with header", () => {
+    const tableBlock: Block = {
+      object: "block",
+      id: "table-1",
+      type: "table",
+      has_children: true,
+      table: {
+        table_width: 2,
+        has_column_header: true,
+        has_row_header: false,
+      },
+    } as Block;
+    // With children attached inline
+    (tableBlock as any).table.children = [
+      {
+        object: "block",
+        id: "row-1",
+        type: "table_row",
+        has_children: false,
+        table_row: { cells: [[rt("Name")], [rt("Status")]] },
+      },
+      {
+        object: "block",
+        id: "row-2",
+        type: "table_row",
+        has_children: false,
+        table_row: { cells: [[rt("Alice")], [rt("Active")]] },
+      },
+    ];
+    const out = blocksToMarkdown([tableBlock]);
+    assert.match(out, /\| Name \| Status \|/);
+    assert.match(out, /\| --- \| --- \|/);
+    assert.match(out, /\| Alice \| Active \|/);
+  });
+});
