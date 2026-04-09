@@ -1,2 +1,33 @@
 # Local-only superpowers artifacts (specs/plans kept as .md, other exports ignored)
 docs/superpowers/
+
+# Build output
+dist/
+
+# Dependencies
+node_modules/
+
+# npm
+*.tgz
+.npmrc
+
+# macOS
+.DS_Store
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Logs
+npm-debug.log*
+*.log
+
+# Local config
+.env
+.env.local
+*.local
+
+# Notion-specific: never commit tokens or sync state
+notion-cli-config.json
