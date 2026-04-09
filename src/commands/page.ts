@@ -7,7 +7,9 @@
  * (from --from file or stdin) and convert to blocks.
  */
 
-import { readFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
+import { extractFrontmatter, reinsertFrontmatter } from "../sync/frontmatter.js";
+import { classifySyncState, computeContentHash, SyncState } from "../sync/sync.js";
 import { notionRequest } from "../http.js";
 import { blocksToMarkdown, markdownToBlocks } from "../markdown/index.js";
 import type { Block } from "../markdown/index.js";
@@ -170,6 +172,72 @@ export async function pageDeleteCommand(ctx: { args: string[] }): Promise<string
   const id = resolvePageId(positional[0]!);
   const res = await notionRequest("PATCH", `/pages/${id}`, { archived: true });
   return renderJson(res);
+}
+
+export async function pageSyncCommand(ctx: { args: string[] }): Promise<string> {
+  const { flags, positional } = parseFlags(ctx.args);
+  if (positional.length === 0) {
+    throw new NotionCliError(ErrorCode.USAGE, "Usage: notionctl page sync <file.md>");
+  }
+  const file = positional[0]!;
+  const source = await readFile(file, "utf8");
+  const { data: frontmatter, body } = extractFrontmatter(source);
+  const state = classifySyncState({
+    frontmatter,
+    localBody: body,
+    remoteEditedAt: undefined,
+  });
+
+  if (getBooleanFlag(flags, "dry-run")) {
+    return renderJson({ file, state });
+  }
+
+  if (state === SyncState.UNCHANGED) {
+    return renderJson({ file, state, message: "no changes to sync" });
+  }
+
+  if (state === SyncState.CREATE) {
+    const parent = flags.get("parent");
+    const title = (frontmatter.title as string) ?? "Untitled";
+    if (!parent) {
+      throw new NotionCliError(
+        ErrorCode.USAGE,
+        "First sync of this file requires --parent <parent-page-id>",
+      );
+    }
+    const blocks = markdownToBlocks(body);
+    const created = await notionRequest<{ id: string; url: string }>("POST", "/pages", {
+      parent: { page_id: resolvePageId(parent) },
+      properties: {
+        title: [{ type: "text", text: { content: title, link: null } }],
+      },
+      children: blocks,
+    });
+    frontmatter.notion_id = created.id;
+    frontmatter.notion_hash = computeContentHash(body);
+    await writeFile(file, reinsertFrontmatter(frontmatter, body), "utf8");
+    return renderJson({ file, state, createdId: created.id });
+  }
+
+  if (state === SyncState.CHANGED) {
+    const pageId = frontmatter.notion_id as string;
+    const existing = await notionRequest<{ results: Block[] }>(
+      "GET",
+      `/blocks/${pageId}/children`,
+    );
+    const newBlocks = markdownToBlocks(body);
+    for (const b of existing.results) {
+      if (!isPassThrough(b.type)) {
+        await notionRequest("DELETE", `/blocks/${b.id}`);
+      }
+    }
+    await notionRequest("PATCH", `/blocks/${pageId}/children`, { children: newBlocks });
+    frontmatter.notion_hash = computeContentHash(body);
+    await writeFile(file, reinsertFrontmatter(frontmatter, body), "utf8");
+    return renderJson({ file, state, updatedId: pageId });
+  }
+
+  throw new NotionCliError(ErrorCode.SYNC_DRIFT, "Remote drift detection not implemented in V1");
 }
 
 const PASS_THROUGH_TYPES = new Set([
