@@ -22,9 +22,9 @@ describe("integration: happy path", { skip: !token || !testPageId }, () => {
     assert.ok(page.id);
   });
 
-  it("search finds at least one result", async () => {
+  it("search returns a results array", async () => {
     const res = await notionRequest<{ results: unknown[] }>("POST", "/search", { query: "" });
-    assert.ok(res.results.length >= 0);
+    assert.ok(Array.isArray(res.results));
   });
 
   it("block children fetches without error", async () => {
