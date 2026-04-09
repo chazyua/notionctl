@@ -20,6 +20,7 @@ export async function authSetCommand(_ctx: { args: string[] }): Promise<string> 
       rl.close();
       resolve(line.trim());
     });
+    rl.on("close", () => resolve(""));
   });
   if (!token) {
     throw new NotionCliError(ErrorCode.USAGE, "No token provided");
