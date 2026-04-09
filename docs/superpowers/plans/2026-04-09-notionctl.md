@@ -188,7 +188,7 @@ chmod +x bin/notionctl.js
 - [ ] **Step 3: Create placeholder `src/index.ts`** so build has something to compile
 
 ```typescript
-// Entry point for notionctl. Command dispatch is wired up in Task 32.
+// Entry point for notionctl. Command dispatch is wired up in Task 34.
 console.error("notionctl: not yet implemented");
 process.exit(1);
 ```
