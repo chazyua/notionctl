@@ -10,18 +10,23 @@ import { saveToken, clearToken, getConfigPath } from "../auth.js";
 import { parseFlags, getBooleanFlag } from "./shared.js";
 import { NotionCliError, ErrorCode } from "../errors.js";
 import { renderJson } from "../output.js";
-import { createInterface } from "node:readline";
+
+async function readStdinToken(): Promise<string> {
+  if (process.stdin.isTTY) {
+    process.stderr.write("Paste your Notion integration token (ntn_...): ");
+  }
+  const chunks: Buffer[] = [];
+  return new Promise((resolve, reject) => {
+    process.stdin.on("data", (c) => chunks.push(c));
+    process.stdin.on("end", () => {
+      resolve(Buffer.concat(chunks).toString("utf8").trim().split(/\r?\n/)[0] ?? "");
+    });
+    process.stdin.on("error", reject);
+  });
+}
 
 export async function authSetCommand(_ctx: { args: string[] }): Promise<string> {
-  process.stderr.write("Paste your Notion integration token (ntn_...): ");
-  const rl = createInterface({ input: process.stdin, output: undefined, terminal: false });
-  const token = await new Promise<string>((resolve) => {
-    rl.on("line", (line) => {
-      rl.close();
-      resolve(line.trim());
-    });
-    rl.on("close", () => resolve(""));
-  });
+  const token = await readStdinToken();
   if (!token) {
     throw new NotionCliError(ErrorCode.USAGE, "No token provided");
   }
