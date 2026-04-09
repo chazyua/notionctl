@@ -72,8 +72,74 @@ function renderBlock(block: Block, _depth: number, numberedIndex: number): strin
     }
     case "divider":
       return "---";
+    case "callout": {
+      const text = richTextToMarkdown(block.callout.rich_text);
+      const icon = block.callout.icon;
+      const lines: string[] = [`> [!NOTE] ${text}`];
+      if (icon && icon.type === "emoji") {
+        lines.push(`<!-- icon: ${icon.emoji} -->`);
+      }
+      if (block.callout.color && block.callout.color !== "default") {
+        lines.push(`<!-- color: ${block.callout.color} -->`);
+      }
+      return lines.join("\n");
+    }
+    case "toggle": {
+      const summary = richTextToMarkdown(block.toggle.rich_text);
+      return `<details><summary>${summary}</summary>\n\n</details>`;
+    }
+    case "equation":
+      return `$$${block.equation.expression}$$`;
+    case "table": {
+      const tb = block as unknown as { table: { children?: unknown[] } };
+      const rows = (tb.table.children ?? []) as Array<{
+        type: "table_row";
+        table_row: { cells: Array<Array<{ plain_text: string }>> };
+      }>;
+      if (rows.length === 0) return "";
+      const lines: string[] = [];
+      rows.forEach((row, i) => {
+        const cells = row.table_row.cells.map((cell) =>
+          cell.map((r) => r.plain_text).join(""),
+        );
+        lines.push(`| ${cells.join(" | ")} |`);
+        if (i === 0) {
+          lines.push(`| ${cells.map(() => "---").join(" | ")} |`);
+        }
+      });
+      return lines.join("\n");
+    }
+    case "image":
+    case "video":
+    case "file":
+    case "pdf": {
+      const media = (block as unknown as { [key: string]: { caption?: Array<{ plain_text: string }>; external?: { url: string }; file?: { url: string } } })[block.type];
+      const url = media?.external?.url ?? media?.file?.url ?? "";
+      const caption = (media?.caption ?? []).map((r) => r.plain_text).join("");
+      const label = caption || block.type;
+      return `![${label}](${url})\n<!-- notion-block: ${block.type} id=${block.id} -->`;
+    }
+    case "bookmark":
+    case "link_preview": {
+      const bm = (block as unknown as { [key: string]: { url?: string; caption?: Array<{ plain_text: string }> } })[block.type];
+      const url = bm?.url ?? "";
+      const caption = (bm?.caption ?? []).map((r) => r.plain_text).join("");
+      return `[${caption || url}](${url})\n<!-- notion-block: ${block.type} id=${block.id} -->`;
+    }
+    case "child_page":
+    case "child_database": {
+      const body = (block as unknown as { [key: string]: { title?: string } })[block.type];
+      const title = body?.title ?? "Untitled";
+      const kind = block.type === "child_page" ? "page" : "database";
+      return `[${title}](notion://${kind}/${block.id})`;
+    }
+    case "synced_block":
+    case "column_list":
+    case "column":
+    case "embed":
+    case "table_of_contents":
+    case "breadcrumb":
     default:
-      // Complex blocks handled in Task 18
-      return null;
+      return `<!-- notion-block: ${block.type} id=${block.id} -->`;
   }
 }
