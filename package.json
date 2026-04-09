@@ -29,9 +29,9 @@
     "build": "tsc",
     "clean": "rm -rf dist",
     "prebuild": "npm run clean",
-    "test": "npm run build && node --test --test-reporter=spec dist/test/**/*.test.js",
-    "test:unit": "npm run build && node --test dist/test/**/*.test.js",
-    "test:security": "npm run build && node --test dist/test/security/*.test.js",
+    "test": "npm run build && cd dist && node --test --test-reporter=spec",
+    "test:unit": "npm run build && cd dist && node --test",
+    "test:security": "npm run build && cd dist/test/security && node --test",
     "typecheck": "tsc --noEmit",
     "prepublishOnly": "npm run typecheck && npm run test"
   },
