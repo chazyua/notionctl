@@ -230,3 +230,96 @@ describe("http.ts retries", () => {
     assert.ok(timings[1] >= 900, `retry-after not honored (gap: ${timings[1]}ms)`);
   });
 });
+
+describe("http.ts pagination", () => {
+  let originalFetch: typeof globalThis.fetch;
+
+  before(() => {
+    originalFetch = globalThis.fetch;
+    setTokenProvider(async () => ({ token: "ntn_page_test", source: AuthSource.ENV }));
+  });
+
+  after(() => {
+    globalThis.fetch = originalFetch;
+    resetForTesting();
+  });
+
+  it("auto-paginates when response has has_more: true", async () => {
+    let call = 0;
+    globalThis.fetch = mock.fn(async (url: string | URL) => {
+      call++;
+      const u = typeof url === "string" ? url : url.toString();
+      if (call === 1) {
+        assert.ok(!u.includes("start_cursor"));
+        return new Response(
+          JSON.stringify({
+            object: "list",
+            results: [{ id: "1" }, { id: "2" }],
+            has_more: true,
+            next_cursor: "cursor-a",
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      }
+      if (call === 2) {
+        assert.ok(u.includes("start_cursor=cursor-a"));
+        return new Response(
+          JSON.stringify({
+            object: "list",
+            results: [{ id: "3" }],
+            has_more: false,
+            next_cursor: null,
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      }
+      throw new Error("unexpected extra call");
+    }) as typeof globalThis.fetch;
+
+    const result = await notionRequest<{ object: string; results: Array<{ id: string }> }>(
+      "GET",
+      "/databases/abc/query",
+    );
+    assert.equal(result.results.length, 3);
+    assert.deepEqual(result.results.map((r) => r.id), ["1", "2", "3"]);
+  });
+
+  it("passes start_cursor via POST body for database queries", async () => {
+    const capturedBodies: string[] = [];
+    let call = 0;
+    globalThis.fetch = mock.fn(async (_url: string | URL, init?: RequestInit) => {
+      call++;
+      capturedBodies.push((init?.body as string) ?? "");
+      if (call === 1) {
+        return new Response(
+          JSON.stringify({
+            object: "list",
+            results: [{ id: "1" }],
+            has_more: true,
+            next_cursor: "cursor-b",
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      }
+      return new Response(
+        JSON.stringify({
+          object: "list",
+          results: [{ id: "2" }],
+          has_more: false,
+          next_cursor: null,
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }) as typeof globalThis.fetch;
+
+    await notionRequest<{ results: Array<{ id: string }> }>(
+      "POST",
+      "/databases/abc/query",
+      { filter: { property: "Status", select: { equals: "Done" } } },
+    );
+
+    assert.equal(capturedBodies.length, 2);
+    const secondBody = JSON.parse(capturedBodies[1]!) as { start_cursor?: string };
+    assert.equal(secondBody.start_cursor, "cursor-b");
+  });
+});

@@ -60,7 +60,7 @@ async function getToken(): Promise<string> {
 
 export type HttpMethod = "GET" | "POST" | "PATCH" | "DELETE";
 
-export async function notionRequest<T = unknown>(
+async function notionRequestSingle<T = unknown>(
   method: HttpMethod,
   path: string,
   body?: unknown,
@@ -195,4 +195,61 @@ function parseTimeoutEnv(): number | undefined {
   const n = Number(raw);
   if (!Number.isFinite(n) || n <= 0) return undefined;
   return n;
+}
+
+interface PaginatedResponse<T> {
+  object: "list";
+  results: T[];
+  has_more: boolean;
+  next_cursor: string | null;
+}
+
+function isPaginated(body: unknown): body is PaginatedResponse<unknown> {
+  return (
+    typeof body === "object" &&
+    body !== null &&
+    (body as PaginatedResponse<unknown>).object === "list" &&
+    Array.isArray((body as PaginatedResponse<unknown>).results) &&
+    typeof (body as PaginatedResponse<unknown>).has_more === "boolean"
+  );
+}
+
+export async function notionRequest<T = unknown>(
+  method: HttpMethod,
+  path: string,
+  body?: unknown,
+  opts: { maxPages?: number } = {},
+): Promise<T> {
+  const first = await notionRequestSingle<T>(method, path, body);
+  if (!isPaginated(first)) return first;
+
+  const maxPages = opts.maxPages ?? Infinity;
+  const allResults: unknown[] = [...first.results];
+  let cursor = first.has_more ? first.next_cursor : null;
+  let page = 1;
+
+  while (cursor && page < maxPages) {
+    const nextBody = method === "POST" && body && typeof body === "object"
+      ? { ...(body as object), start_cursor: cursor }
+      : undefined;
+    const nextPath = method === "GET"
+      ? appendQuery(path, "start_cursor", cursor)
+      : path;
+
+    const next = await notionRequestSingle<PaginatedResponse<unknown>>(
+      method,
+      nextPath,
+      nextBody,
+    );
+    allResults.push(...next.results);
+    cursor = next.has_more ? next.next_cursor : null;
+    page++;
+  }
+
+  return { ...first, results: allResults, has_more: false, next_cursor: null } as T;
+}
+
+function appendQuery(path: string, key: string, value: string): string {
+  const separator = path.includes("?") ? "&" : "?";
+  return `${path}${separator}${encodeURIComponent(key)}=${encodeURIComponent(value)}`;
 }
