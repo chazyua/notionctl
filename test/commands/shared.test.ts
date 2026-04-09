@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { parseFlags, resolvePageId } from "../../src/commands/shared.js";
+import { parseFlags, resolvePageId, getBooleanFlag } from "../../src/commands/shared.js";
 
 describe("parseFlags", () => {
   it("parses --flag value pairs", () => {
@@ -46,5 +46,18 @@ describe("resolvePageId", () => {
 
   it("handles IDs without dashes", () => {
     assert.equal(resolvePageId("abcd1234ef567890abcd1234567890ab"), "abcd1234-ef56-7890-abcd-1234567890ab");
+  });
+
+  it("extracts ID from multi-segment notion.so URL", () => {
+    const url = "https://www.notion.so/team/area/Page-Title-abcd1234ef567890abcd1234567890ab";
+    assert.equal(resolvePageId(url), "abcd1234-ef56-7890-abcd-1234567890ab");
+  });
+});
+
+describe("getBooleanFlag", () => {
+  it("returns true when flag is set and false when absent", () => {
+    const { flags } = parseFlags(["--dry-run"]);
+    assert.equal(getBooleanFlag(flags, "dry-run"), true);
+    assert.equal(getBooleanFlag(flags, "quiet"), false);
   });
 });
