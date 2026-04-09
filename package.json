@@ -1,0 +1,17 @@
+{
+  "name": "notionctl",
+  "version": "0.0.1",
+  "description": "Security-auditable, zero-dependency command-line interface for Notion, designed to be driven by AI coding agents via shell invocations.",
+  "keywords": [
+    "notion",
+    "cli",
+    "ai-agent",
+    "copilot",
+    "claude",
+    "automation"
+  ],
+  "license": "MIT",
+  "files": [
+    "README.md"
+  ]
+}
