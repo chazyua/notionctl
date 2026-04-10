@@ -49,7 +49,7 @@ export async function searchCommand(ctx: CommandContext): Promise<string> {
   if (positional.length === 0) {
     throw new NotionCliError(ErrorCode.USAGE, "Usage: notionctl search <query>");
   }
-  const query = positional[0]!;
+  const query = positional.join(" ");
   const typeFilter = flags.get("type");
   const body: Record<string, unknown> = { query };
   if (typeFilter === "page" || typeFilter === "db") {
