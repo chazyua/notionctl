@@ -32,6 +32,7 @@ async function loadCommand(noun: string, verb: string | undefined): Promise<Comm
         case "create": return mod.pageCreateCommand;
         case "append": return mod.pageAppendCommand;
         case "update": return mod.pageUpdateCommand;
+        case "open": return mod.pageOpenCommand;
         case "duplicate": return mod.pageDuplicateCommand;
         case "move": return mod.pageMoveCommand;
         case "delete": return mod.pageDeleteCommand;
@@ -78,6 +79,14 @@ async function loadCommand(noun: string, verb: string | undefined): Promise<Comm
           throw new NotionCliError(ErrorCode.USAGE, `Unknown block verb: ${verb}`);
       }
     }
+    case "file": {
+      const mod = await import("./commands/file.js");
+      switch (verb) {
+        case "upload": return mod.fileUploadCommand;
+        default:
+          throw new NotionCliError(ErrorCode.USAGE, `Unknown file verb: ${verb}`);
+      }
+    }
     case "comment": {
       const mod = await import("./commands/comment.js");
       switch (verb) {
@@ -101,6 +110,7 @@ async function loadCommand(noun: string, verb: string | undefined): Promise<Comm
       switch (verb) {
         case "set": return mod.authSetCommand;
         case "status": return mod.authStatusCommand;
+        case "doctor": return mod.authDoctorCommand;
         case "clear": return mod.authClearCommand;
         default:
           throw new NotionCliError(ErrorCode.USAGE, `Unknown auth verb: ${verb}`);
@@ -125,6 +135,7 @@ Usage:
   notionctl page append <id> [--from file.md]
   notionctl page update <id> [--from file.md]
   notionctl page sync <file.md> [--parent <id>] [--force]
+  notionctl page open <id-or-url>
   notionctl page duplicate <id> [--parent <id>] [--title "new title"]
   notionctl page move <id> --to <parent-id>
   notionctl page delete <id> --yes
@@ -144,6 +155,8 @@ Usage:
   notionctl block update <id> --prop-json '<json>'
   notionctl block delete <id> --yes
 
+  notionctl file upload <path> [--parent <page-id>]
+
   notionctl comment list <page-id>
   notionctl comment add <page-id> --text "..."
 
@@ -152,6 +165,7 @@ Usage:
 
   notionctl auth set
   notionctl auth status
+  notionctl auth doctor
   notionctl auth clear --yes
 
 Global flags:

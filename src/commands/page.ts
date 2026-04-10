@@ -8,6 +8,7 @@
  */
 
 import { readFile, writeFile } from "node:fs/promises";
+import { execFile } from "node:child_process";
 import { extractFrontmatter, reinsertFrontmatter } from "../sync/frontmatter.js";
 import { classifySyncState, computeContentHash, SyncState } from "../sync/sync.js";
 import { notionRequest } from "../http.js";
@@ -298,6 +299,30 @@ export async function pageMoveCommand(ctx: { args: string[] }): Promise<string> 
     `Page ${id}`,
   );
   return renderJson({ id: res.id, parent: res.parent, url: res.url });
+}
+
+export async function pageOpenCommand(ctx: { args: string[] }): Promise<string> {
+  const { positional } = parseFlags(ctx.args);
+  if (positional.length === 0) {
+    throw new NotionCliError(ErrorCode.USAGE, "Usage: notionctl page open <id-or-url>");
+  }
+  const id = resolvePageId(positional[0]!);
+  const page = await fetchWith404Hint(
+    () => notionRequest<{ url: string }>("GET", `/pages/${id}`),
+    `Page ${id}`,
+  );
+  const url = page.url;
+
+  const opener = process.platform === "darwin" ? "open"
+    : process.platform === "win32" ? "start"
+    : "xdg-open";
+
+  return new Promise((resolve, reject) => {
+    execFile(opener, [url], (err) => {
+      if (err) reject(new NotionCliError(ErrorCode.GENERIC, `Failed to open browser: ${err.message}`));
+      else resolve(url);
+    });
+  });
 }
 
 export async function pageDeleteCommand(ctx: { args: string[] }): Promise<string> {

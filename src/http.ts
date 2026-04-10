@@ -250,6 +250,65 @@ export async function notionRequest<T = unknown>(
   return { ...first, results: allResults, has_more: false, next_cursor: null } as T;
 }
 
+/**
+ * Upload a file to Notion. Two-step process:
+ *   1. POST /file_uploads (JSON) — create upload session
+ *   2. PATCH /file_uploads/{id}/send (multipart) — send file data
+ *
+ * This is the only other outbound HTTP function besides notionRequest.
+ * Same auth, same URL enforcement, same domain restriction.
+ */
+export async function notionUploadFile(
+  filePath: string,
+  fileName: string,
+  contentType: string,
+): Promise<{ id: string; status: string; [key: string]: unknown }> {
+  // Step 1: create upload session
+  const session = await notionRequestSingle<{ id: string; status: string; [key: string]: unknown }>(
+    "POST",
+    "/file_uploads",
+    { file_name: fileName, content_type: contentType },
+  );
+
+  // Step 2: send file data
+  const { readFile } = await import("node:fs/promises");
+  const fileBuffer = await readFile(filePath);
+
+  const url = `${API_BASE}/file_uploads/${session.id}/send`;
+  if (!url.startsWith("https://api.notion.com/")) {
+    throw new NotionCliError(ErrorCode.GENERIC, "Internal error: upload URL escaped api.notion.com");
+  }
+
+  const token = await getToken();
+  const formData = new FormData();
+  const blob = new Blob([fileBuffer], { type: contentType });
+  formData.append("file", blob, fileName);
+
+  const response = await fetch(url, {
+    method: "POST",
+    headers: {
+      "Authorization": `Bearer ${token}`,
+      "Notion-Version": NOTION_VERSION,
+      "User-Agent": USER_AGENT,
+    },
+    body: formData,
+  });
+
+  if (!response.ok) {
+    let message = `HTTP ${response.status}`;
+    try {
+      const errBody = (await response.json()) as { message?: string };
+      if (errBody.message) message = errBody.message;
+    } catch { /* non-JSON error */ }
+    throw new NotionCliError(
+      mapStatusToErrorCode(response.status),
+      `/file_uploads/${session.id}/send: ${message}`,
+    );
+  }
+
+  return (await response.json()) as { id: string; status: string; [key: string]: unknown };
+}
+
 function appendQuery(path: string, key: string, value: string): string {
   const separator = path.includes("?") ? "&" : "?";
   return `${path}${separator}${encodeURIComponent(key)}=${encodeURIComponent(value)}`;
