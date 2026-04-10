@@ -40,6 +40,7 @@ async function loadCommand(noun: string, verb: string | undefined): Promise<Comm
     case "db": {
       const mod = await import("./commands/db.js");
       switch (verb) {
+        case "create": return mod.dbCreateCommand;
         case "query": return mod.dbQueryCommand;
         case "schema": return mod.dbSchemaCommand;
         case "row": {
@@ -122,6 +123,7 @@ Usage:
   notionctl page sync <file.md> [--parent <id>]
   notionctl page delete <id> --yes
 
+  notionctl db create --parent <page-id> --title <text> [--prop Name=type[:options] ...]
   notionctl db query <id> [--filter Key=value] [--sort Key:desc] [--filter-json @f.json]
   notionctl db schema <id>
   notionctl db row get <page-id>
@@ -172,7 +174,7 @@ async function main(): Promise<void> {
   }
 
   if (argv[0] === "--version" || argv[0] === "-v") {
-    process.stdout.write("notionctl 0.1.0\n");
+    process.stdout.write("notionctl 0.1.1\n");
     process.exit(0);
   }
 

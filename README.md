@@ -66,9 +66,14 @@ an agent takes is a visible terminal invocation.
     notionctl page append <id> [--from file.md]
     notionctl page update <id> [--from file.md]
     notionctl page sync <file.md>
+    notionctl db create --parent <page-id> --title "X" [--prop Name=type[:options] ...]
     notionctl db row create <db-id> [--prop Key=value ...]
     notionctl db row update <page-id> [--prop Key=value ...]
     notionctl comment add <page-id> --text "..."
+
+Nested Markdown lists (2-space indentation) are preserved on both the
+read and write paths — `page get` renders children with indentation and
+`page create/update/sync` creates the corresponding nested block tree.
 
 ### Escape hatch
 

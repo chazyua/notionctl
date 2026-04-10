@@ -197,6 +197,57 @@ describe("blocksToMarkdown complex blocks", () => {
     ];
     assert.match(blocksToMarkdown(blocks), /<!-- notion-block: unsupported id=x-1 -->/);
   });
+});
+
+describe("blocksToMarkdown nested lists", () => {
+  it("flat list renders without indentation", () => {
+    const blocks: Block[] = [
+      mkBlock("bulleted_list_item", { rich_text: [rt("a")], color: "default" }),
+      mkBlock("bulleted_list_item", { rich_text: [rt("b")], color: "default" }),
+    ];
+    assert.equal(blocksToMarkdown(blocks).trim(), "- a\n- b");
+  });
+
+  it("nested bulleted list renders with 2-space indentation", () => {
+    const parent = mkBlock("bulleted_list_item", { rich_text: [rt("parent")], color: "default" }, { has_children: true });
+    const child = mkBlock("bulleted_list_item", { rich_text: [rt("child")], color: "default" });
+    (parent as any)._children = [child];
+    const out = blocksToMarkdown([parent]);
+    assert.equal(out.trim(), "- parent\n  - child");
+  });
+
+  it("three-level nesting indents by 4 spaces at level 2", () => {
+    const grandchild = mkBlock("bulleted_list_item", { rich_text: [rt("gc")], color: "default" });
+    const child = mkBlock("bulleted_list_item", { rich_text: [rt("c")], color: "default" }, { has_children: true });
+    (child as any)._children = [grandchild];
+    const parent = mkBlock("bulleted_list_item", { rich_text: [rt("p")], color: "default" }, { has_children: true });
+    (parent as any)._children = [child];
+    const out = blocksToMarkdown([parent]);
+    assert.equal(out.trim(), "- p\n  - c\n    - gc");
+  });
+
+  it("nested numbered list counts correctly", () => {
+    const c1 = mkBlock("numbered_list_item", { rich_text: [rt("sub-one")], color: "default" });
+    const c2 = mkBlock("numbered_list_item", { rich_text: [rt("sub-two")], color: "default" });
+    const parent = mkBlock("numbered_list_item", { rich_text: [rt("top")], color: "default" }, { has_children: true });
+    (parent as any)._children = [c1, c2];
+    const out = blocksToMarkdown([parent]);
+    assert.match(out, /^1\. top$/m);
+    assert.match(out, /^  1\. sub-one$/m);
+    assert.match(out, /^  2\. sub-two$/m);
+  });
+
+  it("multiple top-level items each with children", () => {
+    const p1 = mkBlock("bulleted_list_item", { rich_text: [rt("P1")], color: "default" }, { has_children: true });
+    (p1 as any)._children = [mkBlock("bulleted_list_item", { rich_text: [rt("C1")], color: "default" })];
+    const p2 = mkBlock("bulleted_list_item", { rich_text: [rt("P2")], color: "default" }, { has_children: true });
+    (p2 as any)._children = [mkBlock("bulleted_list_item", { rich_text: [rt("C2")], color: "default" })];
+    const out = blocksToMarkdown([p1, p2]);
+    assert.match(out, /^- P1$/m);
+    assert.match(out, /^  - C1$/m);
+    assert.match(out, /^- P2$/m);
+    assert.match(out, /^  - C2$/m);
+  });
 
   it("GFM table with header", () => {
     const tableBlock: Block = {

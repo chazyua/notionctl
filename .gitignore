@@ -31,3 +31,6 @@ npm-debug.log*
 
 # Notion-specific: never commit tokens or sync state
 notion-cli-config.json
+
+# Dogfood output (screenshots, videos, reports)
+dogfood-output/

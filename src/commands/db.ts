@@ -140,6 +140,112 @@ export async function dbQueryCommand(ctx: { args: string[] }): Promise<string> {
   return renderTable({ columns, rows });
 }
 
+/**
+ * Parse a column spec like "Status=select:Todo,Doing,Done" into a Notion
+ * property schema object. Supports the common types; unusual ones should
+ * use --schema-json for the full escape hatch.
+ */
+function parseColumnSpec(spec: string): { name: string; schema: Record<string, unknown> } {
+  const eqIdx = spec.indexOf("=");
+  if (eqIdx === -1) {
+    throw new NotionCliError(ErrorCode.USAGE, `Invalid column spec: ${spec} (expected Name=type[:options])`);
+  }
+  const name = spec.slice(0, eqIdx).trim();
+  const rest = spec.slice(eqIdx + 1).trim();
+  const colonIdx = rest.indexOf(":");
+  const type = colonIdx === -1 ? rest : rest.slice(0, colonIdx);
+  const options = colonIdx === -1 ? "" : rest.slice(colonIdx + 1);
+
+  switch (type) {
+    case "text":
+    case "rich_text":
+      return { name, schema: { rich_text: {} } };
+    case "number":
+      return { name, schema: { number: { format: "number" } } };
+    case "checkbox":
+      return { name, schema: { checkbox: {} } };
+    case "date":
+      return { name, schema: { date: {} } };
+    case "url":
+      return { name, schema: { url: {} } };
+    case "email":
+      return { name, schema: { email: {} } };
+    case "phone":
+    case "phone_number":
+      return { name, schema: { phone_number: {} } };
+    case "people":
+      return { name, schema: { people: {} } };
+    case "files":
+      return { name, schema: { files: {} } };
+    case "select": {
+      const opts = options ? options.split(",").map((o) => ({ name: o.trim() })) : [];
+      return { name, schema: { select: { options: opts } } };
+    }
+    case "multi_select": {
+      const opts = options ? options.split(",").map((o) => ({ name: o.trim() })) : [];
+      return { name, schema: { multi_select: { options: opts } } };
+    }
+    default:
+      throw new NotionCliError(
+        ErrorCode.USAGE,
+        `Unsupported column type: ${type} (use --schema-json for unusual types)`,
+      );
+  }
+}
+
+export async function dbCreateCommand(ctx: { args: string[] }): Promise<string> {
+  const { flags, repeated } = parseFlags(ctx.args);
+  const parent = flags.get("parent");
+  const title = flags.get("title");
+  if (!parent || !title) {
+    throw new NotionCliError(
+      ErrorCode.USAGE,
+      "Usage: notionctl db create --parent <page-id> --title <text> [--prop Name=type[:options] ...] [--schema-json '...']",
+    );
+  }
+  const parentId = resolvePageId(parent);
+
+  // Build properties schema: title is always the first column
+  const properties: Record<string, unknown> = {
+    Name: { title: {} },
+  };
+
+  // --schema-json: wholesale replacement (escape hatch)
+  const schemaJson = flags.get("schema-json");
+  if (schemaJson) {
+    let parsed: unknown;
+    try {
+      const raw = schemaJson.startsWith("@")
+        ? await readFile(schemaJson.slice(1), "utf8")
+        : schemaJson;
+      parsed = JSON.parse(raw);
+    } catch {
+      throw new NotionCliError(ErrorCode.USAGE, "--schema-json is not valid JSON");
+    }
+    if (parsed && typeof parsed === "object") {
+      Object.assign(properties, parsed as Record<string, unknown>);
+    }
+  }
+
+  // --prop Name=type[:options]: individual columns added on top
+  for (const raw of repeated.get("prop") ?? []) {
+    const { name, schema } = parseColumnSpec(raw);
+    properties[name] = schema;
+  }
+
+  const payload = {
+    parent: { type: "page_id", page_id: parentId },
+    title: [{ type: "text", text: { content: title, link: null } }],
+    properties,
+  };
+
+  if (getBooleanFlag(flags, "dry-run")) {
+    return renderJson({ action: "db create", payload });
+  }
+  const created = await notionRequest<{ id: string; url: string }>("POST", "/databases", payload);
+  return renderJson({ id: created.id, url: created.url });
+}
+
 export async function dbRowGetCommand(ctx: { args: string[] }): Promise<string> {
   const { flags, positional } = parseFlags(ctx.args);
   if (positional.length === 0) {

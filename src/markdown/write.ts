@@ -69,27 +69,11 @@ export function markdownToBlocks(md: string): Block[] {
       continue;
     }
 
-    // To-do (must check before bullet)
-    const todoMatch = /^-\s+\[([ xX])\]\s+(.*)$/.exec(trimmed);
-    if (todoMatch) {
-      const checked = todoMatch[1]!.toLowerCase() === "x";
-      blocks.push(makeTodoBlock(todoMatch[2]!, checked));
-      i++;
-      continue;
-    }
-
-    // Bulleted list
-    if (/^-\s+/.test(trimmed)) {
-      blocks.push(makeBulletedBlock(trimmed.slice(2)));
-      i++;
-      continue;
-    }
-
-    // Numbered list
-    const numMatch = /^(\d+)\.\s+(.*)$/.exec(trimmed);
-    if (numMatch) {
-      blocks.push(makeNumberedBlock(numMatch[2]!));
-      i++;
+    // Lists: bulleted, numbered, to-do — all indentation levels
+    if (isListLine(line)) {
+      const { blocks: listBlocks, nextIdx } = parseListSection(lines, i);
+      blocks.push(...listBlocks);
+      i = nextIdx;
       continue;
     }
 
@@ -263,34 +247,106 @@ function makeHeadingBlock(level: 1 | 2 | 3, text: string): Block {
   } as Block;
 }
 
-function makeBulletedBlock(text: string): Block {
-  return {
-    object: "block",
-    id: "",
-    type: "bulleted_list_item",
-    has_children: false,
-    bulleted_list_item: { rich_text: markdownToRichText(text), color: "default" },
-  } as Block;
+interface ListItem {
+  type: "bulleted" | "numbered" | "todo";
+  text: string;
+  checked: boolean;
+  indent: number;
+  children: ListItem[];
 }
 
-function makeNumberedBlock(text: string): Block {
+function isListLine(line: string): boolean {
+  return /^\s*-\s+/.test(line) || /^\s*\d+\.\s+/.test(line);
+}
+
+function parseListSection(lines: string[], startIdx: number): { blocks: Block[]; nextIdx: number } {
+  const rawItems: Omit<ListItem, "children">[] = [];
+  let i = startIdx;
+  while (i < lines.length && isListLine(lines[i]!)) {
+    const parsed = classifyListLine(lines[i]!);
+    if (parsed === null) break;
+    rawItems.push(parsed);
+    i++;
+  }
+  return { blocks: buildListTree(rawItems).map(listItemToBlock), nextIdx: i };
+}
+
+function classifyListLine(line: string): Omit<ListItem, "children"> | null {
+  const indent = (line.match(/^(\s*)/) ?? ["", ""])[1]!.length;
+  const trimmed = line.trim();
+  const todoMatch = /^-\s+\[([ xX])\]\s+(.*)$/.exec(trimmed);
+  if (todoMatch) {
+    return { indent, type: "todo", text: todoMatch[2]!, checked: todoMatch[1]!.toLowerCase() === "x" };
+  }
+  const bulletMatch = /^-\s+(.*)$/.exec(trimmed);
+  if (bulletMatch) {
+    return { indent, type: "bulleted", text: bulletMatch[1]!, checked: false };
+  }
+  const numMatch = /^\d+\.\s+(.*)$/.exec(trimmed);
+  if (numMatch) {
+    return { indent, type: "numbered", text: numMatch[1]!, checked: false };
+  }
+  return null;
+}
+
+function buildListTree(flat: Omit<ListItem, "children">[]): ListItem[] {
+  const roots: ListItem[] = [];
+  const stack: ListItem[] = [];
+  for (const raw of flat) {
+    const item: ListItem = { ...raw, children: [] };
+    while (stack.length > 0 && stack[stack.length - 1]!.indent >= item.indent) {
+      stack.pop();
+    }
+    if (stack.length === 0) {
+      roots.push(item);
+    } else {
+      stack[stack.length - 1]!.children.push(item);
+    }
+    stack.push(item);
+  }
+  return roots;
+}
+
+function listItemToBlock(item: ListItem): Block {
+  const childBlocks = item.children.map(listItemToBlock);
+  if (item.type === "todo") {
+    const body: any = {
+      rich_text: markdownToRichText(item.text),
+      checked: item.checked,
+      color: "default",
+    };
+    if (childBlocks.length > 0) body.children = childBlocks;
+    return {
+      object: "block",
+      type: "to_do",
+      has_children: childBlocks.length > 0,
+      to_do: body,
+    } as unknown as Block;
+  }
+  if (item.type === "bulleted") {
+    const body: any = {
+      rich_text: markdownToRichText(item.text),
+      color: "default",
+    };
+    if (childBlocks.length > 0) body.children = childBlocks;
+    return {
+      object: "block",
+      type: "bulleted_list_item",
+      has_children: childBlocks.length > 0,
+      bulleted_list_item: body,
+    } as unknown as Block;
+  }
+  const body: any = {
+    rich_text: markdownToRichText(item.text),
+    color: "default",
+  };
+  if (childBlocks.length > 0) body.children = childBlocks;
   return {
     object: "block",
-    id: "",
     type: "numbered_list_item",
-    has_children: false,
-    numbered_list_item: { rich_text: markdownToRichText(text), color: "default" },
-  } as Block;
-}
-
-function makeTodoBlock(text: string, checked: boolean): Block {
-  return {
-    object: "block",
-    id: "",
-    type: "to_do",
-    has_children: false,
-    to_do: { rich_text: markdownToRichText(text), checked, color: "default" },
-  } as Block;
+    has_children: childBlocks.length > 0,
+    numbered_list_item: body,
+  } as unknown as Block;
 }
 
 function makeQuoteBlock(text: string): Block {

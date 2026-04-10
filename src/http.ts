@@ -23,7 +23,7 @@ import { NotionCliError, ErrorCode } from "./errors.js";
 const API_BASE = "https://api.notion.com/v1";
 const NOTION_VERSION = "2022-06-28";
 const DEFAULT_TIMEOUT_MS = 30_000;
-const USER_AGENT = "notionctl/0.1.0";  // TODO: read from package.json at build time
+const USER_AGENT = "notionctl/0.1.1";  // TODO: read from package.json at build time
 
 const MAX_ATTEMPTS = 5;
 const BACKOFF_MS = [250, 500, 1000, 2000, 4000] as const;

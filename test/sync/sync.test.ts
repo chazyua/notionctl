@@ -44,4 +44,52 @@ describe("classifySyncState", () => {
     });
     assert.equal(state, SyncState.CHANGED);
   });
+
+  it("DRIFT when remote edited after last sync and hash differs", () => {
+    const state = classifySyncState({
+      frontmatter: {
+        notion_id: "abc",
+        notion_hash: "sha256:stale",
+        notion_synced_at: "2026-04-01T10:00:00Z",
+      },
+      localBody: "# Updated",
+      remoteEditedAt: "2026-04-01T12:00:00Z",  // remote newer than sync
+    });
+    assert.equal(state, SyncState.DRIFT);
+  });
+
+  it("CHANGED (not DRIFT) when remote edited before last sync", () => {
+    const state = classifySyncState({
+      frontmatter: {
+        notion_id: "abc",
+        notion_hash: "sha256:stale",
+        notion_synced_at: "2026-04-01T12:00:00Z",
+      },
+      localBody: "# Updated",
+      remoteEditedAt: "2026-04-01T10:00:00Z",  // remote older than sync
+    });
+    assert.equal(state, SyncState.CHANGED);
+  });
+
+  it("CHANGED (not DRIFT) when no notion_synced_at in frontmatter", () => {
+    const state = classifySyncState({
+      frontmatter: { notion_id: "abc", notion_hash: "sha256:stale" },
+      localBody: "# Updated",
+      remoteEditedAt: "2026-04-01T12:00:00Z",
+    });
+    assert.equal(state, SyncState.CHANGED);
+  });
+
+  it("CHANGED (not DRIFT) when remoteEditedAt is undefined", () => {
+    const state = classifySyncState({
+      frontmatter: {
+        notion_id: "abc",
+        notion_hash: "sha256:stale",
+        notion_synced_at: "2026-04-01T10:00:00Z",
+      },
+      localBody: "# Updated",
+      remoteEditedAt: undefined,
+    });
+    assert.equal(state, SyncState.CHANGED);
+  });
 });

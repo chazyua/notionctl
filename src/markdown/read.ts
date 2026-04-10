@@ -43,7 +43,20 @@ export function blocksToMarkdown(blocks: Block[], opts: RenderOptions = {}): str
   return lines.join("\n");
 }
 
-function renderBlock(block: Block, _depth: number, numberedIndex: number): string | null {
+function renderNestedList(blocks: Block[], depth: number): string {
+  const lines: string[] = [];
+  let numIdx = 0;
+  for (const block of blocks) {
+    const rendered = renderBlock(block, depth, numIdx);
+    if (rendered !== null) lines.push(rendered);
+    if (block.type === "numbered_list_item") numIdx++;
+    else numIdx = 0;
+  }
+  return lines.join("\n");
+}
+
+function renderBlock(block: Block, depth: number, numberedIndex: number): string | null {
+  const indent = "  ".repeat(depth);
   switch (block.type) {
     case "paragraph": {
       const body = block.paragraph;
@@ -55,10 +68,16 @@ function renderBlock(block: Block, _depth: number, numberedIndex: number): strin
       return `## ${richTextToMarkdown(block.heading_2?.rich_text ?? [])}`;
     case "heading_3":
       return `### ${richTextToMarkdown(block.heading_3?.rich_text ?? [])}`;
-    case "bulleted_list_item":
-      return `- ${richTextToMarkdown(block.bulleted_list_item?.rich_text ?? [])}`;
-    case "numbered_list_item":
-      return `${numberedIndex + 1}. ${richTextToMarkdown(block.numbered_list_item?.rich_text ?? [])}`;
+    case "bulleted_list_item": {
+      const text = `${indent}- ${richTextToMarkdown(block.bulleted_list_item?.rich_text ?? [])}`;
+      const nested = (block as any)._children as Block[] | undefined;
+      return nested && nested.length > 0 ? `${text}\n${renderNestedList(nested, depth + 1)}` : text;
+    }
+    case "numbered_list_item": {
+      const text = `${indent}${numberedIndex + 1}. ${richTextToMarkdown(block.numbered_list_item?.rich_text ?? [])}`;
+      const nested = (block as any)._children as Block[] | undefined;
+      return nested && nested.length > 0 ? `${text}\n${renderNestedList(nested, depth + 1)}` : text;
+    }
     case "to_do": {
       const checked = block.to_do.checked ? "x" : " ";
       return `- [${checked}] ${richTextToMarkdown(block.to_do.rich_text)}`;

@@ -19,6 +19,18 @@ import { resolvePageId, parseFlags, getBooleanFlag } from "./shared.js";
 import { NotionCliError, ErrorCode } from "../errors.js";
 import { renderJson, chooseFormat, isStdoutTty, type Format } from "../output.js";
 
+const LIST_BLOCK_TYPES = new Set(["bulleted_list_item", "numbered_list_item", "to_do"]);
+
+async function fetchBlockTree(blockId: string): Promise<Block[]> {
+  const res = await notionRequest<{ results: Block[] }>("GET", `/blocks/${blockId}/children`);
+  for (const block of res.results) {
+    if (block.has_children && LIST_BLOCK_TYPES.has(block.type)) {
+      (block as any)._children = await fetchBlockTree(block.id);
+    }
+  }
+  return res.results;
+}
+
 export async function pageGetCommand(ctx: { args: string[] }): Promise<string> {
   const { flags, positional } = parseFlags(ctx.args);
   if (positional.length === 0) {
@@ -34,17 +46,14 @@ export async function pageGetCommand(ctx: { args: string[] }): Promise<string> {
     url: string;
   }>("GET", `/pages/${id}`);
 
-  const children = await notionRequest<{ results: Block[] }>(
-    "GET",
-    `/blocks/${id}/children`,
-  );
+  const childBlocks = await fetchBlockTree(id);
 
   const format = chooseFormat(flags.get("format") as Format | undefined, {
     isTty: isStdoutTty(),
     defaultFormat: "md",
   });
   if (format === "json") {
-    return renderJson({ page, children: children.results });
+    return renderJson({ page, children: childBlocks });
   }
 
   const frontmatter: YamlObject = {
@@ -67,7 +76,7 @@ export async function pageGetCommand(ctx: { args: string[] }): Promise<string> {
     if (title) titleLine = `# ${title}\n\n`;
   }
 
-  const body = blocksToMarkdown(children.results);
+  const body = blocksToMarkdown(childBlocks);
   const yaml = stringifyYaml(frontmatter);
   return `---\n${yaml}\n---\n\n${titleLine}${body}`;
 }
@@ -232,18 +241,43 @@ export async function pageSyncCommand(ctx: { args: string[] }): Promise<string> 
   const file = positional[0]!;
   const source = await readFile(file, "utf8");
   const { data: frontmatter, body } = extractFrontmatter(source);
-  const state = classifySyncState({
-    frontmatter,
-    localBody: body,
-    remoteEditedAt: undefined,
-  });
+
+  // Fetch remote page metadata for drift detection when notion_id exists
+  let remoteEditedAt: string | undefined;
+  if (typeof frontmatter.notion_id === "string" && frontmatter.notion_id) {
+    try {
+      const remotePage = await notionRequest<{ last_edited_time: string }>(
+        "GET",
+        `/pages/${frontmatter.notion_id as string}`,
+      );
+      remoteEditedAt = remotePage.last_edited_time;
+    } catch {
+      // If fetch fails (trashed page), proceed — the CHANGED path will give a better error
+    }
+  }
+
+  const state = classifySyncState({ frontmatter, localBody: body, remoteEditedAt });
 
   if (getBooleanFlag(flags, "dry-run")) {
-    return renderJson({ file, state });
+    return renderJson({ file, state, remoteEditedAt });
   }
 
   if (state === SyncState.UNCHANGED) {
     return renderJson({ file, state, message: "no changes to sync" });
+  }
+
+  if (state === SyncState.DRIFT && !getBooleanFlag(flags, "force")) {
+    throw new NotionCliError(
+      ErrorCode.SYNC_DRIFT,
+      `Remote page was edited in Notion after your last sync — refusing to overwrite.`,
+      {
+        suggestions: [
+          "Run: notionctl page get <id> to fetch the latest remote content.",
+          "Merge remote changes into your local file, then run sync again.",
+          "Or use --force to overwrite remote with your local version.",
+        ],
+      },
+    );
   }
 
   if (state === SyncState.CREATE) {
@@ -265,17 +299,27 @@ export async function pageSyncCommand(ctx: { args: string[] }): Promise<string> 
     });
     frontmatter.notion_id = created.id;
     frontmatter.notion_hash = computeContentHash(body);
+    frontmatter.notion_synced_at = new Date().toISOString();
     await writeFile(file, reinsertFrontmatter(frontmatter, body), "utf8");
     return renderJson({ file, state, createdId: created.id });
   }
 
-  if (state === SyncState.CHANGED) {
+  if (state === SyncState.CHANGED || state === SyncState.DRIFT) {
     const pageId = frontmatter.notion_id as string;
     const { title, syncBody } = extractSyncTitle(frontmatter, body);
-    const existing = await notionRequest<{ results: Block[] }>(
-      "GET",
-      `/blocks/${pageId}/children`,
-    );
+    let existing: { results: Block[] };
+    try {
+      existing = await notionRequest<{ results: Block[] }>("GET", `/blocks/${pageId}/children`);
+    } catch (err) {
+      if (err instanceof NotionCliError && err.code === ErrorCode.NOT_FOUND) {
+        throw new NotionCliError(
+          ErrorCode.NOT_FOUND,
+          `Page ${pageId} was not found — it may have been trashed in Notion.`,
+          { suggestions: ["Remove notion_id from the file's YAML frontmatter and sync again to recreate it."] },
+        );
+      }
+      throw err;
+    }
     const newBlocks = markdownToBlocks(syncBody);
     await notionRequest("PATCH", `/pages/${pageId}`, {
       properties: { title: [{ type: "text", text: { content: title, link: null } }] },
@@ -287,11 +331,12 @@ export async function pageSyncCommand(ctx: { args: string[] }): Promise<string> 
     }
     await notionRequest("PATCH", `/blocks/${pageId}/children`, { children: newBlocks });
     frontmatter.notion_hash = computeContentHash(body);
+    frontmatter.notion_synced_at = new Date().toISOString();
     await writeFile(file, reinsertFrontmatter(frontmatter, body), "utf8");
     return renderJson({ file, state, updatedId: pageId });
   }
 
-  throw new NotionCliError(ErrorCode.SYNC_DRIFT, "Remote drift detection not implemented in V1");
+  throw new NotionCliError(ErrorCode.GENERIC, `Unexpected sync state: ${state as string}`);
 }
 
 const PASS_THROUGH_TYPES = new Set([

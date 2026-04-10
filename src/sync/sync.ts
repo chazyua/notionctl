@@ -49,7 +49,16 @@ export function classifySyncState(input: ClassifyInput): SyncState {
     return SyncState.UNCHANGED;
   }
 
-  // V1 does not implement remote-edit drift detection (requires
-  // storing a remote snapshot). Stub returns CHANGED — V2 adds DRIFT.
+  // Drift detection: if remote was edited after our last sync, the remote
+  // has diverged and we refuse to blindly overwrite without --force.
+  const lastSyncedAt = input.frontmatter.notion_synced_at;
+  if (input.remoteEditedAt && typeof lastSyncedAt === "string") {
+    const remoteTime = new Date(input.remoteEditedAt).getTime();
+    const syncTime = new Date(lastSyncedAt).getTime();
+    if (Number.isFinite(remoteTime) && Number.isFinite(syncTime) && remoteTime > syncTime) {
+      return SyncState.DRIFT;
+    }
+  }
+
   return SyncState.CHANGED;
 }
