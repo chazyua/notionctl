@@ -122,3 +122,154 @@ describe("auth", () => {
     );
   });
 });
+
+describe("auth login (OAuth)", () => {
+  let testHome: string;
+  let originalHome: string | undefined;
+  let originalXdg: string | undefined;
+  let originalToken: string | undefined;
+
+  before(async () => {
+    testHome = await mkdtemp(join(tmpdir(), "notionctl-oauth-test-"));
+    originalHome = process.env.HOME;
+    originalXdg = process.env.XDG_CONFIG_HOME;
+    originalToken = process.env.NOTION_TOKEN;
+    process.env.HOME = testHome;
+    delete process.env.XDG_CONFIG_HOME;
+    delete process.env.NOTION_TOKEN;
+  });
+
+  after(async () => {
+    if (originalHome !== undefined) process.env.HOME = originalHome;
+    else delete process.env.HOME;
+    if (originalXdg !== undefined) process.env.XDG_CONFIG_HOME = originalXdg;
+    if (originalToken !== undefined) process.env.NOTION_TOKEN = originalToken;
+    await rm(testHome, { recursive: true, force: true });
+  });
+
+  beforeEach(async () => {
+    await rm(join(testHome, ".config"), { recursive: true, force: true });
+    delete process.env.NOTION_TOKEN;
+  });
+
+  it("authLoginCommand rejects missing flags", async () => {
+    const { authLoginCommand } = await import("../src/commands/auth.js");
+    await assert.rejects(
+      () => authLoginCommand({ args: [] }),
+      (err: unknown) => {
+        assert.ok(err instanceof NotionCliError);
+        assert.equal((err as NotionCliError).code, ErrorCode.USAGE);
+        assert.ok((err as Error).message.includes("--client-id"));
+        return true;
+      },
+    );
+  });
+
+  it("exchangeOAuthCode sends correct Basic auth and returns token", async () => {
+    const { exchangeOAuthCode } = await import("../src/http.js");
+    const originalFetch = globalThis.fetch;
+
+    globalThis.fetch = async (input: string | URL | Request, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+      assert.ok(url.endsWith("/oauth/token"));
+      const authHeader = (init?.headers as Record<string, string>)["Authorization"];
+      const expected = "Basic " + Buffer.from("cid:csecret").toString("base64");
+      assert.equal(authHeader, expected);
+      const body = JSON.parse(init?.body as string) as {
+        grant_type: string;
+        code: string;
+        redirect_uri: string;
+      };
+      assert.equal(body.grant_type, "authorization_code");
+      assert.equal(body.code, "the_code");
+      assert.equal(body.redirect_uri, "http://localhost:9999/callback");
+      return new Response(JSON.stringify({ access_token: "ntn_test_1234" }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    };
+
+    try {
+      const token = await exchangeOAuthCode("cid", "csecret", "the_code", "http://localhost:9999/callback");
+      assert.equal(token, "ntn_test_1234");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("exchangeOAuthCode throws on HTTP error", async () => {
+    const { exchangeOAuthCode } = await import("../src/http.js");
+    const originalFetch = globalThis.fetch;
+
+    globalThis.fetch = async () => {
+      return new Response(JSON.stringify({ error: "invalid_grant", message: "Code expired" }), {
+        status: 400,
+        headers: { "Content-Type": "application/json" },
+      });
+    };
+
+    try {
+      await assert.rejects(
+        () => exchangeOAuthCode("cid", "csecret", "bad_code", "http://localhost:9999/callback"),
+        (err: unknown) => {
+          assert.ok(err instanceof NotionCliError);
+          assert.equal((err as NotionCliError).code, ErrorCode.AUTH_INVALID);
+          assert.ok((err as Error).message.includes("Code expired"));
+          return true;
+        },
+      );
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("exchangeOAuthCode throws when access_token is missing", async () => {
+    const { exchangeOAuthCode } = await import("../src/http.js");
+    const originalFetch = globalThis.fetch;
+
+    globalThis.fetch = async () => {
+      return new Response(JSON.stringify({ token_type: "bearer" }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    };
+
+    try {
+      await assert.rejects(
+        () => exchangeOAuthCode("cid", "csecret", "code", "http://localhost:9999/callback"),
+        (err: unknown) => {
+          assert.ok(err instanceof NotionCliError);
+          assert.ok((err as Error).message.includes("missing access_token"));
+          return true;
+        },
+      );
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("authLoginCommand fails with clear error when port is in use", async () => {
+    const { createServer } = await import("node:http");
+    const { authLoginCommand } = await import("../src/commands/auth.js");
+
+    // Occupy the port
+    const blocker = createServer();
+    await new Promise<void>((resolve) => blocker.listen(19876, "127.0.0.1", resolve));
+
+    try {
+      await assert.rejects(
+        () => authLoginCommand({
+          args: ["--client-id", "x", "--client-secret", "y", "--port", "19876"],
+        }),
+        (err: unknown) => {
+          assert.ok(err instanceof NotionCliError);
+          assert.equal((err as NotionCliError).code, ErrorCode.NETWORK_ERROR);
+          assert.ok((err as Error).message.includes("already in use"));
+          return true;
+        },
+      );
+    } finally {
+      blocker.close();
+    }
+  });
+});

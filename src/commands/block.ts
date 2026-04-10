@@ -3,7 +3,7 @@
  * for commands that want to poke at individual blocks by ID.
  */
 
-import { notionRequest } from "../http.js";
+import { notionRequest, appendBlocksChunked } from "../http.js";
 import { blocksToMarkdown, markdownToBlocks } from "../markdown/index.js";
 import type { Block } from "../markdown/index.js";
 import { fetchBlockTree } from "../blocks.js";
@@ -85,9 +85,7 @@ export async function blockAppendCommand(ctx: { args: string[] }): Promise<strin
   if (getBooleanFlag(flags, "dry-run")) {
     return renderJson({ action: "block append", id, blocks, after: afterId ?? null });
   }
-  const body: Record<string, unknown> = { children: blocks };
-  if (afterId) body.after = afterId;
-  const res = await notionRequest("PATCH", `/blocks/${id}/children`, body);
+  const res = await appendBlocksChunked(id, blocks, { after: afterId });
   return renderJson(res);
 }
 

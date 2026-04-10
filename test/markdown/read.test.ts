@@ -67,6 +67,18 @@ describe("blocksToMarkdown basic blocks", () => {
     assert.match(out, /^- \[x\] done task$/m);
   });
 
+  it("to_do with nested children", () => {
+    const parent: any = mkBlock("to_do", { rich_text: [rt("parent")], checked: false, color: "default" });
+    parent._children = [
+      mkBlock("to_do", { rich_text: [rt("child unchecked")], checked: false, color: "default" }),
+      mkBlock("to_do", { rich_text: [rt("child checked")], checked: true, color: "default" }),
+    ];
+    const out = blocksToMarkdown([parent]);
+    assert.match(out, /^- \[ \] parent$/m);
+    assert.match(out, /^ {2}- \[ \] child unchecked$/m);
+    assert.match(out, /^ {2}- \[x\] child checked$/m);
+  });
+
   it("quote", () => {
     const blocks: Block[] = [mkBlock("quote", { rich_text: [rt("to be or not to be")], color: "default" })];
     assert.match(blocksToMarkdown(blocks), /^> to be or not to be$/m);
@@ -118,9 +130,35 @@ describe("blocksToMarkdown complex blocks", () => {
     ];
     const out = blocksToMarkdown(blocks);
     assert.match(out, /> \[!NOTE\]/);
-    assert.match(out, /This is a tip/);
-    assert.match(out, /<!-- icon: 💡 -->/);
-    assert.match(out, /<!-- color: blue_background -->/);
+    assert.match(out, /> This is a tip/);
+    // Known icon+color → no sidecar comments needed
+    assert.ok(!out.includes("<!-- icon"), "known emoji should not produce sidecar comment");
+  });
+
+  it("callout WARNING type round-trips via emoji", () => {
+    const blocks: Block[] = [
+      mkBlock("callout", {
+        rich_text: [rt("Careful here")],
+        icon: { type: "emoji", emoji: "⚠️" },
+        color: "yellow_background",
+      }),
+    ];
+    const out = blocksToMarkdown(blocks);
+    assert.match(out, /> \[!WARNING\]/);
+    assert.match(out, /> Careful here/);
+  });
+
+  it("callout with unknown emoji preserves it as sidecar comment", () => {
+    const blocks: Block[] = [
+      mkBlock("callout", {
+        rich_text: [rt("Custom")],
+        icon: { type: "emoji", emoji: "🎯" },
+        color: "default",
+      }),
+    ];
+    const out = blocksToMarkdown(blocks);
+    assert.match(out, /> \[!NOTE\]/);
+    assert.match(out, /<!-- icon: 🎯 -->/);
   });
 
   it("toggle block", () => {
@@ -282,5 +320,69 @@ describe("blocksToMarkdown nested lists", () => {
     assert.match(out, /\| Name \| Status \|/);
     assert.match(out, /\| --- \| --- \|/);
     assert.match(out, /\| Alice \| Active \|/);
+  });
+
+  it("GFM table preserves inline code and bold in cells", () => {
+    const tableBlock: Block = {
+      object: "block",
+      id: "table-fmt",
+      type: "table",
+      has_children: true,
+      table: {
+        table_width: 2,
+        has_column_header: true,
+        has_row_header: false,
+      },
+    } as Block;
+    (tableBlock as any).table.children = [
+      {
+        type: "table_row",
+        table_row: { cells: [[rt("Command")], [rt("Desc")]] },
+      },
+      {
+        type: "table_row",
+        table_row: {
+          cells: [
+            [rt("whoami", { code: true })],
+            [rt("Show "), rt("integration", { bold: true }), rt(" info")],
+          ],
+        },
+      },
+    ];
+    const out = blocksToMarkdown([tableBlock]);
+    assert.match(out, /`whoami`/, "inline code should be preserved in table cell");
+    assert.match(out, /\*\*integration\*\*/, "bold should be preserved in table cell");
+  });
+
+  it("GFM table escapes literal pipe in cell content", () => {
+    const tableBlock: Block = {
+      object: "block",
+      id: "table-pipe",
+      type: "table",
+      has_children: true,
+      table: {
+        table_width: 2,
+        has_column_header: true,
+        has_row_header: false,
+      },
+    } as Block;
+    (tableBlock as any).table.children = [
+      {
+        type: "table_row",
+        table_row: { cells: [[rt("Flag")], [rt("Desc")]] },
+      },
+      {
+        type: "table_row",
+        table_row: {
+          cells: [
+            [rt("md|json|csv")],
+            [rt("formats")],
+          ],
+        },
+      },
+    ];
+    const out = blocksToMarkdown([tableBlock]);
+    // Pipes in cell content must be escaped so the table structure isn't broken
+    assert.match(out, /md\\\|json\\\|csv/, "pipes in cell content should be escaped");
   });
 });

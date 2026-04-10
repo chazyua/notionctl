@@ -17,6 +17,22 @@
 import { markdownToRichText } from "./tokenizer.js";
 import type { Block, RichText } from "./types.js";
 
+const ALERT_TYPE_TO_EMOJI: Record<string, string> = {
+  NOTE: "💡",
+  TIP: "🔥",
+  WARNING: "⚠️",
+  IMPORTANT: "❗",
+  CAUTION: "🛑",
+};
+
+const ALERT_TYPE_TO_COLOR: Record<string, string> = {
+  NOTE: "blue_background",
+  TIP: "green_background",
+  WARNING: "yellow_background",
+  IMPORTANT: "red_background",
+  CAUTION: "red_background",
+};
+
 export function markdownToBlocks(md: string): Block[] {
   const lines = md.split("\n");
   const blocks: Block[] = [];
@@ -31,12 +47,15 @@ export function markdownToBlocks(md: string): Block[] {
       continue;
     }
 
-    // Fenced code block
-    if (/^```/.test(trimmed)) {
-      const lang = trimmed.slice(3).trim();
+    // Fenced code block — match closing fence with same or more backticks
+    const fenceMatch = /^(`{3,})(.*)$/.exec(trimmed);
+    if (fenceMatch) {
+      const fenceLen = fenceMatch[1]!.length;
+      const lang = fenceMatch[2]!.trim();
+      const closePat = new RegExp(`^\`{${fenceLen},}\\s*$`);
       const codeLines: string[] = [];
       i++;
-      while (i < lines.length && !/^```/.test(lines[i]!.trim())) {
+      while (i < lines.length && !closePat.test(lines[i]!.trim())) {
         codeLines.push(lines[i]!);
         i++;
       }
@@ -45,8 +64,8 @@ export function markdownToBlocks(md: string): Block[] {
       continue;
     }
 
-    // Divider
-    if (/^---$/.test(trimmed) || /^---\s*$/.test(trimmed)) {
+    // Divider (---, ***, ___)
+    if (/^[-*_]{3,}\s*$/.test(trimmed)) {
       blocks.push(makeDividerBlock());
       i++;
       continue;
@@ -77,27 +96,38 @@ export function markdownToBlocks(md: string): Block[] {
       continue;
     }
 
-    // Quote (plain, no alert prefix — alerts handled in Task 20)
-    if (/^>\s+/.test(trimmed) && !/^>\s+\[!/.test(trimmed)) {
-      blocks.push(makeQuoteBlock(trimmed.slice(2)));
-      i++;
+    // Quote (plain, no alert prefix — alerts handled below)
+    if (/^>\s/.test(trimmed) && !/^>\s+\[!/.test(trimmed)) {
+      const quoteLines: string[] = [];
+      while (i < lines.length) {
+        const ql = lines[i]!.trim();
+        if (!/^>/.test(ql) || /^>\s+\[!/.test(ql)) break; // stop at non-quote or alert
+        // Strip one or more levels of > prefix; flatten nested > > to single level
+        const raw = ql.replace(/^>(\s?>)*\s?/, "");
+        quoteLines.push(raw);
+        i++;
+      }
+      blocks.push(makeQuoteBlock(quoteLines.join(" ")));
       continue;
     }
 
     // GFM alert (callout)
     if (/^>\s+\[!(NOTE|TIP|WARNING|IMPORTANT|CAUTION)\]/i.test(trimmed)) {
       const alertMatch = /^>\s+\[!(NOTE|TIP|WARNING|IMPORTANT|CAUTION)\]\s*(.*)$/i.exec(trimmed);
-      const calloutText = alertMatch?.[2] ?? "";
+      const alertType = (alertMatch?.[1] ?? "NOTE").toUpperCase();
+      let calloutText = alertMatch?.[2] ?? "";
       i++;
-      // Collect optional sidecar comments (icon, color)
-      let icon: { type: "emoji"; emoji: string } | null = null;
-      let color = "default";
+      // Collect continuation lines (> text)
       while (i < lines.length) {
         const next = lines[i]!.trim();
         const iconMatch = /^<!--\s*icon:\s*(\S+)\s*-->$/.exec(next);
         const colorMatch = /^<!--\s*color:\s*(\S+)\s*-->$/.exec(next);
-        if (iconMatch) { icon = { type: "emoji", emoji: iconMatch[1]! }; i++; continue; }
-        if (colorMatch) { color = colorMatch[1]!; i++; continue; }
+        if (iconMatch || colorMatch) { i++; continue; } // skip sidecar comments
+        if (/^>\s/.test(next)) {
+          calloutText += (calloutText ? " " : "") + next.slice(2);
+          i++;
+          continue;
+        }
         break;
       }
       blocks.push({
@@ -107,8 +137,8 @@ export function markdownToBlocks(md: string): Block[] {
         has_children: false,
         callout: {
           rich_text: markdownToRichText(calloutText),
-          icon: icon ?? { type: "emoji", emoji: "💡" },
-          color,
+          icon: { type: "emoji", emoji: ALERT_TYPE_TO_EMOJI[alertType] ?? "💡" },
+          color: ALERT_TYPE_TO_COLOR[alertType] ?? "default",
         },
       } as unknown as Block);
       continue;
@@ -358,8 +388,36 @@ function makeQuoteBlock(text: string): Block {
   } as Block;
 }
 
+const LANGUAGE_ALIASES: Record<string, string> = {
+  sh: "shell",
+  zsh: "shell",
+  fish: "shell",
+  yml: "yaml",
+  ts: "typescript",
+  js: "javascript",
+  py: "python",
+  rb: "ruby",
+  rs: "rust",
+  cs: "c#",
+  cpp: "c++",
+  objc: "objective-c",
+  kt: "kotlin",
+  hs: "haskell",
+  ex: "elixir",
+  erl: "erlang",
+  fs: "f#",
+  vb: "visual basic",
+  asm: "assembly",
+  tf: "hcl",
+  dockerfile: "docker",
+  proto: "protobuf",
+  tex: "latex",
+  md: "markdown",
+};
+
 function makeCodeBlock(content: string, language: string): Block {
-  const lang = language || "plain text";
+  const raw = language.toLowerCase() || "plain text";
+  const lang = LANGUAGE_ALIASES[raw] ?? raw;
   const richText: RichText[] = [
     {
       type: "text",
@@ -404,5 +462,20 @@ function stripEmptyIds(blocks: unknown[]): void {
 
 function parseTableRow(line: string): string[] {
   const trimmed = line.trim().replace(/^\||\|$/g, "");
-  return trimmed.split("|").map((c) => c.trim());
+  // Split on unescaped | only (not \|), then restore escaped pipes
+  const cells: string[] = [];
+  let current = "";
+  for (let i = 0; i < trimmed.length; i++) {
+    if (trimmed[i] === "\\" && trimmed[i + 1] === "|") {
+      current += "|";
+      i++; // skip the escaped pipe
+    } else if (trimmed[i] === "|") {
+      cells.push(current.trim());
+      current = "";
+    } else {
+      current += trimmed[i];
+    }
+  }
+  cells.push(current.trim());
+  return cells;
 }

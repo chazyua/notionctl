@@ -12,7 +12,24 @@
  */
 
 import { richTextToMarkdown } from "./tokenizer.js";
-import type { Block } from "./types.js";
+import type { Block, RichText } from "./types.js";
+
+const EMOJI_TO_ALERT_TYPE: Record<string, string> = {
+  "💡": "NOTE",
+  "🔥": "TIP",
+  "⚠️": "WARNING",
+  "❗": "IMPORTANT",
+  "🛑": "CAUTION",
+};
+
+function colorToAlertType(color: string | undefined): string | null {
+  if (!color) return null;
+  if (color.startsWith("blue")) return "NOTE";
+  if (color.startsWith("green")) return "TIP";
+  if (color.startsWith("yellow")) return "WARNING";
+  if (color.startsWith("red")) return "IMPORTANT";
+  return null;
+}
 
 export interface RenderOptions {
   depth?: number;
@@ -80,7 +97,9 @@ function renderBlock(block: Block, depth: number, numberedIndex: number): string
     }
     case "to_do": {
       const checked = block.to_do.checked ? "x" : " ";
-      return `- [${checked}] ${richTextToMarkdown(block.to_do.rich_text)}`;
+      const text = `${indent}- [${checked}] ${richTextToMarkdown(block.to_do.rich_text)}`;
+      const nested = (block as any)._children as Block[] | undefined;
+      return nested && nested.length > 0 ? `${text}\n${renderNestedList(nested, depth + 1)}` : text;
     }
     case "quote":
       return `> ${richTextToMarkdown(block.quote.rich_text)}`;
@@ -94,12 +113,15 @@ function renderBlock(block: Block, depth: number, numberedIndex: number): string
     case "callout": {
       const text = richTextToMarkdown(block.callout.rich_text);
       const icon = block.callout.icon;
-      const lines: string[] = [`> [!NOTE] ${text}`];
-      if (icon && icon.type === "emoji") {
-        lines.push(`<!-- icon: ${icon.emoji} -->`);
+      const emoji = icon?.type === "emoji" ? icon.emoji : "";
+      const alertType = EMOJI_TO_ALERT_TYPE[emoji] ?? colorToAlertType(block.callout.color) ?? "NOTE";
+      const lines: string[] = [`> [!${alertType}]`, `> ${text}`];
+      // Preserve icon/color as sidecar comments only when they can't be inferred from alert type
+      if (emoji && !EMOJI_TO_ALERT_TYPE[emoji]) {
+        lines.splice(1, 0, `<!-- icon: ${emoji} -->`);
       }
-      if (block.callout.color && block.callout.color !== "default") {
-        lines.push(`<!-- color: ${block.callout.color} -->`);
+      if (block.callout.color && block.callout.color !== "default" && !colorToAlertType(block.callout.color)) {
+        lines.splice(1, 0, `<!-- color: ${block.callout.color} -->`);
       }
       return lines.join("\n");
     }
@@ -113,13 +135,13 @@ function renderBlock(block: Block, depth: number, numberedIndex: number): string
       const tb = block as unknown as { table: { children?: unknown[] }; _children?: unknown[] };
       const rows = (tb.table.children ?? tb._children ?? []) as Array<{
         type: "table_row";
-        table_row: { cells: Array<Array<{ plain_text: string }>> };
+        table_row: { cells: RichText[][] };
       }>;
       if (rows.length === 0) return "";
       const lines: string[] = [];
       rows.forEach((row, i) => {
         const cells = row.table_row.cells.map((cell) =>
-          cell.map((r) => r.plain_text).join(""),
+          richTextToMarkdown(cell).replace(/\|/g, "\\|"),
         );
         lines.push(`| ${cells.join(" | ")} |`);
         if (i === 0) {

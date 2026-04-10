@@ -1,6 +1,6 @@
 import { describe, it, before, after, mock } from "node:test";
 import assert from "node:assert/strict";
-import { notionRequest, setTokenProvider, resetForTesting } from "../src/http.js";
+import { notionRequest, appendBlocksChunked, setTokenProvider, resetForTesting } from "../src/http.js";
 import { NotionCliError, ErrorCode } from "../src/errors.js";
 import { AuthSource } from "../src/auth.js";
 
@@ -321,5 +321,71 @@ describe("http.ts pagination", () => {
     assert.equal(capturedBodies.length, 2);
     const secondBody = JSON.parse(capturedBodies[1]!) as { start_cursor?: string };
     assert.equal(secondBody.start_cursor, "cursor-b");
+  });
+});
+
+describe("appendBlocksChunked", () => {
+  let originalFetch: typeof globalThis.fetch;
+
+  before(() => {
+    originalFetch = globalThis.fetch;
+    setTokenProvider(async () => ({ token: "ntn_chunk_test", source: AuthSource.ENV }));
+  });
+
+  after(() => {
+    globalThis.fetch = originalFetch;
+    resetForTesting();
+  });
+
+  it("sends all blocks in one request when under 100", async () => {
+    let calls = 0;
+    globalThis.fetch = mock.fn(async (_url: string | URL, init?: RequestInit) => {
+      calls++;
+      const body = JSON.parse(init?.body as string) as { children: unknown[] };
+      return new Response(
+        JSON.stringify({ results: body.children.map((_: unknown, i: number) => ({ id: `b${i}` })) }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }) as typeof globalThis.fetch;
+
+    const blocks = Array.from({ length: 5 }, (_, i) => ({ type: "paragraph", id: `${i}` }));
+    const res = await appendBlocksChunked("page-1", blocks);
+    assert.equal(calls, 1);
+    assert.equal(res.results.length, 5);
+  });
+
+  it("splits into multiple requests when over 100 blocks", async () => {
+    const capturedChunks: number[] = [];
+    globalThis.fetch = mock.fn(async (_url: string | URL, init?: RequestInit) => {
+      const body = JSON.parse(init?.body as string) as { children: unknown[] };
+      capturedChunks.push(body.children.length);
+      return new Response(
+        JSON.stringify({ results: body.children.map((_: unknown, i: number) => ({ id: `b${capturedChunks.length}-${i}` })) }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }) as typeof globalThis.fetch;
+
+    const blocks = Array.from({ length: 250 }, (_, i) => ({ type: "paragraph", id: `${i}` }));
+    const res = await appendBlocksChunked("page-1", blocks);
+    assert.deepEqual(capturedChunks, [100, 100, 50]);
+    assert.equal(res.results.length, 250);
+  });
+
+  it("passes after ID to first chunk and chains subsequent chunks", async () => {
+    const capturedAfters: Array<string | undefined> = [];
+    globalThis.fetch = mock.fn(async (_url: string | URL, init?: RequestInit) => {
+      const body = JSON.parse(init?.body as string) as { children: unknown[]; after?: string };
+      capturedAfters.push(body.after);
+      const lastId = `last-of-chunk-${capturedAfters.length}`;
+      return new Response(
+        JSON.stringify({ results: [{ id: lastId }] }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }) as typeof globalThis.fetch;
+
+    const blocks = Array.from({ length: 150 }, (_, i) => ({ type: "paragraph", id: `${i}` }));
+    await appendBlocksChunked("page-1", blocks, { after: "anchor-block" });
+    assert.equal(capturedAfters[0], "anchor-block");
+    assert.equal(capturedAfters[1], "last-of-chunk-1");
   });
 });

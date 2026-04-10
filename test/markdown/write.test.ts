@@ -57,10 +57,54 @@ describe("markdownToBlocks basic blocks", () => {
     assert.equal((blocks[0] as any).code.language, "typescript");
   });
 
+  it("maps language aliases to Notion-accepted names", () => {
+    assert.equal((markdownToBlocks("```sh\nls\n```")[0] as any).code.language, "shell");
+    assert.equal((markdownToBlocks("```js\n1\n```")[0] as any).code.language, "javascript");
+    assert.equal((markdownToBlocks("```ts\n1\n```")[0] as any).code.language, "typescript");
+    assert.equal((markdownToBlocks("```py\n1\n```")[0] as any).code.language, "python");
+    assert.equal((markdownToBlocks("```yml\n1\n```")[0] as any).code.language, "yaml");
+    assert.equal((markdownToBlocks("```rs\n1\n```")[0] as any).code.language, "rust");
+    assert.equal((markdownToBlocks("```dockerfile\n1\n```")[0] as any).code.language, "docker");
+  });
+
   it("divider", () => {
     const blocks = markdownToBlocks("---");
     assert.equal(blocks.length, 1);
     assert.equal(blocks[0]!.type, "divider");
+  });
+
+  it("divider variants: *** and ___", () => {
+    assert.equal(markdownToBlocks("***")[0]!.type, "divider");
+    assert.equal(markdownToBlocks("___")[0]!.type, "divider");
+    assert.equal(markdownToBlocks("****")[0]!.type, "divider");
+  });
+
+  it("4-backtick fence contains 3-backtick content", () => {
+    const md = "````\nSome ``` backticks ``` inside\n````";
+    const blocks = markdownToBlocks(md);
+    assert.equal(blocks.length, 1);
+    assert.equal(blocks[0]!.type, "code");
+    assert.ok((blocks[0] as any).code.rich_text[0].text.content.includes("```"));
+  });
+
+  it("multi-line blockquote becomes single quote block", () => {
+    const md = "> Line one\n> Line two\n> Line three";
+    const blocks = markdownToBlocks(md);
+    assert.equal(blocks.length, 1);
+    assert.equal(blocks[0]!.type, "quote");
+    const text = (blocks[0] as any).quote.rich_text[0].text.content;
+    assert.ok(text.includes("Line one"), "first line present");
+    assert.ok(text.includes("Line three"), "last line present");
+  });
+
+  it("nested blockquote flattens > > to single level", () => {
+    const md = "> Level 1\n> > Level 2\n> Back to level 1";
+    const blocks = markdownToBlocks(md);
+    assert.equal(blocks.length, 1);
+    assert.equal(blocks[0]!.type, "quote");
+    const text = (blocks[0] as any).quote.rich_text[0].text.content;
+    assert.ok(text.includes("Level 1"), "level 1 present");
+    assert.ok(text.includes("Level 2"), "level 2 present");
   });
 
   it("ignores leading/trailing whitespace and blank lines", () => {
@@ -110,6 +154,17 @@ describe("markdownToBlocks complex blocks", () => {
     assert.equal(table.table.table_width, 2);
     assert.equal(table.table.has_column_header, true);
     assert.equal(table.table.children.length, 3);  // header + 2 rows
+  });
+
+  it("GFM table with escaped pipes in cells", () => {
+    const md = "| Flag | Desc |\n| --- | --- |\n| `--format md\\|json\\|csv` | Output format |";
+    const blocks = markdownToBlocks(md);
+    const table = blocks[0] as any;
+    assert.equal(table.table.table_width, 2);
+    assert.equal(table.table.children.length, 2); // header + 1 row
+    // The escaped pipes should be inside a single cell, not split into extra columns
+    const dataRow = table.table.children[1];
+    assert.equal(dataRow.table_row.cells.length, 2);
   });
 });
 

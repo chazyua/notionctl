@@ -3,10 +3,14 @@
  * or environment — so it doesn't end up in shell history). `status`
  * verifies the token is valid by calling /users/me, without ever
  * displaying the token itself. `clear` removes the config file.
+ * `login` performs OAuth browser-based login against api.notion.com.
  */
 
 import { stat } from "node:fs/promises";
-import { notionRequest } from "../http.js";
+import { createServer, type Server } from "node:http";
+import { randomBytes } from "node:crypto";
+import { execFile } from "node:child_process";
+import { notionRequest, exchangeOAuthCode } from "../http.js";
 import { saveToken, clearToken, loadToken, getConfigPath, getConfigDir, listProfiles, AuthSource } from "../auth.js";
 import { parseFlags, getBooleanFlag } from "./shared.js";
 import { NotionCliError, ErrorCode } from "../errors.js";
@@ -179,4 +183,136 @@ export async function authClearCommand(ctx: { args: string[] }): Promise<string>
   }
   await clearToken();
   return renderJson({ cleared: true });
+}
+
+/* ------------------------------------------------------------------ */
+/*  OAuth browser login                                                */
+/* ------------------------------------------------------------------ */
+
+const OAUTH_TIMEOUT_MS = 300_000;
+const DEFAULT_OAUTH_PORT = 9876;
+
+function oauthHtml(title: string, message: string): string {
+  return `<!DOCTYPE html><html><head><title>notionctl</title></head>`
+    + `<body style="font-family:system-ui,sans-serif;text-align:center;padding:3em">`
+    + `<h1>${title}</h1><p>${message}</p></body></html>`;
+}
+
+function openBrowser(url: string): void {
+  const cmd = process.platform === "darwin" ? "open"
+    : process.platform === "win32" ? "cmd"
+    : "xdg-open";
+  const args = process.platform === "win32" ? ["/c", "start", "", url] : [url];
+  execFile(cmd, args, () => {
+    // Ignore errors — fallback URL is printed to stderr
+  });
+}
+
+export async function authLoginCommand(ctx: { args: string[] }): Promise<string> {
+  const { flags } = parseFlags(ctx.args);
+  const clientId = flags.get("client-id");
+  const clientSecret = flags.get("client-secret");
+
+  if (!clientId || !clientSecret) {
+    throw new NotionCliError(ErrorCode.USAGE, "auth login requires --client-id and --client-secret", {
+      suggestions: [
+        "Create a public integration at https://www.notion.so/profile/integrations",
+        `Set the redirect URI to http://localhost:${DEFAULT_OAUTH_PORT}/callback`,
+        "Usage: notionctl auth login --client-id <id> --client-secret <secret>",
+      ],
+    });
+  }
+
+  const port = flags.has("port") ? Number(flags.get("port")) : DEFAULT_OAUTH_PORT;
+  if (!Number.isFinite(port) || port < 1 || port > 65535) {
+    throw new NotionCliError(ErrorCode.USAGE, `Invalid port: ${flags.get("port")}`);
+  }
+
+  const state = randomBytes(16).toString("hex");
+  const redirectUri = `http://localhost:${port}/callback`;
+
+  return new Promise<string>((resolve, reject) => {
+    let settled = false;
+    let timer: ReturnType<typeof setTimeout>;
+
+    const settle = (server: Server, fn: () => void) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      server.close();
+      fn();
+    };
+
+    const server = createServer(async (req, res) => {
+      const url = new URL(req.url!, `http://127.0.0.1`);
+      if (url.pathname !== "/callback") {
+        res.writeHead(404);
+        res.end();
+        return;
+      }
+
+      const error = url.searchParams.get("error");
+      if (error) {
+        res.writeHead(200, { "Content-Type": "text/html" });
+        res.end(oauthHtml("Authorization Failed", `Error: ${error}`));
+        settle(server, () =>
+          reject(new NotionCliError(ErrorCode.AUTH_INVALID, `OAuth denied: ${error}`)));
+        return;
+      }
+
+      if (url.searchParams.get("state") !== state) {
+        res.writeHead(200, { "Content-Type": "text/html" });
+        res.end(oauthHtml("Authorization Failed", "State mismatch."));
+        settle(server, () =>
+          reject(new NotionCliError(ErrorCode.AUTH_INVALID, "OAuth state mismatch")));
+        return;
+      }
+
+      const code = url.searchParams.get("code");
+      if (!code) {
+        res.writeHead(200, { "Content-Type": "text/html" });
+        res.end(oauthHtml("Authorization Failed", "No authorization code received."));
+        settle(server, () =>
+          reject(new NotionCliError(ErrorCode.AUTH_INVALID, "No authorization code in callback")));
+        return;
+      }
+
+      try {
+        const token = await exchangeOAuthCode(clientId!, clientSecret!, code, redirectUri);
+        await saveToken(token);
+        res.writeHead(200, { "Content-Type": "text/html" });
+        res.end(oauthHtml("Authorized!", "You can close this tab and return to the terminal."));
+        settle(server, () =>
+          resolve(renderJson({ login: true, path: getConfigPath() })));
+      } catch (err) {
+        res.writeHead(200, { "Content-Type": "text/html" });
+        res.end(oauthHtml("Token Exchange Failed", "Check the terminal for details."));
+        settle(server, () => reject(err));
+      }
+    });
+
+    server.on("error", (err: NodeJS.ErrnoException) => {
+      const msg = err.code === "EADDRINUSE"
+        ? `Port ${port} is already in use — pick another with --port`
+        : `Failed to start OAuth server: ${err.message}`;
+      settle(server, () => reject(new NotionCliError(ErrorCode.NETWORK_ERROR, msg)));
+    });
+
+    server.listen(port, "127.0.0.1", () => {
+      const authorizeUrl = `https://api.notion.com/v1/oauth/authorize`
+        + `?client_id=${encodeURIComponent(clientId!)}`
+        + `&response_type=code`
+        + `&owner=user`
+        + `&redirect_uri=${encodeURIComponent(redirectUri)}`
+        + `&state=${state}`;
+      process.stderr.write(`Opening browser for Notion authorization...\n`);
+      process.stderr.write(`If the browser doesn't open, visit:\n${authorizeUrl}\n`);
+      openBrowser(authorizeUrl);
+    });
+
+    timer = setTimeout(() => {
+      settle(server, () =>
+        reject(new NotionCliError(ErrorCode.NETWORK_ERROR, "OAuth login timed out (5 minutes)")));
+    }, OAUTH_TIMEOUT_MS);
+  });
 }

@@ -4,6 +4,7 @@ import {
   chooseFormat,
   renderJson,
   renderTable,
+  renderCsv,
   renderMarkdown,
 } from "../src/output.js";
 
@@ -52,6 +53,23 @@ describe("output.renderTable", () => {
     const out = renderTable({ columns: ["A", "B"], rows: [] });
     const lines = out.split("\n");
     assert.equal(lines.length, 2);  // header + separator only
+  });
+});
+
+describe("output.renderCsv", () => {
+  it("escapes values containing commas", () => {
+    const out = renderCsv({ columns: ["Name", "Notes"], rows: [["Alice", "foo, bar"]] });
+    assert.equal(out, 'Name,Notes\nAlice,"foo, bar"');
+  });
+
+  it("escapes values containing double quotes", () => {
+    const out = renderCsv({ columns: ["Name"], rows: [['He said "hi"']] });
+    assert.equal(out, 'Name\n"He said ""hi"""');
+  });
+
+  it("escapes values containing newlines", () => {
+    const out = renderCsv({ columns: ["Name"], rows: [["line1\nline2"]] });
+    assert.equal(out, 'Name\n"line1\nline2"');
   });
 });
 

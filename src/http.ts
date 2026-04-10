@@ -251,6 +251,39 @@ export async function notionRequest<T = unknown>(
 }
 
 /**
+ * Append blocks to a page/block, automatically chunking to stay within
+ * Notion's 100-block-per-request limit. Returns the combined results.
+ */
+const BLOCK_CHUNK_SIZE = 100;
+
+export async function appendBlocksChunked(
+  parentId: string,
+  blocks: unknown[],
+  opts?: { after?: string },
+): Promise<{ results: unknown[] }> {
+  const allResults: unknown[] = [];
+  let afterId = opts?.after;
+
+  for (let i = 0; i < blocks.length; i += BLOCK_CHUNK_SIZE) {
+    const chunk = blocks.slice(i, i + BLOCK_CHUNK_SIZE);
+    const body: Record<string, unknown> = { children: chunk };
+    if (afterId) body.after = afterId;
+    const res = await notionRequest<{ results: Array<{ id: string }> }>(
+      "PATCH",
+      `/blocks/${parentId}/children`,
+      body,
+    );
+    allResults.push(...res.results);
+    // Subsequent chunks append after the last block of the previous chunk
+    if (res.results.length > 0) {
+      afterId = res.results[res.results.length - 1]!.id;
+    }
+  }
+
+  return { results: allResults };
+}
+
+/**
  * Upload a file to Notion. Two-step process:
  *   1. POST /file_uploads (JSON) — create upload session
  *   2. PATCH /file_uploads/{id}/send (multipart) — send file data
@@ -307,6 +340,51 @@ export async function notionUploadFile(
   }
 
   return (await response.json()) as { id: string; status: string; [key: string]: unknown };
+}
+
+/**
+ * OAuth token exchange — POST /v1/oauth/token with Basic auth.
+ * This is the only non-Bearer outbound call. Same domain restriction:
+ * only api.notion.com, credentials never logged.
+ */
+export async function exchangeOAuthCode(
+  clientId: string,
+  clientSecret: string,
+  code: string,
+  redirectUri: string,
+): Promise<string> {
+  const url = `${API_BASE}/oauth/token`;
+  const credentials = Buffer.from(`${clientId}:${clientSecret}`).toString("base64");
+
+  const response = await fetch(url, {
+    method: "POST",
+    headers: {
+      "Authorization": `Basic ${credentials}`,
+      "Content-Type": "application/json",
+      "User-Agent": USER_AGENT,
+    },
+    body: JSON.stringify({
+      grant_type: "authorization_code",
+      code,
+      redirect_uri: redirectUri,
+    }),
+  });
+
+  if (!response.ok) {
+    let message = `HTTP ${response.status}`;
+    try {
+      const errBody = (await response.json()) as { error?: string; message?: string };
+      message = errBody.message ?? errBody.error ?? message;
+    } catch { /* non-JSON error body */ }
+    throw new NotionCliError(ErrorCode.AUTH_INVALID, `Token exchange failed: ${message}`);
+  }
+
+  const data = (await response.json()) as { access_token?: string };
+  if (!data.access_token) {
+    throw new NotionCliError(ErrorCode.AUTH_INVALID, "Token exchange response missing access_token");
+  }
+
+  return data.access_token;
 }
 
 function appendQuery(path: string, key: string, value: string): string {

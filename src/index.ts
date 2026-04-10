@@ -111,6 +111,7 @@ async function loadCommand(noun: string, verb: string | undefined): Promise<Comm
     case "auth": {
       const mod = await import("./commands/auth.js");
       switch (verb) {
+        case "login": return mod.authLoginCommand;
         case "set": return mod.authSetCommand;
         case "status": return mod.authStatusCommand;
         case "doctor": return mod.authDoctorCommand;
@@ -169,6 +170,7 @@ Usage:
   notionctl user list
   notionctl user me
 
+  notionctl auth login --client-id <id> --client-secret <secret> [--port 9876]
   notionctl auth set [--profile <name>]
   notionctl auth status
   notionctl auth doctor

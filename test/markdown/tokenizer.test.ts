@@ -221,4 +221,35 @@ describe("markdownToRichText", () => {
     assert.equal(bold!.annotations.bold, true);
     assert.equal(bold!.annotations.italic, false);
   });
+
+  it("intraword underscores are literal, not italic", () => {
+    const runs = markdownToRichText("multi_select and rich_text");
+    const full = runs.map((r) => r.plain_text).join("");
+    assert.equal(full, "multi_select and rich_text");
+    // No run should have italic
+    assert.ok(runs.every((r) => !r.annotations.italic), "intraword _ must not trigger italic");
+  });
+
+  it("leading/trailing underscores still trigger italic", () => {
+    const runs = markdownToRichText("_italic_ text");
+    const italic = runs.find((r) => r.plain_text === "italic");
+    assert.ok(italic, "italic run exists");
+    assert.equal(italic!.annotations.italic, true);
+  });
+
+  it("relative link renders as plain text without href", () => {
+    const runs = markdownToRichText("See [COMMANDS.md](docs/COMMANDS.md) for details");
+    const linkRun = runs.find((r) => r.plain_text === "COMMANDS.md");
+    assert.ok(linkRun, "link label preserved as text");
+    if (linkRun!.type === "text") {
+      assert.equal(linkRun!.text.link, null, "relative URL should not become a Notion link");
+    }
+  });
+
+  it("absolute link still works", () => {
+    const runs = markdownToRichText("[site](https://example.com)");
+    if (runs[0]!.type === "text") {
+      assert.deepEqual(runs[0]!.text.link, { url: "https://example.com" });
+    }
+  });
 });

@@ -192,8 +192,8 @@ export function markdownToRichText(md: string): RichText[] {
       continue;
     }
 
-    // Italic _
-    if (c === "_") {
+    // Italic _ — only when not surrounded by word characters (CommonMark intraword rule)
+    if (c === "_" && !isIntraword(md, i)) {
       flush();
       state.italic = !state.italic;
       i += 1;
@@ -229,6 +229,13 @@ function isMarkerChar(c: string): boolean {
   return c === "*" || c === "_" || c === "~" || c === "`" || c === "[" || c === "]" || c === "\\";
 }
 
+/** CommonMark rule: _ is not emphasis when both sides are word characters (e.g. multi_select) */
+function isIntraword(md: string, idx: number): boolean {
+  const prev = idx > 0 ? md[idx - 1]! : "";
+  const next = idx < md.length - 1 ? md[idx + 1]! : "";
+  return /\w/.test(prev) && /\w/.test(next);
+}
+
 function findLinkEnd(md: string, startIdx: number): { labelEnd: number; urlStart: number; urlEnd: number } | null {
   // startIdx points at '['. Find matching ']', then '(' immediately after, then ')'.
   let depth = 1;
@@ -256,7 +263,7 @@ function makeRun(content: string, state: ScannerState, linkUrl: string | null): 
     type: "text",
     text: {
       content,
-      link: linkUrl ? { url: linkUrl } : null,
+      link: linkUrl && /^https?:\/\//.test(linkUrl) ? { url: linkUrl } : null,
     },
     annotations: {
       ...DEFAULT_ANNOTATIONS,

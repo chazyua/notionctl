@@ -11,7 +11,7 @@ import { readFile, writeFile } from "node:fs/promises";
 import { execFile } from "node:child_process";
 import { extractFrontmatter, reinsertFrontmatter } from "../sync/frontmatter.js";
 import { classifySyncState, computeContentHash, SyncState } from "../sync/sync.js";
-import { notionRequest } from "../http.js";
+import { notionRequest, appendBlocksChunked } from "../http.js";
 import { blocksToMarkdown, markdownToBlocks } from "../markdown/index.js";
 import type { Block } from "../markdown/index.js";
 import { renderProperty } from "../properties/render.js";
@@ -110,19 +110,25 @@ export async function pageCreateCommand(ctx: { args: string[] }): Promise<string
   ).trimStart();
   const blocks = bodyMd.length > 0 ? markdownToBlocks(bodyMd) : [];
 
+  const firstChunk = blocks.slice(0, 100);
+  const overflow = blocks.slice(100);
+
   const payload = {
     parent: { page_id: parentId },
     properties: {
       title: [{ type: "text", text: { content: title, link: null } }],
     },
-    children: blocks,
+    children: firstChunk,
   };
 
   if (getBooleanFlag(flags, "dry-run")) {
-    return renderJson({ action: "page create", payload });
+    return renderJson({ action: "page create", payload: { ...payload, children: blocks } });
   }
 
   const created = await notionRequest<{ id: string; url: string }>("POST", "/pages", payload);
+  if (overflow.length > 0) {
+    await appendBlocksChunked(created.id, overflow);
+  }
   return renderJson({ id: created.id, url: created.url });
 }
 
@@ -139,7 +145,7 @@ export async function pageAppendCommand(ctx: { args: string[] }): Promise<string
     return renderJson({ action: "page append", blockId: id, blocks });
   }
 
-  const res = await notionRequest("PATCH", `/blocks/${id}/children`, { children: blocks });
+  const res = await appendBlocksChunked(id, blocks);
   return renderJson(res);
 }
 
@@ -188,7 +194,7 @@ export async function pageUpdateCommand(ctx: { args: string[] }): Promise<string
     for (const blockId of deletions) {
       await notionRequest("DELETE", `/blocks/${blockId}`);
     }
-    await notionRequest("PATCH", `/blocks/${id}/children`, { children: newBlocks });
+    await appendBlocksChunked(id, newBlocks);
     result["deletedBlocks"] = deletions.length;
     result["appendedBlocks"] = newBlocks.length;
   }
@@ -450,7 +456,7 @@ export async function pageDeleteCommand(ctx: { args: string[] }): Promise<string
   return renderJson(res);
 }
 
-function extractSyncTitle(
+export function extractSyncTitle(
   frontmatter: Record<string, unknown>,
   body: string,
 ): { title: string; syncBody: string } {
@@ -521,13 +527,18 @@ export async function pageSyncCommand(ctx: { args: string[] }): Promise<string> 
     }
     const { title, syncBody } = extractSyncTitle(frontmatter, body);
     const blocks = markdownToBlocks(syncBody);
+    const firstChunk = blocks.slice(0, 100);
+    const overflow = blocks.slice(100);
     const created = await notionRequest<{ id: string; url: string }>("POST", "/pages", {
       parent: { page_id: resolvePageId(parent) },
       properties: {
         title: [{ type: "text", text: { content: title, link: null } }],
       },
-      children: blocks,
+      children: firstChunk,
     });
+    if (overflow.length > 0) {
+      await appendBlocksChunked(created.id, overflow);
+    }
     frontmatter.notion_id = created.id;
     frontmatter.notion_hash = computeContentHash(body);
     frontmatter.notion_synced_at = new Date().toISOString();
@@ -560,7 +571,7 @@ export async function pageSyncCommand(ctx: { args: string[] }): Promise<string> 
         await notionRequest("DELETE", `/blocks/${b.id}`);
       }
     }
-    await notionRequest("PATCH", `/blocks/${pageId}/children`, { children: newBlocks });
+    await appendBlocksChunked(pageId, newBlocks);
     frontmatter.notion_hash = computeContentHash(body);
     frontmatter.notion_synced_at = new Date().toISOString();
     await writeFile(file, reinsertFrontmatter(frontmatter, body), "utf8");

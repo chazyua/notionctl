@@ -1,129 +1,166 @@
 # notionctl
 
-A security-auditable, zero-dependency command-line interface for Notion,
-designed to be driven by AI coding agents (Claude Code, GitHub Copilot,
-Cursor) via shell invocations.
+**The security-first CLI for Notion.** Zero dependencies. Fully auditable. Built for AI agents and humans alike.
 
-## Install
-
-    npm install -g notionctl
+```sh
+npm install -g notionctl
+```
 
 Requires Node 18+.
 
-## Quick start
+## Quick Start
 
-    export NOTION_TOKEN=ntn_...         # or: notionctl auth set
-    notionctl whoami                    # verify the token
-    notionctl search "PRD"              # find pages
-    notionctl page get <url-or-id>      # read a page as markdown
-    notionctl page sync ./prd.md \
-      --parent <parent-page-id>         # push a local file to Notion
+```sh
+# Option A: OAuth browser login (recommended)
+notionctl auth login --client-id <id> --client-secret <secret>
 
-## Why this exists
+# Option B: Paste an integration token
+notionctl auth set
 
-AI coding agents work best when they can read the team's knowledge base
-(PRDs, specs, docs in Notion) and write back updates. MCP servers are one
-way to bridge this, but they require a persistent process with broader
-privileges and a larger attack surface, which many enterprise security
-teams disallow.
+# Option C: Environment variable
+export NOTION_TOKEN=ntn_...
 
-`notionctl` is the alternative: a discrete shell command per operation,
-shell-logged, `--dry-run`-able, and auditable line-by-line. Every action
-an agent takes is a visible terminal invocation.
+# Verify
+notionctl whoami
 
-## Security posture
+# Go
+notionctl search "Q2 Roadmap"
+notionctl page get <url-or-id>
+notionctl page sync ./prd.md --parent <page-id>
+```
 
-- **Zero runtime dependencies.** The entire source tree is hand-audited
-  TypeScript. No transitive supply chain.
-- **Single file for network I/O** (`src/http.ts`). Hardcoded to
-  `https://api.notion.com/v1`. No `--api-base` flag.
-- **Single file for secrets** (`src/auth.ts`). Token lives in
-  `$NOTION_TOKEN` or a mode-0600 config file, never in logs or errors.
-- **Dry-run universal.** Every write supports `--dry-run`.
-- **Content-hashed sync.** `page sync` is a provable no-op if nothing
-  changed locally (SHA-256 front-matter hash).
-- **No telemetry.** The CLI's only outbound traffic is
-  `api.notion.com`. Provable by `grep -r "https://" src/`.
-- **Automated security tests.** `npm run test:security` runs grep-based
-  assertions that encode the above rules and fails the build on drift.
+## Why notionctl
 
-## Command surface
+AI coding agents (Claude Code, Copilot, Cursor) work best when they can read and write your team's Notion knowledge base. MCP servers bridge this gap, but require persistent processes with broad privileges and a larger attack surface.
 
-### Reading
+notionctl is the alternative: **one shell command per operation**, shell-logged, `--dry-run`-able, and auditable line by line. Every action an agent takes is a visible terminal invocation.
 
-    notionctl whoami                          Show integration info
-    notionctl search <query>                  Search by title or content
-    notionctl resolve <url>                   Notion URL → ID
-    notionctl page get <id>                   Page as Markdown + front-matter
-    notionctl db query <id> [flags]           Query a database
-    notionctl db schema <id>                  Show property types
-    notionctl db row get <id>                 Single row as Markdown
-    notionctl block children <id> [--recursive]   Child blocks (optionally full subtree)
+## Security Model
 
-### Writing
+notionctl was designed so that a security team can audit the entire tool in an afternoon.
 
-    notionctl page create --parent <id> --title "X" [--from file.md]
-    notionctl page append <id> [--from file.md]
-    notionctl page update <id> [--from file.md]
-    notionctl page sync <file.md> [--force]
-    notionctl page duplicate <id> [--parent <id>] [--title "new title"]
-    notionctl page move <id> --to <parent-id>
-    notionctl page delete <id> --yes
-    notionctl db create --parent <page-id> --title "X" [--prop Name=type[:options] ...]
-    notionctl db update <id> [--title X] [--add-prop ...] [--remove-prop ...] [--rename-prop Old=New]
-    notionctl db row create <db-id> [--prop Key=value ...]
-    notionctl db row update <page-id> [--prop Key=value ...]
-    notionctl comment add <page-id> --text "..."
+- **Zero runtime dependencies.** The entire codebase is hand-written TypeScript compiled to ES modules. No `node_modules`. No transitive supply chain risk.
+- **Single network file.** All outbound traffic goes through `src/http.ts`, hardcoded to `https://api.notion.com`. No `--api-base` flag, no proxy support, no way to redirect the token.
+- **Single secrets file.** Token access is isolated to `src/auth.ts`. Tokens live in `NOTION_TOKEN` or a mode-0600 config file. Tokens never appear in logs, errors, or stdout.
+- **Automated security tests.** `npm run test:security` runs grep-based source tree assertions that encode these invariants. They fail the build on drift:
+  - Only `http.ts` calls `fetch()`
+  - Only `auth.ts` reads the config path
+  - No hardcoded token patterns in source
+  - No non-Node-builtin imports
+  - Only `api.notion.com` URLs in source
+- **Dry-run everything.** Every write command supports `--dry-run` to preview the payload without sending.
+- **Content-hashed sync.** `page sync` uses SHA-256 frontmatter hashing with drift detection to prevent accidental overwrites.
+- **No telemetry.** Zero outbound traffic beyond `api.notion.com`. Provable: `grep -r "https://" src/`.
 
-Nested Markdown lists (2-space indentation) are preserved on both the
-read and write paths — `page get` renders children with indentation and
-`page create/update/sync` creates the corresponding nested block tree.
+## Command Surface
 
-### Query filter DSL
+42 commands across 8 categories. Full reference: [docs/COMMANDS.md](docs/COMMANDS.md).
 
-`db query --filter` supports these operators per property type:
+### Pages
 
-| Type         | Operators                        | Example                  |
-|--------------|----------------------------------|--------------------------|
-| select       | `=`                              | `Status=Done`            |
-| status       | `=`                              | `Status=InReview`        |
-| checkbox     | `=`                              | `Done=true`              |
-| number       | `=` `>` `<` `>=` `<=`            | `Count>=10`              |
-| title        | `=` (contains)                   | `Name=PRD`               |
-| rich_text    | `=` (contains)                   | `Notes=ship`             |
-| date         | `=` `>` `<` `>=` `<=`            | `Due>2026-04-01`         |
-| multi_select | `=`, comma-separated = AND       | `Tags=urgent,important`  |
+```sh
+notionctl page get <id>                              # Read as Markdown
+notionctl page create --parent <id> --title "X"      # Create from Markdown
+notionctl page sync ./doc.md --parent <id>            # Bidirectional sync
+notionctl page find-replace <id> --find "v1" --replace "v2"
+notionctl page duplicate <id>
+notionctl page move <id> --to <parent-id>
+notionctl page open <id>                              # Open in browser
+notionctl page restore <id>                           # Undelete
+notionctl page delete <id> --yes
+```
 
-For anything outside this surface, use `--filter-json @file.json`.
+### Databases
 
-### Sync with drift detection
+```sh
+notionctl db create --parent <id> --title "Tasks" \
+  --prop Status=select:Todo,Doing,Done --prop Due=date
+notionctl db query <id> --filter "Status=Done" --sort "Due:desc"
+notionctl db schema <id>
+notionctl db row create <id> --prop "Name=Ship v2" --prop "Status=Todo"
+notionctl db row update <id> --prop "Status=Done"
+```
 
-`page sync <file.md>` is a content-hashed idempotent sync. Each sync
-stores `notion_synced_at` in the file's YAML frontmatter. On the next
-sync, if the remote page was edited in Notion after your last sync,
-`page sync` refuses to overwrite and tells you to fetch the remote
-version first. Override with `--force` if you're sure you want to
-clobber the remote.
+Filter DSL supports `=`, `>`, `<`, `>=`, `<=` across select, number, date, text, checkbox, and multi_select types. For complex filters: `--filter-json @filter.json`.
 
-### Escape hatch
+### Blocks, Files, Comments, Users
 
-    notionctl api GET /users/me
-    notionctl api POST /databases/<id>/query --body @filter.json
+```sh
+notionctl block children <id> --recursive     # Full page subtree
+notionctl block append <id> --from patch.md --after <block-id>
+notionctl file upload ./screenshot.png --parent <page-id>
+notionctl comment add <page-id> --text "LGTM"
+notionctl user list
+```
 
-Any Notion REST endpoint is reachable via `notionctl api`.
+### Auth
 
-## Inspired by
+```sh
+notionctl auth login --client-id <id> --client-secret <secret>  # OAuth
+notionctl auth set [--profile staging]                           # Token from stdin
+notionctl auth status                                            # Verify token
+notionctl auth doctor                                            # Full diagnostics
+```
 
-`notionctl` was written from scratch, but the design drew on patterns from:
+### Escape Hatch
 
-- [4ier/notion-cli](https://github.com/4ier/notion-cli) — command taxonomy, filter DSL, `api` escape hatch
-- [Coastal-Programs/notion-cli](https://github.com/Coastal-Programs/notion-cli) — structured error model
-- [lox/notion-cli](https://github.com/lox/notion-cli) — `page sync` with frontmatter ID
+Any Notion REST endpoint, with the CLI's auth and retry behavior:
+
+```sh
+notionctl api GET /users/me
+notionctl api POST /databases/<id>/query --body @filter.json
+```
+
+## Markdown Engine
+
+Bidirectional Markdown conversion with full fidelity:
+
+**Read:** headings, paragraphs, bullet/numbered/to-do lists (nested), code blocks, tables (GFM), quotes, callouts, toggles, dividers, images, equations, bold, italic, strikethrough, inline code, links.
+
+**Write:** all of the above. Nested lists use 2-space indentation and produce the corresponding nested block tree in Notion.
+
+## Sync with Drift Detection
+
+```sh
+notionctl page sync ./prd.md --parent <id>   # Creates page, writes notion_id to frontmatter
+# ...edit locally...
+notionctl page sync ./prd.md                 # Updates only if local content changed
+```
+
+Each sync stores a SHA-256 content hash and timestamp in the file's YAML frontmatter. On subsequent syncs, if someone edited the page in Notion after your last sync, notionctl **refuses to overwrite** and tells you to fetch the remote version first. Override with `--force`.
+
+## Output Formats
+
+| Context | Default | Override |
+|---------|---------|----------|
+| TTY (interactive) | Human-friendly (table, Markdown) | `--format json` |
+| Piped (scripts) | JSON | `--format table` |
+
+All commands support `--format md|json|table|csv`.
+
+## Testing
+
+246 automated tests. Zero test framework dependencies (uses Node.js built-in `node:test`).
+
+```sh
+npm test                    # Full suite
+npm run test:security       # Security invariant checks
+```
+
+Full test coverage breakdown: [docs/TESTING.md](docs/TESTING.md).
+
+## Inspired By
+
+notionctl was written from scratch, but drew on patterns from:
+
+- [4ier/notion-cli](https://github.com/4ier/notion-cli) -- command taxonomy, filter DSL, `api` escape hatch
+- [Coastal-Programs/notion-cli](https://github.com/Coastal-Programs/notion-cli) -- structured error model
+- [lox/notion-cli](https://github.com/lox/notion-cli) -- `page sync` with frontmatter ID
 
 ## License
 
-MIT. See `LICENSE`.
+MIT. See [LICENSE](LICENSE).
 
-## Security disclosure
+## Security Disclosure
 
-See `SECURITY.md` for the responsible disclosure process.
+See [SECURITY.md](SECURITY.md) for the responsible disclosure process.
