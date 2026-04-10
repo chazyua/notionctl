@@ -51,6 +51,9 @@ export function classifySyncState(input: ClassifyInput): SyncState {
 
   // Drift detection: if remote was edited after our last sync, the remote
   // has diverged and we refuse to blindly overwrite without --force.
+  // LIMITATION: Notion's last_edited_time has minute precision (truncated to :00.000Z).
+  // Edits within the same minute as our last sync cannot be detected as drift because
+  // the timestamp doesn't change. This is at most a ~59-second window.
   const lastSyncedAt = input.frontmatter.notion_synced_at;
   if (input.remoteEditedAt && typeof lastSyncedAt === "string") {
     const remoteTime = new Date(input.remoteEditedAt).getTime();

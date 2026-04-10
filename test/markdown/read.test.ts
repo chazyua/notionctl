@@ -386,3 +386,50 @@ describe("blocksToMarkdown nested lists", () => {
     assert.match(out, /md\\\|json\\\|csv/, "pipes in cell content should be escaped");
   });
 });
+
+describe("blocksToMarkdown — blockquote multi-line (BUG-1 regression)", () => {
+  it("multi-line quote rich_text gets > prefix on every line", () => {
+    const block = mkBlock("quote", {
+      rich_text: [rt("Line one\nLine two\nLine three")],
+      color: "default",
+    });
+    const out = blocksToMarkdown([block]);
+    assert.equal(out, "> Line one\n> Line two\n> Line three");
+  });
+
+  it("single-line quote still works", () => {
+    const block = mkBlock("quote", {
+      rich_text: [rt("Single line")],
+      color: "default",
+    });
+    const out = blocksToMarkdown([block]);
+    assert.equal(out, "> Single line");
+  });
+
+  it("quote with children prefixes children too", () => {
+    const child = mkBlock("paragraph", { rich_text: [rt("Child paragraph")], color: "default" });
+    const block = {
+      ...mkBlock("quote", { rich_text: [rt("Quote text")], color: "default" }),
+      _children: [child],
+    };
+    const out = blocksToMarkdown([block as unknown as Block]);
+    assert.ok(out.includes("> Quote text"), "quote text has > prefix");
+    assert.ok(out.includes("> Child paragraph"), "child has > prefix");
+  });
+
+  it("multi-line quote with children prefixes all lines", () => {
+    const child = mkBlock("bulleted_list_item", {
+      rich_text: [rt("list item")],
+      color: "default",
+    });
+    const block = {
+      ...mkBlock("quote", { rich_text: [rt("First\nSecond")], color: "default" }),
+      _children: [child],
+    };
+    const out = blocksToMarkdown([block as unknown as Block]);
+    const lines = out.split("\n");
+    for (const line of lines) {
+      assert.ok(line.startsWith("> "), `all lines must start with "> " but got: "${line}"`);
+    }
+  });
+});

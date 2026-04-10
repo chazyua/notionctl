@@ -140,31 +140,57 @@ export function markdownToBlocks(md: string): Block[] {
     if (/^>\s+\[!(NOTE|TIP|WARNING|IMPORTANT|CAUTION)\]/i.test(trimmed)) {
       const alertMatch = /^>\s+\[!(NOTE|TIP|WARNING|IMPORTANT|CAUTION)\]\s*(.*)$/i.exec(trimmed);
       const alertType = (alertMatch?.[1] ?? "NOTE").toUpperCase();
-      let calloutText = alertMatch?.[2] ?? "";
+      const firstLine = alertMatch?.[2] ?? "";
       i++;
-      // Collect continuation lines (> text)
+      // Collect continuation lines (> text or bare >), stripping the > prefix
+      const continuationLines: string[] = [];
+      if (firstLine) continuationLines.push(firstLine);
       while (i < lines.length) {
         const next = lines[i]!.trim();
         const iconMatch = /^<!--\s*icon:\s*(\S+)\s*-->$/.exec(next);
         const colorMatch = /^<!--\s*color:\s*(\S+)\s*-->$/.exec(next);
         if (iconMatch || colorMatch) { i++; continue; } // skip sidecar comments
         if (/^>\s/.test(next)) {
-          calloutText += (calloutText ? " " : "") + next.slice(2);
+          continuationLines.push(next.slice(2));
+          i++;
+          continue;
+        }
+        if (next === ">") {
+          // Bare > is a blank continuation line (paragraph break within callout)
+          continuationLines.push("");
           i++;
           continue;
         }
         break;
       }
+      // Parse continuation as markdown to detect child block structure
+      const innerMd = continuationLines.join("\n").trim();
+      const childBlocks = innerMd.length > 0 ? markdownToBlocks(innerMd) : [];
+      // First child paragraph becomes the callout's rich_text; rest become children
+      let calloutText = "";
+      let calloutChildren: Block[] = [];
+      if (childBlocks.length > 0 && childBlocks[0]!.type === "paragraph") {
+        calloutText = (childBlocks[0]!.paragraph as { rich_text: RichText[] }).rich_text
+          .map((r) => r.plain_text).join("");
+        calloutChildren = childBlocks.slice(1);
+      } else if (childBlocks.length > 0) {
+        // No leading paragraph — put everything in children, use empty rich_text
+        calloutChildren = childBlocks;
+      } else {
+        calloutText = innerMd;
+      }
+      const calloutData: any = {
+        rich_text: markdownToRichText(calloutText),
+        icon: { type: "emoji", emoji: ALERT_TYPE_TO_EMOJI[alertType] ?? "💡" },
+        color: ALERT_TYPE_TO_COLOR[alertType] ?? "default",
+      };
+      if (calloutChildren.length > 0) calloutData.children = calloutChildren;
       blocks.push({
         object: "block",
         id: "",
         type: "callout",
-        has_children: false,
-        callout: {
-          rich_text: markdownToRichText(calloutText),
-          icon: { type: "emoji", emoji: ALERT_TYPE_TO_EMOJI[alertType] ?? "💡" },
-          color: ALERT_TYPE_TO_COLOR[alertType] ?? "default",
-        },
+        has_children: calloutChildren.length > 0,
+        callout: calloutData,
       } as unknown as Block);
       continue;
     }
@@ -175,13 +201,17 @@ export function markdownToBlocks(md: string): Block[] {
       const inlineCloseMatch = /^<details>(?:<summary>(.*?)<\/summary>)?(.*?)<\/details>/i.exec(trimmed);
       if (inlineCloseMatch) {
         const summary = inlineCloseMatch[1] ?? "";
+        const bodyText = (inlineCloseMatch[2] ?? "").trim();
+        const childBlocks = bodyText.length > 0 ? markdownToBlocks(bodyText) : [];
         i++;
+        const toggleData: any = { rich_text: markdownToRichText(summary), color: "default" };
+        if (childBlocks.length > 0) toggleData.children = childBlocks;
         blocks.push({
           object: "block",
           id: "",
           type: "toggle",
-          has_children: false,
-          toggle: { rich_text: markdownToRichText(summary), color: "default" },
+          has_children: childBlocks.length > 0,
+          toggle: toggleData,
         } as unknown as Block);
         continue;
       }
@@ -291,7 +321,10 @@ export function markdownToBlocks(md: string): Block[] {
         } as unknown as Block,
       ];
       while (i < lines.length && /^\|.*\|$/.test(lines[i]!.trim())) {
-        const rowCells = parseTableRow(lines[i]!.trim());
+        let rowCells = parseTableRow(lines[i]!.trim());
+        // Normalize cell count to match header width (Notion API requires uniform width)
+        if (rowCells.length > headerCells.length) rowCells = rowCells.slice(0, headerCells.length);
+        while (rowCells.length < headerCells.length) rowCells.push("");
         rowBlocks.push({
           object: "block",
           id: "",

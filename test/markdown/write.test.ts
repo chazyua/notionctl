@@ -436,3 +436,100 @@ describe("blockquote parsing", () => {
   });
 });
 
+describe("markdownToBlocks — inline details body preservation (BUG-2 regression)", () => {
+  it("inline details with body creates toggle with children", () => {
+    const md = "<details><summary>Title</summary>Body content here</details>";
+    const blocks = markdownToBlocks(md);
+    assert.equal(blocks.length, 1);
+    assert.equal(blocks[0]!.type, "toggle");
+    assert.equal((blocks[0] as any).has_children, true);
+    const children = (blocks[0] as any).toggle.children;
+    assert.ok(children && children.length > 0, "must have children");
+    assert.equal(children[0].type, "paragraph");
+    const text = children[0].paragraph.rich_text[0].plain_text;
+    assert.equal(text, "Body content here");
+  });
+
+  it("inline details without body creates empty toggle", () => {
+    const md = "<details><summary>Title</summary></details>";
+    const blocks = markdownToBlocks(md);
+    assert.equal(blocks.length, 1);
+    assert.equal(blocks[0]!.type, "toggle");
+    assert.equal((blocks[0] as any).has_children, false);
+  });
+
+  it("inline details does not consume next block", () => {
+    const md = "<details><summary>Toggle</summary>Body</details>\n\nNext paragraph.";
+    const blocks = markdownToBlocks(md);
+    assert.equal(blocks.length, 2);
+    assert.equal(blocks[0]!.type, "toggle");
+    assert.equal(blocks[1]!.type, "paragraph");
+  });
+});
+
+describe("markdownToBlocks — table column normalization (BUG-4 regression)", () => {
+  it("extra cells in data row are truncated to header width", () => {
+    const md = "| A | B |\n| --- | --- |\n| 1 | 2 | 3 | 4 |";
+    const blocks = markdownToBlocks(md);
+    assert.equal(blocks.length, 1);
+    assert.equal(blocks[0]!.type, "table");
+    const rows = (blocks[0] as any).table.children;
+    assert.equal(rows.length, 2); // header + 1 data row
+    assert.equal(rows[1].table_row.cells.length, 2, "extra cells must be truncated");
+  });
+
+  it("missing cells in data row are padded with empty", () => {
+    const md = "| A | B | C |\n| --- | --- | --- |\n| only one |";
+    const blocks = markdownToBlocks(md);
+    const rows = (blocks[0] as any).table.children;
+    assert.equal(rows[1].table_row.cells.length, 3, "must pad to header width");
+  });
+
+  it("uniform table is unchanged", () => {
+    const md = "| A | B |\n| --- | --- |\n| 1 | 2 |\n| 3 | 4 |";
+    const blocks = markdownToBlocks(md);
+    const rows = (blocks[0] as any).table.children;
+    assert.equal(rows.length, 3);
+    rows.forEach((r: any) => assert.equal(r.table_row.cells.length, 2));
+  });
+});
+
+describe("markdownToBlocks — callout child blocks (BUG-5/6 regression)", () => {
+  it("callout with list items creates children", () => {
+    const md = "> [!NOTE]\n> Intro text\n> - Item one\n> - Item two";
+    const blocks = markdownToBlocks(md);
+    assert.equal(blocks.length, 1);
+    assert.equal(blocks[0]!.type, "callout");
+    assert.equal((blocks[0] as any).has_children, true);
+    const children = (blocks[0] as any).callout.children;
+    assert.ok(children && children.length >= 1, "must have children for list items");
+    const listChildren = children.filter((c: any) => c.type === "bulleted_list_item");
+    assert.equal(listChildren.length, 2, "two list items as children");
+  });
+
+  it("callout blank continuation line does not terminate early", () => {
+    const md = "> [!WARNING]\n> First part\n>\n> Second part";
+    const blocks = markdownToBlocks(md);
+    assert.equal(blocks.length, 1, "should be one callout, not split");
+    assert.equal(blocks[0]!.type, "callout");
+    // Both parts should be represented
+    const callout = (blocks[0] as any).callout;
+    const mainText = callout.rich_text.map((r: any) => r.plain_text).join("");
+    const childTexts = (callout.children ?? []).map(
+      (c: any) => (c.paragraph?.rich_text ?? []).map((r: any) => r.plain_text).join("")
+    ).join(" ");
+    const allText = mainText + " " + childTexts;
+    assert.ok(allText.includes("First part"), "first part preserved");
+    assert.ok(allText.includes("Second part"), "second part preserved");
+  });
+
+  it("simple single-line callout still works", () => {
+    const md = "> [!TIP]\n> Just a simple tip";
+    const blocks = markdownToBlocks(md);
+    assert.equal(blocks.length, 1);
+    assert.equal(blocks[0]!.type, "callout");
+    const text = (blocks[0] as any).callout.rich_text.map((r: any) => r.plain_text).join("");
+    assert.equal(text, "Just a simple tip");
+  });
+});
+

@@ -262,6 +262,10 @@ Comprehensive test scenarios for notionctl. Use this for manual dogfooding, regr
 - [M] Empty file is rejected
 - [M] `--dry-run` shows file info without uploading
 - [M] Correct MIME type detected from extension
+- [M] Unsupported extension (e.g. `.ts`, `.py`, `.go`) auto-renamed to `.ext.txt` with stderr warning
+- [M] Supported extensions (see `NOTION_SUPPORTED_EXTENSIONS` in `file.ts`) upload unchanged
+- [M] Files with no extension (e.g. `Dockerfile`) fall back to `.txt`
+- [M] Output includes `originalName`, `uploadName`, and `fallback: true` when renamed
 
 ---
 

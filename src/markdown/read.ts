@@ -104,12 +104,13 @@ function renderBlock(block: Block, depth: number, numberedIndex: number): string
     case "quote": {
       const quoteText = richTextToMarkdown(block.quote.rich_text);
       const quoteChildren = (block as any)._children as Block[] | undefined;
+      const quotePrefixed = quoteText.split("\n").map((l) => `> ${l}`).join("\n");
       if (quoteChildren && quoteChildren.length > 0) {
         const childMd = blocksToMarkdown(quoteChildren);
         const childLines = childMd.split("\n").map((l) => `> ${l}`).join("\n");
-        return `> ${quoteText}\n${childLines}`;
+        return `${quotePrefixed}\n${childLines}`;
       }
-      return `> ${quoteText}`;
+      return quotePrefixed;
     }
     case "code": {
       const lang = block.code.language === "plain text" ? "" : block.code.language;

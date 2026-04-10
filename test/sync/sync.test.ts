@@ -92,4 +92,34 @@ describe("classifySyncState", () => {
     });
     assert.equal(state, SyncState.CHANGED);
   });
+
+  it("DRIFT detected when remote edited in a later minute (BUG-3 context)", () => {
+    // Notion's last_edited_time has minute precision.
+    // sync at 10:05:45, remote edit in a later minute (10:06:00) → DRIFT
+    const state = classifySyncState({
+      frontmatter: {
+        notion_id: "abc",
+        notion_hash: "sha256:stale",
+        notion_synced_at: "2026-04-01T10:05:45.000Z",
+      },
+      localBody: "# Updated",
+      remoteEditedAt: "2026-04-01T10:06:00.000Z",
+    });
+    assert.equal(state, SyncState.DRIFT);
+  });
+
+  it("CHANGED (not DRIFT) when remote time is same minute as sync (Notion API limitation)", () => {
+    // Notion truncates to minute precision, so remote edit at 10:05:50 shows as 10:05:00
+    // which is less than sync time 10:05:45 → cannot detect drift (known limitation)
+    const state = classifySyncState({
+      frontmatter: {
+        notion_id: "abc",
+        notion_hash: "sha256:stale",
+        notion_synced_at: "2026-04-01T10:05:45.000Z",
+      },
+      localBody: "# Updated",
+      remoteEditedAt: "2026-04-01T10:05:00.000Z",
+    });
+    assert.equal(state, SyncState.CHANGED);
+  });
 });
