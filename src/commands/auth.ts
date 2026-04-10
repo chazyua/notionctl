@@ -192,10 +192,14 @@ export async function authClearCommand(ctx: { args: string[] }): Promise<string>
 const OAUTH_TIMEOUT_MS = 300_000;
 const DEFAULT_OAUTH_PORT = 9876;
 
+function escapeHtml(s: string): string {
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+
 function oauthHtml(title: string, message: string): string {
   return `<!DOCTYPE html><html><head><title>notionctl</title></head>`
     + `<body style="font-family:system-ui,sans-serif;text-align:center;padding:3em">`
-    + `<h1>${title}</h1><p>${message}</p></body></html>`;
+    + `<h1>${escapeHtml(title)}</h1><p>${escapeHtml(message)}</p></body></html>`;
 }
 
 function openBrowser(url: string): void {

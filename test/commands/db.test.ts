@@ -224,3 +224,71 @@ describe("parseColumnSpec", () => {
     assert.throws(() => parseColumnSpec("JustName"), /Invalid column spec/);
   });
 });
+
+describe("parseSimpleFilter — additional types", () => {
+  it("title filter uses contains", () => {
+    const s = schema({ Title: { type: "title" } });
+    assert.deepEqual(parseSimpleFilter("Title=search term", s), {
+      property: "Title",
+      title: { contains: "search term" },
+    });
+  });
+
+  it("rich_text filter uses contains", () => {
+    const s = schema({ Desc: { type: "rich_text" } });
+    assert.deepEqual(parseSimpleFilter("Desc=some text", s), {
+      property: "Desc",
+      rich_text: { contains: "some text" },
+    });
+  });
+
+  it("checkbox filter with true", () => {
+    const s = schema({ Done: { type: "checkbox" } });
+    assert.deepEqual(parseSimpleFilter("Done=true", s), {
+      property: "Done",
+      checkbox: { equals: true },
+    });
+  });
+
+  it("checkbox filter with false", () => {
+    const s = schema({ Done: { type: "checkbox" } });
+    assert.deepEqual(parseSimpleFilter("Done=false", s), {
+      property: "Done",
+      checkbox: { equals: false },
+    });
+  });
+
+  it("status filter uses equals", () => {
+    const s = schema({ State: { type: "status" } });
+    assert.deepEqual(parseSimpleFilter("State=In Progress", s), {
+      property: "State",
+      status: { equals: "In Progress" },
+    });
+  });
+
+  it("select filter uses equals", () => {
+    const s = schema({ Priority: { type: "select" } });
+    assert.deepEqual(parseSimpleFilter("Priority=High", s), {
+      property: "Priority",
+      select: { equals: "High" },
+    });
+  });
+
+  it("number with negative value", () => {
+    const s = schema({ Score: { type: "number" } });
+    // Note: "-5" starts with "-" and the findOperator sees "=" first
+    const result = parseSimpleFilter("Score=-5", s);
+    assert.deepEqual(result, {
+      property: "Score",
+      number: { equals: -5 },
+    });
+  });
+
+  it("number with zero", () => {
+    const s = schema({ Count: { type: "number" } });
+    assert.deepEqual(parseSimpleFilter("Count=0", s), {
+      property: "Count",
+      number: { equals: 0 },
+    });
+  });
+});

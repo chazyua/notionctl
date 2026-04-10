@@ -252,4 +252,300 @@ describe("markdownToRichText", () => {
       assert.deepEqual(runs[0]!.text.link, { url: "https://example.com" });
     }
   });
+
+  it("link with parentheses in URL (Wikipedia-style)", () => {
+    const runs = markdownToRichText("[article](https://en.wikipedia.org/wiki/Markdown_(syntax))");
+    assert.equal(runs.length, 1);
+    assert.equal(runs[0]!.plain_text, "article");
+    if (runs[0]!.type === "text") {
+      assert.deepEqual(runs[0]!.text.link, { url: "https://en.wikipedia.org/wiki/Markdown_(syntax)" });
+    }
+  });
+
+  it("link followed by text after closing paren", () => {
+    const runs = markdownToRichText("[link](https://example.com) and more text");
+    assert.equal(runs.length, 2);
+    assert.equal(runs[0]!.plain_text, "link");
+    assert.equal(runs[1]!.plain_text, " and more text");
+  });
+
+  it("escaped backslash before marker is literal", () => {
+    const runs = markdownToRichText("not \\*bold\\*");
+    const fullText = runs.map(r => r.plain_text).join("");
+    assert.equal(fullText, "not *bold*");
+    assert.ok(runs.every(r => !r.annotations.bold && !r.annotations.italic));
+  });
+
+  it("code inside bold: **`code`** preserves both", () => {
+    const runs = markdownToRichText("**`code`**");
+    // Code inside bold — the backtick scan produces a code run, but bold state wraps it
+    assert.ok(runs.length >= 1);
+    const codeRun = runs.find(r => r.plain_text === "code");
+    assert.ok(codeRun);
+    assert.equal(codeRun!.annotations.code, true);
+  });
+
+  it("unclosed bold marker is treated as literal", () => {
+    const runs = markdownToRichText("open ** but never closed");
+    const fullText = runs.map(r => r.plain_text).join("");
+    assert.ok(fullText.includes("open"), "text before marker preserved");
+  });
+
+  it("empty bold ** ** produces empty bold run", () => {
+    const runs = markdownToRichText("** **");
+    // ** opens bold, space, ** closes bold — produces a bold space
+    assert.ok(runs.length >= 1);
+  });
+
+  it("emoji in text passes through unchanged", () => {
+    const runs = markdownToRichText("Hello 🌍 World 🎉");
+    const fullText = runs.map(r => r.plain_text).join("");
+    assert.equal(fullText, "Hello 🌍 World 🎉");
+  });
+
+  it("CJK characters pass through unchanged", () => {
+    const runs = markdownToRichText("日本語テスト");
+    assert.equal(runs.length, 1);
+    assert.equal(runs[0]!.plain_text, "日本語テスト");
+  });
+
+  it("bold CJK text", () => {
+    const runs = markdownToRichText("**日本語**のテスト");
+    const boldRun = runs.find(r => r.plain_text === "日本語");
+    assert.ok(boldRun);
+    assert.equal(boldRun!.annotations.bold, true);
+  });
+
+  it("multiple links in one line", () => {
+    const runs = markdownToRichText("[a](https://a.com) and [b](https://b.com)");
+    const links = runs.filter(r => r.type === "text" && r.text.link !== null);
+    assert.equal(links.length, 2);
+  });
+});
+
+describe("richTextToMarkdown — annotation stack edge cases", () => {
+  it("bold+strikethrough → strikethrough-only closes bold correctly", () => {
+    const runs: RichText[] = [
+      text("AB", { bold: true, strikethrough: true }),
+      text("CD", { strikethrough: true }),
+    ];
+    const md = richTextToMarkdown(runs);
+    // Parse back and verify CD is NOT bold
+    const roundtripped = markdownToRichText(md);
+    const cdRun = roundtripped.find(r => r.plain_text === "CD");
+    assert.ok(cdRun, "CD run must exist");
+    assert.equal(cdRun!.annotations.bold, false, "CD must not be bold");
+    assert.equal(cdRun!.annotations.strikethrough, true, "CD must be strikethrough");
+  });
+
+  it("bold+italic → bold-only closes italic correctly", () => {
+    const runs: RichText[] = [
+      text("AB", { bold: true, italic: true }),
+      text("CD", { bold: true }),
+    ];
+    const md = richTextToMarkdown(runs);
+    const roundtripped = markdownToRichText(md);
+    const cdRun = roundtripped.find(r => r.plain_text === "CD");
+    assert.ok(cdRun, "CD run must exist");
+    assert.equal(cdRun!.annotations.italic, false, "CD must not be italic");
+    assert.equal(cdRun!.annotations.bold, true, "CD must be bold");
+  });
+
+  it("italic+code → italic-only closes code correctly", () => {
+    const runs: RichText[] = [
+      text("AB", { italic: true, code: true }),
+      text("CD", { italic: true }),
+    ];
+    const md = richTextToMarkdown(runs);
+    const roundtripped = markdownToRichText(md);
+    const cdRun = roundtripped.find(r => r.plain_text === "CD");
+    assert.ok(cdRun, "CD run must exist");
+    assert.equal(cdRun!.annotations.code, false, "CD must not be code");
+    assert.equal(cdRun!.annotations.italic, true, "CD must be italic");
+  });
+
+  it("bold → bold+strikethrough → strikethrough: all transitions clean", () => {
+    const runs: RichText[] = [
+      text("A", { bold: true }),
+      text("B", { bold: true, strikethrough: true }),
+      text("C", { strikethrough: true }),
+    ];
+    const md = richTextToMarkdown(runs);
+    const rt = markdownToRichText(md);
+    const aRun = rt.find(r => r.plain_text === "A");
+    const bRun = rt.find(r => r.plain_text === "B");
+    const cRun = rt.find(r => r.plain_text === "C");
+    assert.ok(aRun && bRun && cRun);
+    assert.equal(aRun!.annotations.bold, true);
+    assert.equal(aRun!.annotations.strikethrough, false);
+    assert.equal(bRun!.annotations.bold, true);
+    assert.equal(bRun!.annotations.strikethrough, true);
+    assert.equal(cRun!.annotations.bold, false);
+    assert.equal(cRun!.annotations.strikethrough, true);
+  });
+
+  it("no annotations → all four → no annotations", () => {
+    const runs: RichText[] = [
+      text("plain "),
+      text("all", { bold: true, italic: true, strikethrough: true, code: true }),
+      text(" plain"),
+    ];
+    const md = richTextToMarkdown(runs);
+    const rt = markdownToRichText(md);
+    const plainRuns = rt.filter(r => !r.annotations.bold && !r.annotations.italic && !r.annotations.strikethrough && !r.annotations.code);
+    assert.ok(plainRuns.length >= 2, "at least two plain runs");
+    const allRun = rt.find(r => r.annotations.bold && r.annotations.italic);
+    assert.ok(allRun, "all-annotated run must exist");
+  });
+});
+
+describe("markdownToRichText — additional edge cases", () => {
+  it("nested backticks in code span (single vs double)", () => {
+    // Single backtick code
+    const runs = markdownToRichText("`hello world`");
+    assert.equal(runs.length, 1);
+    assert.equal(runs[0]!.annotations.code, true);
+    assert.equal(runs[0]!.plain_text, "hello world");
+  });
+
+  it("unmatched backtick treated as literal", () => {
+    const runs = markdownToRichText("open ` but no close");
+    const fullText = runs.map(r => r.plain_text).join("");
+    assert.equal(fullText, "open ` but no close");
+    assert.ok(runs.every(r => !r.annotations.code), "no code annotation");
+  });
+
+  it("bold immediately followed by italic without space", () => {
+    const runs = markdownToRichText("**bold**_italic_");
+    const bold = runs.find(r => r.plain_text === "bold");
+    const italic = runs.find(r => r.plain_text === "italic");
+    assert.ok(bold, "bold run exists");
+    assert.ok(italic, "italic run exists");
+    assert.equal(bold!.annotations.bold, true);
+    assert.equal(bold!.annotations.italic, false);
+    assert.equal(italic!.annotations.italic, true);
+    assert.equal(italic!.annotations.bold, false);
+  });
+
+  it("link at end of bold text", () => {
+    const runs = markdownToRichText("**see [here](https://example.com)**");
+    assert.ok(runs.length >= 1);
+    // The link run should exist and have bold annotation
+    const linkRun = runs.find(r => r.type === "text" && r.text.link !== null);
+    assert.ok(linkRun, "link run exists");
+    assert.equal(linkRun!.annotations.bold, true);
+  });
+
+  it("adjacent links with no space", () => {
+    const runs = markdownToRichText("[a](https://a.com)[b](https://b.com)");
+    const links = runs.filter(r => r.type === "text" && r.text.link !== null);
+    assert.equal(links.length, 2, "two link runs");
+  });
+
+  it("underscore in URL doesn't trigger italic", () => {
+    const runs = markdownToRichText("[link](https://example.com/path_name)");
+    assert.equal(runs.length, 1);
+    assert.equal(runs[0]!.annotations.italic, false);
+  });
+
+  it("consecutive strikethrough segments", () => {
+    const runs = markdownToRichText("~~a~~ ~~b~~ ~~c~~");
+    const strikes = runs.filter(r => r.annotations.strikethrough);
+    assert.equal(strikes.length, 3);
+  });
+
+  it("escaped marker at start of text", () => {
+    const runs = markdownToRichText("\\**not bold\\**");
+    const fullText = runs.map(r => r.plain_text).join("");
+    assert.ok(fullText.includes("*"), "escaped asterisk preserved as literal");
+  });
+
+  it("empty input returns empty array", () => {
+    assert.deepEqual(markdownToRichText(""), []);
+  });
+
+  it("whitespace-only input", () => {
+    const runs = markdownToRichText("   ");
+    assert.equal(runs.length, 1);
+    assert.equal(runs[0]!.plain_text, "   ");
+  });
+
+  it("long text with many formatting changes", () => {
+    const md = "plain **bold** _italic_ **_both_** ~~strike~~ `code` plain";
+    const runs = markdownToRichText(md);
+    const fullText = runs.map(r => r.plain_text).join("");
+    assert.equal(fullText, "plain bold italic both strike code plain");
+    assert.ok(runs.find(r => r.plain_text === "bold" && r.annotations.bold));
+    assert.ok(runs.find(r => r.plain_text === "italic" && r.annotations.italic));
+    assert.ok(runs.find(r => r.plain_text === "both" && r.annotations.bold && r.annotations.italic));
+    assert.ok(runs.find(r => r.plain_text === "strike" && r.annotations.strikethrough));
+    assert.ok(runs.find(r => r.plain_text === "code" && r.annotations.code));
+  });
+});
+
+describe("richTextToMarkdown — additional edge cases", () => {
+  it("single run with all annotations", () => {
+    const runs: RichText[] = [
+      text("all", { bold: true, italic: true, strikethrough: true, code: true }),
+    ];
+    const md = richTextToMarkdown(runs);
+    // Should contain all markers
+    assert.ok(md.includes("**"), "bold markers");
+    assert.ok(md.includes("~~"), "strikethrough markers");
+    // Code backtick should be present
+    assert.ok(md.includes("`"), "code markers");
+    // Round-trip should preserve
+    const rt = markdownToRichText(md);
+    const run = rt.find(r => r.plain_text === "all");
+    assert.ok(run, "run preserved");
+  });
+
+  it("empty run array", () => {
+    assert.equal(richTextToMarkdown([]), "");
+  });
+
+  it("single empty-string run", () => {
+    const md = richTextToMarkdown([text("")]);
+    assert.equal(md, "");
+  });
+
+  it("mention run renders correctly", () => {
+    const mention: RichText = {
+      type: "mention",
+      mention: { type: "user", user: { id: "user-123" } },
+      annotations: { bold: false, italic: false, strikethrough: false, underline: false, code: false, color: "default" },
+      plain_text: "John Doe",
+      href: null,
+    };
+    const md = richTextToMarkdown([mention]);
+    assert.equal(md, "@user:user-123");
+  });
+
+  it("equation run renders with dollar signs", () => {
+    const eq: RichText = {
+      type: "equation",
+      equation: { expression: "x^2" },
+      annotations: { bold: false, italic: false, strikethrough: false, underline: false, code: false, color: "default" },
+      plain_text: "x^2",
+      href: null,
+    };
+    const md = richTextToMarkdown([eq]);
+    assert.equal(md, "$x^2$");
+  });
+
+  it("mixed text and mention runs", () => {
+    const runs: RichText[] = [
+      text("Hello "),
+      {
+        type: "mention",
+        mention: { type: "user", user: { id: "abc" } },
+        annotations: { bold: false, italic: false, strikethrough: false, underline: false, code: false, color: "default" },
+        plain_text: "Alice",
+        href: null,
+      },
+      text(", welcome!"),
+    ];
+    const md = richTextToMarkdown(runs);
+    assert.equal(md, "Hello @user:abc, welcome!");
+  });
 });

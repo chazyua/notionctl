@@ -161,17 +161,37 @@ export function markdownToBlocks(md: string): Block[] {
       continue;
     }
 
-    // Equation block
-    if (/^\$\$.*\$\$$/.test(trimmed)) {
-      const expr = trimmed.slice(2, -2);
-      blocks.push({
-        object: "block",
-        id: "",
-        type: "equation",
-        has_children: false,
-        equation: { expression: expr },
-      } as unknown as Block);
-      i++;
+    // Equation block — single-line $$expr$$ or multi-line $$ ... $$
+    if (/^\$\$/.test(trimmed)) {
+      if (/^\$\$.+\$\$$/.test(trimmed)) {
+        // Single-line: $$expr$$
+        const expr = trimmed.slice(2, -2);
+        blocks.push({
+          object: "block",
+          id: "",
+          type: "equation",
+          has_children: false,
+          equation: { expression: expr },
+        } as unknown as Block);
+        i++;
+      } else {
+        // Multi-line: opening $$ on its own line
+        const eqLines: string[] = [];
+        if (trimmed.length > 2) eqLines.push(trimmed.slice(2)); // text after opening $$
+        i++;
+        while (i < lines.length && !/^\$\$\s*$/.test(lines[i]!.trim())) {
+          eqLines.push(lines[i]!);
+          i++;
+        }
+        i++; // consume closing $$
+        blocks.push({
+          object: "block",
+          id: "",
+          type: "equation",
+          has_children: false,
+          equation: { expression: eqLines.join("\n") },
+        } as unknown as Block);
+      }
       continue;
     }
 
@@ -251,7 +271,11 @@ function isBlockStart(line: string): boolean {
     /^\d+\.\s/.test(t) ||
     /^>\s/.test(t) ||
     /^```/.test(t) ||
-    /^---$/.test(t)
+    /^[-*_]{3,}\s*$/.test(t) ||
+    /^\|.*\|$/.test(t) ||
+    /^\$\$/.test(t) ||
+    /^<details>/i.test(t) ||
+    /^<!--\s*notion-block:/.test(t)
   );
 }
 
@@ -297,7 +321,8 @@ function parseListSection(lines: string[], startIdx: number): { blocks: Block[];
     rawItems.push(parsed);
     i++;
   }
-  return { blocks: buildListTree(rawItems).map(listItemToBlock), nextIdx: i };
+  const tree = capListDepth(buildListTree(rawItems));
+  return { blocks: tree.map(listItemToBlock), nextIdx: i };
 }
 
 function classifyListLine(line: string): Omit<ListItem, "children"> | null {
@@ -334,6 +359,37 @@ function buildListTree(flat: Omit<ListItem, "children">[]): ListItem[] {
     stack.push(item);
   }
   return roots;
+}
+
+/**
+ * Notion API allows max 2 levels of nested children (block → child → grandchild).
+ * Items deeper than that are promoted up to the deepest allowed parent so
+ * content is never silently dropped.
+ */
+const MAX_CHILD_DEPTH = 2;
+
+function capListDepth(items: ListItem[], depth: number = 0): ListItem[] {
+  const result: ListItem[] = [];
+  for (const item of items) {
+    if (depth + 1 >= MAX_CHILD_DEPTH) {
+      // This item's children would exceed the limit. Promote all
+      // descendants to be siblings of this item (at the same level).
+      result.push({ ...item, children: [] });
+      result.push(...collectDescendants(item.children).map((c) => ({ ...c, children: [] })));
+    } else {
+      result.push({ ...item, children: capListDepth(item.children, depth + 1) });
+    }
+  }
+  return result;
+}
+
+function collectDescendants(items: ListItem[]): ListItem[] {
+  const result: ListItem[] = [];
+  for (const item of items) {
+    result.push(item);
+    result.push(...collectDescendants(item.children));
+  }
+  return result;
 }
 
 function listItemToBlock(item: ListItem): Block {

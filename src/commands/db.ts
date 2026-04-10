@@ -14,6 +14,7 @@ import { renderProperty } from "../properties/render.js";
 import { resolvePageId, parseFlags, getBooleanFlag, fetchWith404Hint } from "./shared.js";
 import { markdownToBlocks, blocksToMarkdown } from "../markdown/index.js";
 import type { Block } from "../markdown/index.js";
+import { fetchBlockTree } from "../blocks.js";
 import { NotionCliError, ErrorCode } from "../errors.js";
 import { renderJson, renderTable, renderCsv, chooseFormat, isStdoutTty, type Format } from "../output.js";
 import { stringifyYaml, type YamlObject } from "../utils/yaml.js";
@@ -395,19 +396,19 @@ export async function dbRowGetCommand(ctx: { args: string[] }): Promise<string> 
   }
   const id = resolvePageId(positional[0]!);
   const page = await notionRequest<{ properties: Record<string, unknown> }>("GET", `/pages/${id}`);
-  const children = await notionRequest<{ results: Block[] }>("GET", `/blocks/${id}/children`);
+  const childBlocks = await fetchBlockTree(id);
   const format = chooseFormat(flags.get("format") as Format | undefined, {
     isTty: isStdoutTty(),
     defaultFormat: "md",
   });
-  if (format === "json") return renderJson({ page, children: children.results });
+  if (format === "json") return renderJson({ page, children: childBlocks });
 
   const frontmatter: YamlObject = { notion_id: id };
   for (const [name, value] of Object.entries(page.properties)) {
     const rendered = renderProperty(value);
     if (rendered !== null && rendered !== undefined) frontmatter[name] = rendered;
   }
-  return `---\n${stringifyYaml(frontmatter)}\n---\n\n${blocksToMarkdown(children.results)}`;
+  return `---\n${stringifyYaml(frontmatter)}\n---\n\n${blocksToMarkdown(childBlocks)}`;
 }
 
 export async function dbRowCreateCommand(ctx: { args: string[] }): Promise<string> {

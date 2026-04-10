@@ -31,11 +31,33 @@ export function richTextToMarkdown(runs: RichText[]): string {
     const desired = activeMarkers(run.annotations);
     const hasLink = isLinkRun(run);
 
-    // Determine which open markers must close (any currently open that
-    // are not in `desired`) — close them in reverse order.
-    while (openStack.length > 0 && !desired.includes(openStack[openStack.length - 1]!)) {
+    // Find the deepest stack marker that must close (not in desired).
+    // Everything above it must also close, even if still desired — we'll
+    // re-open those after the unwanted marker is gone.
+    let mustCloseFrom = openStack.length;
+    for (let j = 0; j < openStack.length; j++) {
+      if (!desired.includes(openStack[j]!)) {
+        mustCloseFrom = j;
+        break;
+      }
+    }
+
+    // Close from top down to mustCloseFrom, collecting markers that
+    // need to re-open because they're still in `desired`.
+    const toReopen: MarkerKey[] = [];
+    while (openStack.length > mustCloseFrom) {
       const top = openStack.pop()!;
       out += MARKERS[top];
+      if (desired.includes(top)) {
+        toReopen.push(top);
+      }
+    }
+
+    // Re-open markers that were closed prematurely (reverse to restore order).
+    for (let j = toReopen.length - 1; j >= 0; j--) {
+      const m = toReopen[j]!;
+      out += MARKERS[m];
+      openStack.push(m);
     }
 
     // Open any markers in `desired` that are not currently open.
@@ -46,8 +68,25 @@ export function richTextToMarkdown(runs: RichText[]): string {
       }
     }
 
-    // Emit the run content
+    // Guard against intraword underscore: if the last emitted char is `_`
+    // (italic close) and it sits between two word characters, the write-path
+    // parser would treat it as literal. Force-close and re-open remaining
+    // markers so the `_` is surrounded by marker chars, not word chars.
     const content = runContent(run);
+    const firstContentChar = hasLink ? "[" : (content[0] ?? "");
+    if (
+      out.length >= 2 &&
+      out[out.length - 1] === "_" &&
+      /\w/.test(out[out.length - 2]!) &&
+      /\w/.test(firstContentChar) &&
+      openStack.length > 0
+    ) {
+      const remaining = [...openStack];
+      while (openStack.length > 0) out += MARKERS[openStack.pop()!];
+      for (const m of remaining) { out += MARKERS[m]; openStack.push(m); }
+    }
+
+    // Emit the run content
     if (hasLink) {
       const url = linkUrl(run);
       out += `[${content}](${url})`;
@@ -237,7 +276,7 @@ function isIntraword(md: string, idx: number): boolean {
 }
 
 function findLinkEnd(md: string, startIdx: number): { labelEnd: number; urlStart: number; urlEnd: number } | null {
-  // startIdx points at '['. Find matching ']', then '(' immediately after, then ')'.
+  // startIdx points at '['. Find matching ']', then '(' immediately after, then matching ')'.
   let depth = 1;
   let i = startIdx + 1;
   while (i < md.length) {
@@ -253,9 +292,17 @@ function findLinkEnd(md: string, startIdx: number): { labelEnd: number; urlStart
   const labelEnd = i;
   if (md[i + 1] !== "(") return null;
   const urlStart = i + 2;
-  const urlEnd = md.indexOf(")", urlStart);
-  if (urlEnd === -1) return null;
-  return { labelEnd, urlStart, urlEnd };
+  // Match balanced parentheses in the URL (e.g. Wikipedia links)
+  let parenDepth = 1;
+  let j = urlStart;
+  while (j < md.length && parenDepth > 0) {
+    if (md[j] === "\\") { j += 2; continue; }
+    if (md[j] === "(") parenDepth++;
+    else if (md[j] === ")") parenDepth--;
+    if (parenDepth > 0) j++;
+  }
+  if (parenDepth !== 0) return null;
+  return { labelEnd, urlStart, urlEnd: j };
 }
 
 function makeRun(content: string, state: ScannerState, linkUrl: string | null): TextRichText {

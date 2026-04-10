@@ -140,4 +140,69 @@ describe("parsePropertyFlag", () => {
   it("throws on flag without =", () => {
     assert.throws(() => parsePropertyFlag("Title"));
   });
+
+  it("handles value with spaces", () => {
+    assert.deepEqual(
+      parsePropertyFlag("Title=Hello World"),
+      { key: "Title", value: "Hello World" },
+    );
+  });
+
+  it("handles key with spaces (trimmed)", () => {
+    assert.deepEqual(
+      parsePropertyFlag("  Title  = Value "),
+      { key: "Title", value: "Value" },
+    );
+  });
+
+  it("handles empty value", () => {
+    assert.deepEqual(
+      parsePropertyFlag("Title="),
+      { key: "Title", value: "" },
+    );
+  });
+});
+
+describe("parseProperty — error cases", () => {
+  it("invalid number throws", () => {
+    assert.throws(
+      () => parseProperty(schema, "Points", "not-a-number"),
+      /must be a number/,
+    );
+  });
+
+  it("people without user: prefix throws", () => {
+    assert.throws(
+      () => parseProperty(schema, "Assignee", "john"),
+      /user:<id>/,
+    );
+  });
+
+  it("relation without page: prefix throws", () => {
+    assert.throws(
+      () => parseProperty(schema, "Blocks", "some-id"),
+      /page:<id>/,
+    );
+  });
+
+  it("files without url: or file: prefix throws", () => {
+    assert.throws(
+      () => parseProperty(schema, "Attachment", "https://example.com/file.pdf"),
+      /url: or file:/,
+    );
+  });
+
+  it("near-miss property name suggests correction", () => {
+    try {
+      parseProperty(schema, "Statis", "Done");
+      assert.fail("should throw");
+    } catch (e: any) {
+      assert.ok(e.suggestions?.some((s: string) => s.includes("Status")), "should suggest Status");
+    }
+  });
+
+  it("checkbox with non-boolean string defaults to false", () => {
+    const result = parseProperty(schema, "Done", "yes");
+    assert.deepEqual(result, { checkbox: false });
+  });
 });

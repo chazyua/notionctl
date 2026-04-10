@@ -189,14 +189,18 @@ describe("markdownToBlocks nested lists", () => {
     assert.equal(children[1].type, "bulleted_list_item");
   });
 
-  it("three-level nesting", () => {
+  it("three-level nesting caps at Notion API limit (2 levels of children)", () => {
     const md = "- A\n  - B\n    - C";
     const blocks = markdownToBlocks(md);
     assert.equal(blocks.length, 1);
-    const b = (blocks[0] as any).bulleted_list_item.children[0];
-    assert.equal(b.type, "bulleted_list_item");
-    const c = b.bulleted_list_item.children[0];
-    assert.equal(c.type, "bulleted_list_item");
+    // B and C are both children of A (C promoted from B's child to A's child)
+    const children = (blocks[0] as any).bulleted_list_item.children;
+    assert.equal(children.length, 2, "B and C both at second level");
+    assert.equal(children[0].type, "bulleted_list_item");
+    assert.equal(children[1].type, "bulleted_list_item");
+    // Neither has further children
+    assert.equal(children[0].bulleted_list_item.children, undefined);
+    assert.equal(children[1].bulleted_list_item.children, undefined);
   });
 
   it("multiple top-level items each with children", () => {
@@ -230,6 +234,19 @@ describe("markdownToBlocks nested lists", () => {
     assert.equal((blocks[0] as any).bulleted_list_item.children[0].id, undefined);
   });
 
+  it("four-level nesting promotes deeper items (Notion API limit)", () => {
+    const md = "- A\n  - B\n    - C\n      - D";
+    const blocks = markdownToBlocks(md);
+    assert.equal(blocks.length, 1, "one root block A");
+    const aChildren = (blocks[0] as any).bulleted_list_item.children;
+    // B, C, D all promoted to children of A (only 2 nesting levels allowed)
+    assert.equal(aChildren.length, 3, "B, C, D all at second level");
+    // None should have children
+    for (const child of aChildren) {
+      assert.equal(child.bulleted_list_item.children, undefined, "no third-level children");
+    }
+  });
+
   it("to-do items preserved in nested list", () => {
     const blocks = markdownToBlocks("- [ ] open\n- [x] done");
     assert.equal(blocks.length, 2);
@@ -237,5 +254,109 @@ describe("markdownToBlocks nested lists", () => {
     assert.equal((blocks[0] as any).to_do.checked, false);
     assert.equal(blocks[1]!.type, "to_do");
     assert.equal((blocks[1] as any).to_do.checked, true);
+  });
+});
+
+describe("markdownToBlocks — paragraph/block boundary edge cases", () => {
+  it("table immediately after paragraph (no blank line) is parsed as separate blocks", () => {
+    const md = "Some text\n| A | B |\n| --- | --- |\n| 1 | 2 |";
+    const blocks = markdownToBlocks(md);
+    assert.equal(blocks.length, 2, "paragraph and table must be separate");
+    assert.equal(blocks[0]!.type, "paragraph");
+    assert.equal(blocks[1]!.type, "table");
+  });
+
+  it("equation after paragraph (no blank line) is parsed as separate blocks", () => {
+    const md = "Some text\n$$E = mc^2$$";
+    const blocks = markdownToBlocks(md);
+    assert.equal(blocks.length, 2, "paragraph and equation must be separate");
+    assert.equal(blocks[0]!.type, "paragraph");
+    assert.equal(blocks[1]!.type, "equation");
+  });
+
+  it("divider after paragraph (no blank line) is parsed separately", () => {
+    const md = "Some text\n---";
+    const blocks = markdownToBlocks(md);
+    assert.equal(blocks.length, 2, "paragraph and divider must be separate");
+    assert.equal(blocks[0]!.type, "paragraph");
+    assert.equal(blocks[1]!.type, "divider");
+  });
+
+  it("HTML toggle after paragraph (no blank line) is parsed separately", () => {
+    const md = "Some text\n<details><summary>Toggle</summary>\n\n</details>";
+    const blocks = markdownToBlocks(md);
+    assert.equal(blocks.length, 2);
+    assert.equal(blocks[0]!.type, "paragraph");
+    assert.equal(blocks[1]!.type, "toggle");
+  });
+
+  it("pass-through comment after paragraph is parsed separately", () => {
+    const md = "Some text\n<!-- notion-block: synced_block id=abc-123 -->";
+    const blocks = markdownToBlocks(md);
+    assert.equal(blocks.length, 2);
+    assert.equal(blocks[0]!.type, "paragraph");
+    assert.equal(blocks[1]!.type, "synced_block");
+  });
+});
+
+describe("markdownToBlocks — multi-line equation", () => {
+  it("multi-line equation block ($$ on separate lines)", () => {
+    const md = "$$\nE = mc^2\n$$";
+    const blocks = markdownToBlocks(md);
+    assert.equal(blocks.length, 1);
+    assert.equal(blocks[0]!.type, "equation");
+    assert.equal((blocks[0] as any).equation.expression, "E = mc^2");
+  });
+
+  it("multi-line equation with multiple lines", () => {
+    const md = "$$\n\\sum_{i=1}^{n} x_i\n= x_1 + x_2 + \\ldots + x_n\n$$";
+    const blocks = markdownToBlocks(md);
+    assert.equal(blocks.length, 1);
+    assert.equal(blocks[0]!.type, "equation");
+    const expr = (blocks[0] as any).equation.expression;
+    assert.ok(expr.includes("\\sum"), "expression must include sum");
+    assert.ok(expr.includes("\\ldots"), "expression must include ldots");
+  });
+
+  it("single-line equation still works", () => {
+    const md = "$$x^2 + y^2 = z^2$$";
+    const blocks = markdownToBlocks(md);
+    assert.equal(blocks.length, 1);
+    assert.equal(blocks[0]!.type, "equation");
+    assert.equal((blocks[0] as any).equation.expression, "x^2 + y^2 = z^2");
+  });
+});
+
+describe("markdownToBlocks — special characters and Unicode", () => {
+  it("emoji in headings", () => {
+    const blocks = markdownToBlocks("# 🚀 Launch Notes");
+    assert.equal(blocks.length, 1);
+    assert.equal(blocks[0]!.type, "heading_1");
+    const text = (blocks[0] as any).heading_1.rich_text[0].text.content;
+    assert.ok(text.includes("🚀"));
+  });
+
+  it("CJK characters in list items", () => {
+    const blocks = markdownToBlocks("- 日本語テスト\n- 中文测试\n- 한국어 테스트");
+    assert.equal(blocks.length, 3);
+    blocks.forEach(b => assert.equal(b.type, "bulleted_list_item"));
+  });
+
+  it("code block with special characters preserves content exactly", () => {
+    const md = "```\n<script>alert('xss');</script>\n```";
+    const blocks = markdownToBlocks(md);
+    assert.equal(blocks.length, 1);
+    const content = (blocks[0] as any).code.rich_text[0].text.content;
+    assert.equal(content, "<script>alert('xss');</script>");
+  });
+
+  it("table with empty cells", () => {
+    const md = "| A | B | C |\n| --- | --- | --- |\n| 1 | | 3 |";
+    const blocks = markdownToBlocks(md);
+    const table = blocks[0] as any;
+    const dataRow = table.table.children[1];
+    assert.equal(dataRow.table_row.cells.length, 3);
+    // Middle cell is empty — markdownToRichText("") returns []
+    assert.equal(dataRow.table_row.cells[1].length, 0);
   });
 });

@@ -115,4 +115,52 @@ describe("stringifyYaml", () => {
     const parsed = parseYaml(yaml);
     assert.deepEqual(parsed, input);
   });
+
+  it("quotes empty strings", () => {
+    assert.equal(stringifyYaml({ key: "" }), 'key: ""');
+  });
+
+  it("quotes string 'true' to avoid boolean ambiguity", () => {
+    const yaml = stringifyYaml({ val: "true" });
+    assert.equal(yaml, 'val: "true"');
+    const parsed = parseYaml(yaml);
+    assert.equal(parsed.val, "true");
+    assert.equal(typeof parsed.val, "string");
+  });
+
+  it("quotes string 'null' to avoid null ambiguity", () => {
+    const yaml = stringifyYaml({ val: "null" });
+    assert.equal(yaml, 'val: "null"');
+    const parsed = parseYaml(yaml);
+    assert.equal(parsed.val, "null");
+    assert.equal(typeof parsed.val, "string");
+  });
+
+  it("round-trips strings with colons", () => {
+    const input = { notion_id: "abc-123:def-456" };
+    const yaml = stringifyYaml(input);
+    const parsed = parseYaml(yaml);
+    assert.equal(parsed.notion_id, "abc-123:def-456");
+  });
+
+  it("round-trips strings with hash symbols", () => {
+    const input = { url: "https://example.com/page#section" };
+    const yaml = stringifyYaml(input);
+    const parsed = parseYaml(yaml);
+    assert.equal(parsed.url, "https://example.com/page#section");
+  });
+
+  it("round-trips negative numbers", () => {
+    const input = { score: -42 };
+    const yaml = stringifyYaml(input);
+    const parsed = parseYaml(yaml);
+    assert.equal(parsed.score, -42);
+  });
+
+  it("round-trips float numbers", () => {
+    const input = { score: 3.14 };
+    const yaml = stringifyYaml(input);
+    const parsed = parseYaml(yaml);
+    assert.equal(parsed.score, 3.14);
+  });
 });

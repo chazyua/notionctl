@@ -52,6 +52,29 @@ describe("resolvePageId", () => {
     const url = "https://www.notion.so/team/area/Page-Title-abcd1234ef567890abcd1234567890ab";
     assert.equal(resolvePageId(url), "abcd1234-ef56-7890-abcd-1234567890ab");
   });
+
+  it("extracts ID from notion.site URL (public pages)", () => {
+    const url = "https://mysite.notion.site/Page-Title-abcd1234ef567890abcd1234567890ab";
+    assert.equal(resolvePageId(url), "abcd1234-ef56-7890-abcd-1234567890ab");
+  });
+
+  it("extracts ID from notion.site URL with subpath", () => {
+    const url = "https://team.notion.site/area/Page-abcd1234ef567890abcd1234567890ab";
+    assert.equal(resolvePageId(url), "abcd1234-ef56-7890-abcd-1234567890ab");
+  });
+
+  it("strips URL fragment (#block-anchor)", () => {
+    const url = "https://www.notion.so/Page-abcd1234ef567890abcd1234567890ab#block-anchor";
+    assert.equal(resolvePageId(url), "abcd1234-ef56-7890-abcd-1234567890ab");
+  });
+
+  it("throws on invalid ID", () => {
+    assert.throws(() => resolvePageId("not-a-valid-id"), /Could not parse/);
+  });
+
+  it("throws on too-short hex string", () => {
+    assert.throws(() => resolvePageId("abcd1234"), /Could not parse/);
+  });
 });
 
 describe("getBooleanFlag", () => {

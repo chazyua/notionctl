@@ -111,4 +111,166 @@ describe("Markdown round-trip", () => {
       ["heading_1", "paragraph", "bulleted_list_item", "bulleted_list_item", "quote"],
     );
   });
+
+  it("equation block with multi-line expression survives round-trip", () => {
+    const blocks = [{
+      id: "1", type: "equation", has_children: false,
+      equation: { expression: "E = mc^2" },
+    }];
+    const result = roundTrip(blocks);
+    assert.equal(result.length, 1);
+    assert.equal((result[0] as any).type, "equation");
+    assert.equal((result[0] as any).equation.expression, "E = mc^2");
+  });
+
+  it("divider block survives round-trip", () => {
+    const blocks = [{
+      id: "1", type: "divider", has_children: false,
+      divider: {},
+    }];
+    const result = roundTrip(blocks);
+    assert.equal(result.length, 1);
+    assert.equal((result[0] as any).type, "divider");
+  });
+
+  it("paragraph followed by table produces both blocks on round-trip", () => {
+    const rt = (text: string) => [{ type: "text", text: { content: text }, plain_text: text, annotations: { bold: false, italic: false, strikethrough: false, underline: false, code: false } }];
+    const blocks = [
+      { id: "1", type: "paragraph", has_children: false, paragraph: { rich_text: rt("Before table") } },
+      {
+        id: "2", type: "table", has_children: true,
+        table: {
+          table_width: 2,
+          has_column_header: true,
+          has_row_header: false,
+          children: [
+            { type: "table_row", table_row: { cells: [rt("A"), rt("B")] } },
+            { type: "table_row", table_row: { cells: [rt("1"), rt("2")] } },
+          ],
+        },
+      },
+    ];
+    const result = roundTrip(blocks);
+    assert.equal(result.length, 2, "paragraph + table must both survive round-trip");
+    assert.equal((result[0] as any).type, "paragraph");
+    assert.equal((result[1] as any).type, "table");
+  });
+
+  it("bold+strikethrough rich text survives round-trip with correct annotations", () => {
+    const blocks = [{
+      id: "1", type: "paragraph", has_children: false,
+      paragraph: { rich_text: [
+        { type: "text", text: { content: "both" }, plain_text: "both",
+          annotations: { bold: true, italic: false, strikethrough: true, underline: false, code: false } },
+        { type: "text", text: { content: " just strike" }, plain_text: " just strike",
+          annotations: { bold: false, italic: false, strikethrough: true, underline: false, code: false } },
+      ] },
+    }];
+    const result = roundTrip(blocks);
+    const rt = (result[0] as any).paragraph.rich_text;
+    const fullText = rt.map((r: any) => r.text.content).join("");
+    assert.equal(fullText, "both just strike");
+    const bothRun = rt.find((r: any) => r.text.content === "both");
+    assert.ok(bothRun, "both run must exist");
+    assert.equal(bothRun.annotations.bold, true);
+    assert.equal(bothRun.annotations.strikethrough, true);
+    const strikeRun = rt.find((r: any) => r.text.content.includes("just strike"));
+    assert.ok(strikeRun, "strike run must exist");
+    assert.equal(strikeRun.annotations.bold, false, "strike-only run must NOT be bold");
+    assert.equal(strikeRun.annotations.strikethrough, true);
+  });
+});
+
+describe("Markdown string round-trip (md → blocks → md)", () => {
+  function mdRoundTrip(md: string): string {
+    const blocks = markdownToBlocks(md);
+    return blocksToMarkdown(blocks);
+  }
+
+  it("plain paragraph survives", () => {
+    assert.equal(mdRoundTrip("Hello world").trim(), "Hello world");
+  });
+
+  it("bold text survives", () => {
+    const result = mdRoundTrip("**bold text**").trim();
+    assert.ok(result.includes("**bold text**") || result.includes("**bold text**"));
+  });
+
+  it("heading levels survive", () => {
+    const result = mdRoundTrip("# H1\n\n## H2\n\n### H3");
+    assert.match(result, /^# H1$/m);
+    assert.match(result, /^## H2$/m);
+    assert.match(result, /^### H3$/m);
+  });
+
+  it("bulleted list survives", () => {
+    const result = mdRoundTrip("- A\n- B\n- C");
+    assert.match(result, /^- A$/m);
+    assert.match(result, /^- B$/m);
+    assert.match(result, /^- C$/m);
+  });
+
+  it("numbered list survives", () => {
+    const result = mdRoundTrip("1. First\n2. Second\n3. Third");
+    assert.match(result, /1\. First/);
+    assert.match(result, /2\. Second/);
+    assert.match(result, /3\. Third/);
+  });
+
+  it("code block with language survives", () => {
+    const md = "```javascript\nconsole.log('hi');\n```";
+    const result = mdRoundTrip(md);
+    assert.match(result, /```javascript/);
+    assert.match(result, /console\.log/);
+  });
+
+  it("divider survives", () => {
+    const result = mdRoundTrip("---");
+    assert.match(result, /^---$/m);
+  });
+
+  it("table survives with correct structure", () => {
+    const md = "| A | B |\n| --- | --- |\n| 1 | 2 |";
+    const result = mdRoundTrip(md);
+    assert.match(result, /\| A \| B \|/);
+    assert.match(result, /\| --- \| --- \|/);
+    assert.match(result, /\| 1 \| 2 \|/);
+  });
+
+  it("quote survives", () => {
+    const result = mdRoundTrip("> Some quoted text");
+    assert.match(result, /^> .*Some quoted text/m);
+  });
+
+  it("todo items survive with check state", () => {
+    const result = mdRoundTrip("- [ ] Open\n- [x] Done");
+    assert.match(result, /\[ \] Open/);
+    assert.match(result, /\[x\] Done/);
+  });
+
+  it("equation block survives", () => {
+    const result = mdRoundTrip("$$E = mc^2$$");
+    assert.match(result, /\$\$E = mc\^2\$\$/);
+  });
+
+  it("multi-line equation survives", () => {
+    const result = mdRoundTrip("$$\nx^2 + y^2\n$$");
+    assert.match(result, /\$\$x\^2 \+ y\^2\$\$/);
+  });
+
+  it("mixed content preserves block order", () => {
+    const md = "# Title\n\nParagraph.\n\n- List item\n\n```\ncode\n```\n\n---\n\n> Quote";
+    const result = mdRoundTrip(md);
+    const titleIdx = result.indexOf("# Title");
+    const paraIdx = result.indexOf("Paragraph.");
+    const listIdx = result.indexOf("- List item");
+    const codeIdx = result.indexOf("code");
+    const dividerIdx = result.indexOf("---");
+    const quoteIdx = result.indexOf("> Quote");
+    assert.ok(titleIdx < paraIdx, "title before para");
+    assert.ok(paraIdx < listIdx, "para before list");
+    assert.ok(listIdx < codeIdx, "list before code");
+    assert.ok(codeIdx < dividerIdx, "code before divider");
+    assert.ok(dividerIdx < quoteIdx, "divider before quote");
+  });
 });

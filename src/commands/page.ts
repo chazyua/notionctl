@@ -258,13 +258,15 @@ export async function pageDuplicateCommand(ctx: { args: string[] }): Promise<str
   };
 
   const children = sanitizeForCreate(sourceBlocks);
+  const firstChunk = children.slice(0, 100);
+  const overflow = children.slice(100);
 
   const payload = {
     parent: { page_id: parentId },
     properties: {
       title: [{ type: "text", text: { content: newTitle, link: null } }],
     },
-    children,
+    children: firstChunk,
   };
 
   if (getBooleanFlag(flags, "dry-run")) {
@@ -272,6 +274,9 @@ export async function pageDuplicateCommand(ctx: { args: string[] }): Promise<str
   }
 
   const created = await notionRequest<{ id: string; url: string }>("POST", "/pages", payload);
+  if (overflow.length > 0) {
+    await appendBlocksChunked(created.id, overflow);
+  }
   return renderJson({ id: created.id, url: created.url, copiedFrom: sourceId });
 }
 

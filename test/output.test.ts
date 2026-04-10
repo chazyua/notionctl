@@ -79,3 +79,59 @@ describe("output.renderMarkdown", () => {
     assert.equal(renderMarkdown(md), md);
   });
 });
+
+describe("output.renderTable — edge cases", () => {
+  it("handles single-column table", () => {
+    const out = renderTable({ columns: ["Name"], rows: [["Alice"], ["Bob"]] });
+    const lines = out.split("\n");
+    assert.equal(lines.length, 4);
+    assert.match(lines[2]!, /Alice/);
+  });
+
+  it("handles cells wider than column header", () => {
+    const out = renderTable({
+      columns: ["A"],
+      rows: [["Very long cell content"]],
+    });
+    const lines = out.split("\n");
+    // Column width should adapt to the widest cell
+    assert.ok(lines[1]!.length >= "Very long cell content".length);
+  });
+
+  it("handles empty string cells", () => {
+    const out = renderTable({
+      columns: ["A", "B"],
+      rows: [["", "value"], ["value", ""]],
+    });
+    assert.ok(out.includes("value"));
+  });
+
+  it("handles many columns", () => {
+    const cols = Array.from({ length: 10 }, (_, i) => `Col${i}`);
+    const row = Array.from({ length: 10 }, (_, i) => `val${i}`);
+    const out = renderTable({ columns: cols, rows: [row] });
+    assert.ok(out.includes("Col0"));
+    assert.ok(out.includes("val9"));
+  });
+});
+
+describe("output.renderCsv — edge cases", () => {
+  it("handles empty table", () => {
+    const out = renderCsv({ columns: ["A", "B"], rows: [] });
+    assert.equal(out, "A,B");
+  });
+
+  it("handles values with all special characters", () => {
+    const out = renderCsv({
+      columns: ["Data"],
+      rows: [['He said "hello, world"\nand left']],
+    });
+    // Should be properly escaped
+    assert.ok(out.includes('"'), "should contain quotes for escaping");
+  });
+
+  it("plain values are not quoted", () => {
+    const out = renderCsv({ columns: ["A"], rows: [["simple"]] });
+    assert.equal(out, "A\nsimple");
+  });
+});
