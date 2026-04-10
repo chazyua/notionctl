@@ -71,6 +71,26 @@ export function markdownToBlocks(md: string): Block[] {
       continue;
     }
 
+    // Image: ![alt](url) — only when it's the entire line
+    const imgMatch = /^!\[([^\]]*)\]\(([^)]+)\)$/.exec(trimmed);
+    if (imgMatch) {
+      const alt = imgMatch[1]!;
+      const url = imgMatch[2]!;
+      blocks.push({
+        object: "block",
+        id: "",
+        type: "image",
+        has_children: false,
+        image: {
+          type: "external",
+          external: { url },
+          caption: alt ? [{ type: "text", text: { content: alt, link: null }, annotations: { bold: false, italic: false, strikethrough: false, underline: false, code: false, color: "default" }, plain_text: alt, href: null }] : [],
+        },
+      } as unknown as Block);
+      i++;
+      continue;
+    }
+
     // Headings
     if (/^#\s+/.test(trimmed)) {
       blocks.push(makeHeadingBlock(1, trimmed.slice(2)));
@@ -146,17 +166,61 @@ export function markdownToBlocks(md: string): Block[] {
 
     // HTML toggle: <details><summary>...</summary>...</details>
     if (/^<details>/i.test(trimmed)) {
-      const summaryMatch = /<summary>(.*?)<\/summary>/i.exec(trimmed);
-      const summary = summaryMatch?.[1] ?? "";
+      // Check if </details> is on the same line (inline form)
+      const inlineCloseMatch = /^<details>(?:<summary>(.*?)<\/summary>)?(.*?)<\/details>/i.exec(trimmed);
+      if (inlineCloseMatch) {
+        const summary = inlineCloseMatch[1] ?? "";
+        i++;
+        blocks.push({
+          object: "block",
+          id: "",
+          type: "toggle",
+          has_children: false,
+          toggle: { rich_text: markdownToRichText(summary), color: "default" },
+        } as unknown as Block);
+        continue;
+      }
+
+      // Multi-line form: scan for summary (may be on this line or next)
+      let summary = "";
+      const sameLine = /<summary>(.*?)<\/summary>/i.exec(trimmed);
+      if (sameLine) {
+        summary = sameLine[1] ?? "";
+      }
       i++;
-      while (i < lines.length && !/<\/details>/i.test(lines[i]!)) i++;
-      i++;  // consume closing tag
+      // If summary not found on first line, check subsequent lines
+      if (!summary && i < lines.length) {
+        const nextSummary = /<summary>(.*?)<\/summary>/i.exec(lines[i]!);
+        if (nextSummary) {
+          summary = nextSummary[1] ?? "";
+          i++;
+        }
+      }
+      // Collect body lines until </details>
+      const bodyLines: string[] = [];
+      while (i < lines.length && !/<\/details>/i.test(lines[i]!)) {
+        bodyLines.push(lines[i]!);
+        i++;
+      }
+      i++; // consume </details>
+
+      const bodyMd = bodyLines.join("\n").trim();
+      const childBlocks = bodyMd.length > 0 ? markdownToBlocks(bodyMd) : [];
+
+      const toggleData: any = {
+        rich_text: markdownToRichText(summary),
+        color: "default",
+      };
+      if (childBlocks.length > 0) {
+        toggleData.children = childBlocks;
+      }
+
       blocks.push({
         object: "block",
         id: "",
         type: "toggle",
-        has_children: false,
-        toggle: { rich_text: markdownToRichText(summary), color: "default" },
+        has_children: childBlocks.length > 0,
+        toggle: toggleData,
       } as unknown as Block);
       continue;
     }
@@ -208,8 +272,8 @@ export function markdownToBlocks(md: string): Block[] {
       continue;
     }
 
-    // GFM table
-    if (/^\|.*\|$/.test(trimmed) && i + 1 < lines.length && /^\|\s*---/.test(lines[i + 1]!.trim())) {
+    // GFM table — separator row may have alignment colons: | :--- | ---: | :---: |
+    if (/^\|.*\|$/.test(trimmed) && i + 1 < lines.length && /^\|\s*:?---/.test(lines[i + 1]!.trim())) {
       const headerCells = parseTableRow(trimmed);
       i += 2;  // skip header + separator
       const rowBlocks: Block[] = [
@@ -274,6 +338,7 @@ function isBlockStart(line: string): boolean {
     /^[-*_]{3,}\s*$/.test(t) ||
     /^\|.*\|$/.test(t) ||
     /^\$\$/.test(t) ||
+    /^!\[/.test(t) ||
     /^<details>/i.test(t) ||
     /^<!--\s*notion-block:/.test(t)
   );

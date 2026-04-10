@@ -327,6 +327,32 @@ describe("markdownToBlocks — multi-line equation", () => {
   });
 });
 
+describe("image parsing", () => {
+  it("parses ![alt](url) as image block", () => {
+    const blocks = markdownToBlocks("![Screenshot](https://example.com/img.png)");
+    assert.equal(blocks.length, 1);
+    assert.equal(blocks[0]!.type, "image");
+    const img = (blocks[0] as any).image;
+    assert.equal(img.external.url, "https://example.com/img.png");
+    assert.equal(img.caption[0].plain_text, "Screenshot");
+  });
+
+  it("handles image with empty alt text", () => {
+    const blocks = markdownToBlocks("![](https://example.com/img.png)");
+    assert.equal(blocks.length, 1);
+    assert.equal(blocks[0]!.type, "image");
+    assert.deepEqual((blocks[0] as any).image.caption, []);
+  });
+
+  it("image on its own line does not absorb into paragraph", () => {
+    const blocks = markdownToBlocks("Before text.\n\n![img](https://example.com/img.png)\n\nAfter text.");
+    assert.equal(blocks.length, 3);
+    assert.equal(blocks[0]!.type, "paragraph");
+    assert.equal(blocks[1]!.type, "image");
+    assert.equal(blocks[2]!.type, "paragraph");
+  });
+});
+
 describe("markdownToBlocks — special characters and Unicode", () => {
   it("emoji in headings", () => {
     const blocks = markdownToBlocks("# 🚀 Launch Notes");
@@ -360,3 +386,40 @@ describe("markdownToBlocks — special characters and Unicode", () => {
     assert.equal(dataRow.table_row.cells[1].length, 0);
   });
 });
+
+describe("toggle (details) parsing", () => {
+  it("captures body content as toggle children", () => {
+    const md = "<details><summary>Title</summary>\n\nBody paragraph.\n\n- Item 1\n\n</details>";
+    const blocks = markdownToBlocks(md);
+    assert.equal(blocks.length, 1);
+    assert.equal(blocks[0]!.type, "toggle");
+    const toggle = (blocks[0] as any).toggle;
+    assert.equal(toggle.rich_text[0].plain_text, "Title");
+    assert.equal(blocks[0]!.has_children, true);
+    assert.ok(toggle.children && toggle.children.length >= 1, "toggle should have children");
+  });
+
+  it("handles multi-line details with summary on separate line", () => {
+    const md = "<details>\n<summary>Multi-line Title</summary>\nBody here.\n</details>";
+    const blocks = markdownToBlocks(md);
+    assert.equal(blocks.length, 1);
+    const toggle = (blocks[0] as any).toggle;
+    assert.equal(toggle.rich_text[0].plain_text, "Multi-line Title");
+  });
+
+  it("handles inline details without eating next block", () => {
+    const md = "<details><summary>First</summary></details>\n\n<details><summary>Second</summary></details>";
+    const blocks = markdownToBlocks(md);
+    assert.equal(blocks.length, 2);
+    assert.equal((blocks[0] as any).toggle.rich_text[0].plain_text, "First");
+    assert.equal((blocks[1] as any).toggle.rich_text[0].plain_text, "Second");
+  });
+
+  it("creates empty toggle when no body content", () => {
+    const md = "<details><summary>Empty</summary>\n</details>";
+    const blocks = markdownToBlocks(md);
+    assert.equal(blocks.length, 1);
+    assert.equal(blocks[0]!.has_children, false);
+  });
+});
+
