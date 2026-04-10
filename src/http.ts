@@ -151,8 +151,9 @@ async function notionRequestSingle<T = unknown>(
 
     const retryAfter = response.headers.get("retry-after");
     const retryAfterMs = retryAfter ? Number(retryAfter) * 1000 : undefined;
+    const MAX_RETRY_AFTER_MS = 60_000;
     const backoff = retryAfterMs && Number.isFinite(retryAfterMs)
-      ? retryAfterMs
+      ? Math.min(retryAfterMs, MAX_RETRY_AFTER_MS)
       : (BACKOFF_MS[attempt] ?? 4000);
     await sleep(backoff);
   }

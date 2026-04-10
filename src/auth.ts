@@ -45,11 +45,24 @@ export function getConfigDir(): string {
 }
 
 export function setActiveProfile(name: string): void {
+  if (!/^[a-zA-Z0-9_-]{1,64}$/.test(name)) {
+    throw new NotionCliError(
+      ErrorCode.USAGE,
+      `Invalid profile name: '${name}'. Use only letters, digits, hyphens, and underscores.`,
+    );
+  }
   activeProfile = name;
 }
 
 function resolveProfile(): string | undefined {
-  return activeProfile ?? process.env[PROFILE_ENV_VAR] ?? undefined;
+  const name = activeProfile ?? process.env[PROFILE_ENV_VAR] ?? undefined;
+  if (name !== undefined && !/^[a-zA-Z0-9_-]{1,64}$/.test(name)) {
+    throw new NotionCliError(
+      ErrorCode.USAGE,
+      `Invalid profile name: '${name}'. Use only letters, digits, hyphens, and underscores.`,
+    );
+  }
+  return name;
 }
 
 export function getConfigPath(profile?: string): string {

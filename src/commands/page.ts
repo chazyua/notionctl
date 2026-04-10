@@ -380,12 +380,18 @@ export async function pageOpenCommand(ctx: { args: string[] }): Promise<string> 
   );
   const url = page.url;
 
+  // Only open known-safe Notion URLs — reject file://, data:, javascript:, etc.
+  if (!/^https:\/\/(www\.)?notion\.so\//.test(url)) {
+    throw new NotionCliError(ErrorCode.GENERIC, `Refusing to open non-Notion URL: ${url}`);
+  }
+
   const opener = process.platform === "darwin" ? "open"
-    : process.platform === "win32" ? "start"
+    : process.platform === "win32" ? "cmd"
     : "xdg-open";
+  const openerArgs = process.platform === "win32" ? ["/c", "start", "", url] : [url];
 
   return new Promise((resolve, reject) => {
-    execFile(opener, [url], (err) => {
+    execFile(opener, openerArgs, (err) => {
       if (err) reject(new NotionCliError(ErrorCode.GENERIC, `Failed to open browser: ${err.message}`));
       else resolve(url);
     });
@@ -545,11 +551,13 @@ export async function pageSyncCommand(ctx: { args: string[] }): Promise<string> 
 
   // Fetch remote page metadata for drift detection when notion_id exists
   let remoteEditedAt: string | undefined;
+  let validatedNotionId: string | undefined;
   if (typeof frontmatter.notion_id === "string" && frontmatter.notion_id) {
+    validatedNotionId = resolvePageId(frontmatter.notion_id);
     try {
       const remotePage = await notionRequest<{ last_edited_time: string }>(
         "GET",
-        `/pages/${frontmatter.notion_id as string}`,
+        `/pages/${validatedNotionId}`,
       );
       remoteEditedAt = remotePage.last_edited_time;
     } catch {
@@ -616,7 +624,7 @@ export async function pageSyncCommand(ctx: { args: string[] }): Promise<string> 
   }
 
   if (state === SyncState.CHANGED || state === SyncState.DRIFT) {
-    const pageId = frontmatter.notion_id as string;
+    const pageId = validatedNotionId!;
     const { title, syncBody } = extractSyncTitle(frontmatter, body);
     let existing: { results: Block[] };
     try {
