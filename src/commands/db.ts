@@ -204,7 +204,7 @@ export async function dbQueryCommand(ctx: { args: string[] }): Promise<string> {
     const row: string[] = [r.id];
     for (const name of Object.keys(schema)) {
       const rendered = renderProperty(r.properties[name]);
-      row.push(typeof rendered === "string" ? rendered : JSON.stringify(rendered ?? ""));
+      row.push(rendered === null || rendered === undefined ? "" : typeof rendered === "string" ? rendered : JSON.stringify(rendered));
     }
     return row;
   });
