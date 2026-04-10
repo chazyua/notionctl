@@ -367,9 +367,9 @@ describe("markdownToBlocks — code block edge cases", () => {
     assert.equal(content, "line one\n\nline three");
   });
 
-  it("code block with unknown language passes language through unchanged", () => {
+  it("code block with unknown language falls back to plain text", () => {
     const blocks = markdownToBlocks("```brainfuck\n+++---\n```");
-    assert.equal((blocks[0] as any).code.language, "brainfuck");
+    assert.equal((blocks[0] as any).code.language, "plain text");
   });
 
   it("all known language aliases resolve correctly", () => {

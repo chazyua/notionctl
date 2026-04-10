@@ -392,6 +392,9 @@ export async function dbRowGetCommand(ctx: { args: string[] }): Promise<string> 
     defaultFormat: "md",
   });
   if (format === "json") return renderJson({ page, children: childBlocks });
+  if (format !== "md") {
+    throw new NotionCliError(ErrorCode.USAGE, `db row get does not support --format ${format}. Use md or json.`);
+  }
 
   const frontmatter: YamlObject = { notion_id: id };
   for (const [name, value] of Object.entries(page.properties)) {
@@ -465,6 +468,12 @@ export async function dbRowUpdateCommand(ctx: { args: string[] }): Promise<strin
     properties[key] = parseProperty(schema, key, value);
   }
 
+  if (Object.keys(properties).length === 0) {
+    throw new NotionCliError(
+      ErrorCode.USAGE,
+      "Nothing to update. Provide at least one --prop Key=value flag.",
+    );
+  }
   const payload = { properties };
   if (getBooleanFlag(flags, "dry-run")) {
     return renderJson({ action: "db row update", pageId, payload });

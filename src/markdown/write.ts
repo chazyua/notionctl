@@ -112,6 +112,12 @@ export function markdownToBlocks(md: string): Block[] {
       i++;
       continue;
     }
+    if (/^#{4,6}\s+/.test(trimmed)) {
+      const text = trimmed.replace(/^#{4,6}\s+/, "");
+      blocks.push(makeHeadingBlock(3, text));
+      i++;
+      continue;
+    }
 
     // Lists: bulleted, numbered, to-do — all indentation levels
     if (isListLine(line)) {
@@ -122,17 +128,17 @@ export function markdownToBlocks(md: string): Block[] {
     }
 
     // Quote (plain, no alert prefix — alerts handled below)
-    if (/^>\s/.test(trimmed) && !/^>\s+\[!/.test(trimmed)) {
+    if (/^>(?!\s*\[!)/.test(trimmed)) {
       const quoteLines: string[] = [];
       while (i < lines.length) {
         const ql = lines[i]!.trim();
-        if (!/^>/.test(ql) || /^>\s+\[!/.test(ql)) break; // stop at non-quote or alert
+        if (!/^>/.test(ql) || /^>\s*\[!/.test(ql)) break; // stop at non-quote or alert
         // Strip one or more levels of > prefix; flatten nested > > to single level
         const raw = ql.replace(/^>(\s?>)*\s?/, "");
         quoteLines.push(raw);
         i++;
       }
-      blocks.push(makeQuoteBlock(quoteLines.filter(l => l.length > 0).join("\n")));
+      blocks.push(makeQuoteBlock(quoteLines.join("\n")));
       continue;
     }
 
@@ -145,11 +151,14 @@ export function markdownToBlocks(md: string): Block[] {
       // Collect continuation lines (> text or bare >), stripping the > prefix
       const continuationLines: string[] = [];
       if (firstLine) continuationLines.push(firstLine);
+      let overrideIcon: string | undefined;
+      let overrideColor: string | undefined;
       while (i < lines.length) {
         const next = lines[i]!.trim();
-        const iconMatch = /^<!--\s*icon:\s*(\S+)\s*-->$/.exec(next);
-        const colorMatch = /^<!--\s*color:\s*(\S+)\s*-->$/.exec(next);
-        if (iconMatch || colorMatch) { i++; continue; } // skip sidecar comments
+        const iconComment = /^<!--\s*icon:\s*(\S+)\s*-->$/.exec(next);
+        const colorComment = /^<!--\s*color:\s*(\S+)\s*-->$/.exec(next);
+        if (iconComment) { overrideIcon = iconComment[1]!; i++; continue; }
+        if (colorComment) { overrideColor = colorComment[1]!; i++; continue; }
         if (/^>\s/.test(next)) {
           continuationLines.push(next.slice(2));
           i++;
@@ -181,8 +190,8 @@ export function markdownToBlocks(md: string): Block[] {
       }
       const calloutData: any = {
         rich_text: markdownToRichText(calloutText),
-        icon: { type: "emoji", emoji: ALERT_TYPE_TO_EMOJI[alertType] ?? "💡" },
-        color: ALERT_TYPE_TO_COLOR[alertType] ?? "default",
+        icon: { type: "emoji", emoji: overrideIcon ?? ALERT_TYPE_TO_EMOJI[alertType] ?? "💡" },
+        color: overrideColor ?? ALERT_TYPE_TO_COLOR[alertType] ?? "default",
       };
       if (calloutChildren.length > 0) calloutData.children = calloutChildren;
       blocks.push({
@@ -231,10 +240,17 @@ export function markdownToBlocks(md: string): Block[] {
           i++;
         }
       }
-      // Collect body lines until </details>
+      // Collect body lines until matching </details>, tracking nested depth
       const bodyLines: string[] = [];
-      while (i < lines.length && !/<\/details>/i.test(lines[i]!)) {
-        bodyLines.push(lines[i]!);
+      let detailsDepth = 0;
+      while (i < lines.length) {
+        const bodyLine = lines[i]!;
+        if (/<details[\s>]/i.test(bodyLine)) detailsDepth++;
+        if (/<\/details>/i.test(bodyLine)) {
+          if (detailsDepth === 0) break;
+          detailsDepth--;
+        }
+        bodyLines.push(bodyLine);
         i++;
       }
       i++; // consume </details>
@@ -368,10 +384,10 @@ export function markdownToBlocks(md: string): Block[] {
 function isBlockStart(line: string): boolean {
   const t = line.trim();
   return (
-    /^#{1,3}\s/.test(t) ||
+    /^#{1,6}\s/.test(t) ||
     /^-\s/.test(t) ||
     /^\d+\.\s/.test(t) ||
-    /^>\s/.test(t) ||
+    /^>/.test(t) ||
     /^```/.test(t) ||
     /^[-*_]{3,}\s*$/.test(t) ||
     /^\|.*\|$/.test(t) ||
@@ -547,6 +563,21 @@ function makeQuoteBlock(text: string): Block {
   } as Block;
 }
 
+const VALID_LANGUAGES = new Set([
+  "abap", "abc", "agda", "arduino", "ascii art", "assembly", "bash", "basic",
+  "bnf", "c", "c#", "c++", "clojure", "coffeescript", "coq", "css", "dart",
+  "dhall", "diff", "docker", "ebnf", "elixir", "elm", "erlang", "f#", "flow",
+  "fortran", "gherkin", "glsl", "go", "graphql", "groovy", "haskell", "hcl",
+  "html", "idris", "java", "javascript", "json", "julia", "kotlin", "latex",
+  "less", "lisp", "livescript", "llvm ir", "lua", "makefile", "markdown",
+  "markup", "matlab", "mathematica", "mermaid", "nix", "notion formula",
+  "objective-c", "ocaml", "pascal", "perl", "php", "plain text", "powershell",
+  "prolog", "protobuf", "purescript", "python", "r", "racket", "reason",
+  "ruby", "rust", "sass", "scala", "scheme", "scss", "shell", "smalltalk",
+  "solidity", "sql", "swift", "toml", "typescript", "vb.net", "verilog",
+  "vhdl", "visual basic", "webassembly", "xml", "yaml", "java/c/c++/c#",
+]);
+
 const LANGUAGE_ALIASES: Record<string, string> = {
   sh: "shell",
   zsh: "shell",
@@ -576,7 +607,8 @@ const LANGUAGE_ALIASES: Record<string, string> = {
 
 function makeCodeBlock(content: string, language: string): Block {
   const raw = language.toLowerCase() || "plain text";
-  const lang = LANGUAGE_ALIASES[raw] ?? raw;
+  const resolved = LANGUAGE_ALIASES[raw] ?? raw;
+  const lang = VALID_LANGUAGES.has(resolved) ? resolved : "plain text";
   const richText: RichText[] = [
     {
       type: "text",

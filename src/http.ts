@@ -306,43 +306,76 @@ export async function notionUploadFile(
     { file_name: fileName, content_type: contentType },
   );
 
-  // Step 2: send file data
+  // Step 2: send file data with retry and timeout
   const { readFile } = await import("node:fs/promises");
   const fileBuffer = await readFile(filePath);
 
-  const url = `${API_BASE}/file_uploads/${session.id}/send`;
-  if (!url.startsWith("https://api.notion.com/")) {
+  const uploadUrl = `${API_BASE}/file_uploads/${session.id}/send`;
+  if (!uploadUrl.startsWith("https://api.notion.com/")) {
     throw new NotionCliError(ErrorCode.GENERIC, "Internal error: upload URL escaped api.notion.com");
   }
 
   const token = await getToken();
-  const formData = new FormData();
-  const blob = new Blob([fileBuffer], { type: contentType });
-  formData.append("file", blob, fileName);
+  const timeoutMs = parseTimeoutEnv() ?? DEFAULT_TIMEOUT_MS;
 
-  const response = await fetch(url, {
-    method: "POST",
-    headers: {
-      "Authorization": `Bearer ${token}`,
-      "Notion-Version": NOTION_VERSION,
-      "User-Agent": USER_AGENT,
-    },
-    body: formData,
-  });
+  let response: Response | undefined;
+  for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+    const formData = new FormData();
+    const blob = new Blob([fileBuffer], { type: contentType });
+    formData.append("file", blob, fileName);
 
-  if (!response.ok) {
-    let message = `HTTP ${response.status}`;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+
     try {
-      const errBody = (await response.json()) as { message?: string };
-      if (errBody.message) message = errBody.message;
-    } catch { /* non-JSON error */ }
-    throw new NotionCliError(
-      mapStatusToErrorCode(response.status),
-      `/file_uploads/${session.id}/send: ${message}`,
-    );
+      response = await fetch(uploadUrl, {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${token}`,
+          "Notion-Version": NOTION_VERSION,
+          "User-Agent": USER_AGENT,
+        },
+        body: formData,
+        signal: controller.signal,
+      });
+    } catch (err) {
+      clearTimeout(timer);
+      if (attempt === MAX_ATTEMPTS - 1) {
+        throw new NotionCliError(
+          ErrorCode.NETWORK_ERROR,
+          `File upload failed: ${(err as Error).message}`,
+        );
+      }
+      await sleep(BACKOFF_MS[attempt] ?? 4000);
+      continue;
+    } finally {
+      clearTimeout(timer);
+    }
+
+    if (response.ok) break;
+
+    if (!shouldRetry(response.status) || attempt === MAX_ATTEMPTS - 1) {
+      let message = `HTTP ${response.status}`;
+      try {
+        const errBody = (await response.json()) as { message?: string };
+        if (errBody.message) message = errBody.message;
+      } catch { /* non-JSON error */ }
+      throw new NotionCliError(
+        mapStatusToErrorCode(response.status),
+        `/file_uploads/${session.id}/send: ${message}`,
+      );
+    }
+
+    const retryAfter = response.headers.get("retry-after");
+    const retryAfterMs = retryAfter ? Number(retryAfter) * 1000 : undefined;
+    const MAX_RETRY_AFTER_MS = 60_000;
+    const backoff = retryAfterMs && Number.isFinite(retryAfterMs)
+      ? Math.min(retryAfterMs, MAX_RETRY_AFTER_MS)
+      : (BACKOFF_MS[attempt] ?? 4000);
+    await sleep(backoff);
   }
 
-  return (await response.json()) as { id: string; status: string; [key: string]: unknown };
+  return (await response!.json()) as { id: string; status: string; [key: string]: unknown };
 }
 
 /**

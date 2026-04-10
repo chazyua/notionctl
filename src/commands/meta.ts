@@ -51,6 +51,9 @@ export async function searchCommand(ctx: CommandContext): Promise<string> {
   }
   const query = positional.join(" ");
   const typeFilter = flags.get("type");
+  if (typeFilter && typeFilter !== "page" && typeFilter !== "db") {
+    throw new NotionCliError(ErrorCode.USAGE, `Invalid --type value: '${typeFilter}'. Valid values: page, db`);
+  }
   const body: Record<string, unknown> = { query };
   if (typeFilter === "page" || typeFilter === "db") {
     body.filter = { value: typeFilter === "page" ? "page" : "database", property: "object" };

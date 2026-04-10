@@ -49,6 +49,9 @@ export async function pageGetCommand(ctx: { args: string[] }): Promise<string> {
   if (format === "json") {
     return renderJson({ page, children: childBlocks });
   }
+  if (format !== "md") {
+    throw new NotionCliError(ErrorCode.USAGE, `page get does not support --format ${format}. Use md or json.`);
+  }
 
   const frontmatter: YamlObject = {
     notion_id: page.id,
@@ -348,7 +351,14 @@ export async function pageMoveCommand(ctx: { args: string[] }): Promise<string> 
   }
   const toId = resolvePageId(to);
 
-  const body = { parent: { page_id: toId } };
+  let parentKey: "page_id" | "database_id" = "page_id";
+  try {
+    await notionRequest("GET", `/databases/${toId}`);
+    parentKey = "database_id";
+  } catch {
+    // Not a database — use page_id
+  }
+  const body = { parent: { [parentKey]: toId } };
 
   if (getBooleanFlag(flags, "dry-run")) {
     return renderJson({ action: "page move", pageId: id, body });

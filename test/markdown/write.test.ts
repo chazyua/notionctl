@@ -434,6 +434,33 @@ describe("blockquote parsing", () => {
     assert.ok(text.includes("Second paragraph."), "second paragraph present");
     assert.ok(!text.includes("  "), "no double spaces from collapsed blank lines");
   });
+
+  it("multi-paragraph blockquote preserves paragraph breaks", () => {
+    const md = "> First paragraph.\n>\n> Second paragraph.\n>\n> Third paragraph.";
+    const blocks = markdownToBlocks(md);
+    assert.equal(blocks.length, 1);
+    assert.equal(blocks[0]!.type, "quote");
+    const text = (blocks[0] as any).quote.rich_text.map((r: any) => r.plain_text).join("");
+    assert.ok(text.includes("First paragraph."), "first paragraph present");
+    assert.ok(text.includes("Second paragraph."), "second paragraph present");
+    assert.ok(text.includes("Third paragraph."), "third paragraph present");
+    assert.ok(text.includes("\n\n"), "paragraph breaks preserved");
+  });
+
+  it("blockquote without space after > is recognized", () => {
+    const blocks = markdownToBlocks(">This is a quote\n>Second line");
+    assert.equal(blocks.length, 1);
+    assert.equal(blocks[0]!.type, "quote");
+    const text = (blocks[0] as any).quote.rich_text[0].text.content;
+    assert.ok(text.includes("This is a quote"), "text preserved");
+    assert.ok(text.includes("Second line"), "second line preserved");
+  });
+
+  it("bare > starts empty quote", () => {
+    const blocks = markdownToBlocks(">\n");
+    assert.equal(blocks.length, 1);
+    assert.equal(blocks[0]!.type, "quote");
+  });
 });
 
 describe("markdownToBlocks — inline details body preservation (BUG-2 regression)", () => {
@@ -530,6 +557,71 @@ describe("markdownToBlocks — callout child blocks (BUG-5/6 regression)", () =>
     assert.equal(blocks[0]!.type, "callout");
     const text = (blocks[0] as any).callout.rich_text.map((r: any) => r.plain_text).join("");
     assert.equal(text, "Just a simple tip");
+  });
+});
+
+describe("markdownToBlocks — code language validation (BH2-1)", () => {
+  it("unknown language falls back to plain text", () => {
+    const blocks = markdownToBlocks("```unknownlang\ncode\n```");
+    assert.equal(blocks.length, 1);
+    assert.equal((blocks[0] as any).code.language, "plain text");
+  });
+
+  it("known language is preserved", () => {
+    assert.equal((markdownToBlocks("```python\n1\n```")[0] as any).code.language, "python");
+    assert.equal((markdownToBlocks("```rust\n1\n```")[0] as any).code.language, "rust");
+    assert.equal((markdownToBlocks("```go\n1\n```")[0] as any).code.language, "go");
+  });
+});
+
+describe("markdownToBlocks — nested details toggles (BH2-2)", () => {
+  it("nested details blocks are preserved", () => {
+    const md = "<details><summary>Outer</summary>\n\n<details><summary>Inner</summary>\nInner content\n</details>\n\nAfter inner\n\n</details>";
+    const blocks = markdownToBlocks(md);
+    assert.equal(blocks.length, 1, "single outer toggle");
+    assert.equal(blocks[0]!.type, "toggle");
+    const toggle = (blocks[0] as any).toggle;
+    assert.equal(toggle.rich_text[0].plain_text, "Outer");
+    assert.ok(toggle.children && toggle.children.length >= 2, "must have inner toggle + paragraph");
+    const innerToggle = toggle.children.find((c: any) => c.type === "toggle");
+    assert.ok(innerToggle, "inner toggle must exist");
+    assert.equal(innerToggle.toggle.rich_text[0].plain_text, "Inner");
+    const afterParagraph = toggle.children.find((c: any) => c.type === "paragraph" && c.paragraph.rich_text[0]?.plain_text === "After inner");
+    assert.ok(afterParagraph, "paragraph after inner toggle must be inside outer toggle");
+  });
+});
+
+describe("markdownToBlocks — callout sidecar color and icon (BH2-4)", () => {
+  it("callout preserves sidecar color and icon on round-trip", () => {
+    const md = "> [!NOTE]\n<!-- color: orange_background -->\n<!-- icon: 🎨 -->\n> Custom callout";
+    const blocks = markdownToBlocks(md);
+    assert.equal(blocks.length, 1);
+    assert.equal(blocks[0]!.type, "callout");
+    assert.equal((blocks[0] as any).callout.color, "orange_background");
+    assert.equal((blocks[0] as any).callout.icon.emoji, "🎨");
+  });
+
+  it("callout without sidecar uses default color and icon", () => {
+    const md = "> [!WARNING]\n> Warning text";
+    const blocks = markdownToBlocks(md);
+    assert.equal((blocks[0] as any).callout.color, "yellow_background");
+    assert.equal((blocks[0] as any).callout.icon.emoji, "⚠️");
+  });
+});
+
+describe("markdownToBlocks — H4/H5/H6 headings downgraded to H3 (BH2-5)", () => {
+  it("H4 is downgraded to H3", () => {
+    const blocks = markdownToBlocks("#### H4 heading");
+    assert.equal(blocks.length, 1);
+    assert.equal(blocks[0]!.type, "heading_3");
+    assert.equal((blocks[0] as any).heading_3.rich_text[0].text.content, "H4 heading");
+  });
+
+  it("H5 and H6 are also downgraded to H3", () => {
+    const blocks = markdownToBlocks("##### H5\n\n###### H6");
+    assert.equal(blocks.length, 2);
+    assert.equal(blocks[0]!.type, "heading_3");
+    assert.equal(blocks[1]!.type, "heading_3");
   });
 });
 

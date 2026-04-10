@@ -137,7 +137,7 @@ Usage:
   notionctl search <query> [--type page|db]
   notionctl api <METHOD> <path> [--body @file.json]
 
-  notionctl page get <id> [--depth N]
+  notionctl page get <id>
   notionctl page create --parent <id> --title <text> [--from file.md]
   notionctl page append <id> [--from file.md]
   notionctl page update <id> [--from file.md]
