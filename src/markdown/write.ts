@@ -127,7 +127,7 @@ export function markdownToBlocks(md: string): Block[] {
         quoteLines.push(raw);
         i++;
       }
-      blocks.push(makeQuoteBlock(quoteLines.join(" ")));
+      blocks.push(makeQuoteBlock(quoteLines.filter(l => l.length > 0).join("\n")));
       continue;
     }
 

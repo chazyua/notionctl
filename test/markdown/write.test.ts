@@ -423,3 +423,16 @@ describe("toggle (details) parsing", () => {
   });
 });
 
+describe("blockquote parsing", () => {
+  it("preserves multi-paragraph blockquotes with newline separation", () => {
+    const md = "> First paragraph.\n>\n> Second paragraph.\n>\n> Third paragraph.";
+    const blocks = markdownToBlocks(md);
+    assert.equal(blocks.length, 1);
+    assert.equal(blocks[0]!.type, "quote");
+    const text = (blocks[0] as any).quote.rich_text.map((r: any) => r.plain_text).join("");
+    assert.ok(text.includes("First paragraph."), "first paragraph present");
+    assert.ok(text.includes("Second paragraph."), "second paragraph present");
+    assert.ok(!text.includes("  "), "no double spaces from collapsed blank lines");
+  });
+});
+
