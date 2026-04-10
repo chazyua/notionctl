@@ -222,22 +222,41 @@ export async function pageDuplicateCommand(ctx: { args: string[] }): Promise<str
   );
   const sourceBlocks = await fetchBlockTree(sourceId);
 
-  // Determine title from source
-  const titleProp = sourcePage.properties.title as { title?: Array<{ plain_text?: string }> } | undefined;
-  const sourceTitle = titleProp?.title?.map((t) => t.plain_text ?? "").join("") ?? "Untitled";
+  // Determine title from source — find the property with type "title"
+  // (for DB rows this is the Name column, not a literal "title" key)
+  let sourceTitle = "Untitled";
+  for (const value of Object.values(sourcePage.properties)) {
+    const prop = value as { type?: string; title?: Array<{ plain_text?: string }> };
+    if (prop.type === "title" && prop.title) {
+      sourceTitle = prop.title.map((t) => t.plain_text ?? "").join("") || "Untitled";
+      break;
+    }
+  }
   const newTitle = flags.get("title") ?? `${sourceTitle} (copy)`;
 
   // Determine parent: --parent flag or same as source
   const parentFlag = flags.get("parent");
+  let parentKey: "page_id" | "database_id";
   let parentId: string;
   if (parentFlag) {
     parentId = resolvePageId(parentFlag);
+    // Detect whether the parent is a database or page
+    try {
+      await notionRequest("GET", `/databases/${parentId}`);
+      parentKey = "database_id";
+    } catch {
+      parentKey = "page_id";
+    }
+  } else if (sourcePage.parent.database_id) {
+    parentId = sourcePage.parent.database_id;
+    parentKey = "database_id";
   } else if (sourcePage.parent.page_id) {
     parentId = sourcePage.parent.page_id;
+    parentKey = "page_id";
   } else {
     throw new NotionCliError(
       ErrorCode.USAGE,
-      "Source page has no page parent (it may be a workspace root page). Specify --parent explicitly.",
+      "Source page has no page or database parent (workspace root). Specify --parent explicitly.",
     );
   }
 
@@ -261,11 +280,36 @@ export async function pageDuplicateCommand(ctx: { args: string[] }): Promise<str
   const firstChunk = children.slice(0, 100);
   const overflow = children.slice(100);
 
-  const payload = {
-    parent: { page_id: parentId },
-    properties: {
+  // Build properties — for DB rows, copy all writable properties from source
+  const READ_ONLY_TYPES = new Set(["formula", "rollup", "created_time", "created_by", "last_edited_time", "last_edited_by", "unique_id"]);
+  let properties: Record<string, unknown>;
+  if (parentKey === "database_id") {
+    properties = {};
+    for (const [name, value] of Object.entries(sourcePage.properties)) {
+      const prop = value as { type?: string };
+      if (prop.type && !READ_ONLY_TYPES.has(prop.type)) {
+        properties[name] = value;
+      }
+    }
+    // Override title if user specified --title
+    if (flags.get("title")) {
+      for (const [name, value] of Object.entries(properties)) {
+        const prop = value as { type?: string };
+        if (prop.type === "title") {
+          properties[name] = { title: [{ type: "text", text: { content: newTitle, link: null } }] };
+          break;
+        }
+      }
+    }
+  } else {
+    properties = {
       title: [{ type: "text", text: { content: newTitle, link: null } }],
-    },
+    };
+  }
+
+  const payload = {
+    parent: { [parentKey]: parentId },
+    properties,
     children: firstChunk,
   };
 
