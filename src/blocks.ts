@@ -18,7 +18,7 @@
 import { notionRequest } from "./http.js";
 import type { Block } from "./markdown/types.js";
 
-const LIST_BLOCK_TYPES = new Set(["bulleted_list_item", "numbered_list_item", "to_do"]);
+const LIST_BLOCK_TYPES = new Set(["bulleted_list_item", "numbered_list_item", "to_do", "table"]);
 
 export type FetchBlockTreeMode = "lists-only" | "all";
 

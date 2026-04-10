@@ -25,7 +25,7 @@ export function blocksToMarkdown(blocks: Block[], opts: RenderOptions = {}): str
   let numberedIndex = 0;
 
   for (const block of blocks) {
-    const isListItem = block.type === "bulleted_list_item" || block.type === "numbered_list_item";
+    const isListItem = block.type === "bulleted_list_item" || block.type === "numbered_list_item" || block.type === "to_do";
     const isSameList = lastType === block.type && isListItem;
 
     if (!isSameList && lastType !== null) {
@@ -110,8 +110,8 @@ function renderBlock(block: Block, depth: number, numberedIndex: number): string
     case "equation":
       return `$$${block.equation.expression}$$`;
     case "table": {
-      const tb = block as unknown as { table: { children?: unknown[] } };
-      const rows = (tb.table.children ?? []) as Array<{
+      const tb = block as unknown as { table: { children?: unknown[] }; _children?: unknown[] };
+      const rows = (tb.table.children ?? tb._children ?? []) as Array<{
         type: "table_row";
         table_row: { cells: Array<Array<{ plain_text: string }>> };
       }>;

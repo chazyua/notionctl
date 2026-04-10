@@ -207,10 +207,9 @@ export function markdownToBlocks(md: string): Block[] {
     blocks.push(makeParagraphBlock(paraLines.join("\n")));
   }
 
-  // Strip empty id fields — Notion API rejects id:"" on new blocks
-  for (const b of blocks) {
-    if ((b as any).id === "") delete (b as any).id;
-  }
+  // Strip empty id fields — Notion API rejects id:"" on new blocks.
+  // Must recurse into type-specific children (e.g. table.children).
+  stripEmptyIds(blocks);
   return blocks;
 }
 
@@ -387,6 +386,20 @@ function makeDividerBlock(): Block {
     has_children: false,
     divider: {},
   } as Block;
+}
+
+function stripEmptyIds(blocks: unknown[]): void {
+  for (const b of blocks as any[]) {
+    if (b.id === "") delete b.id;
+    // Recurse into type-specific children (e.g. table.children, list .children)
+    const typeData = b[b.type];
+    if (typeData?.children && Array.isArray(typeData.children)) {
+      stripEmptyIds(typeData.children);
+    }
+    if (Array.isArray(b.children)) {
+      stripEmptyIds(b.children);
+    }
+  }
 }
 
 function parseTableRow(line: string): string[] {
