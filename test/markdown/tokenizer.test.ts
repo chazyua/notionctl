@@ -194,4 +194,31 @@ describe("markdownToRichText", () => {
   it("empty string returns empty array", () => {
     assert.deepEqual(markdownToRichText(""), []);
   });
+
+  it("asterisk italic *text* produces italic run", () => {
+    const runs = markdownToRichText("*hello*");
+    assert.equal(runs.length, 1);
+    assert.equal(runs[0]!.plain_text, "hello");
+    assert.equal(runs[0]!.annotations.italic, true);
+  });
+
+  it("***bold italic*** with triple asterisk", () => {
+    const runs = markdownToRichText("***both***");
+    assert.equal(runs.length, 1);
+    assert.equal(runs[0]!.plain_text, "both");
+    assert.equal(runs[0]!.annotations.bold, true);
+    assert.equal(runs[0]!.annotations.italic, true);
+  });
+
+  it("mixed *italic* and **bold** in same line", () => {
+    const runs = markdownToRichText("a *italic* and **bold** end");
+    const italic = runs.find((r) => r.plain_text === "italic");
+    const bold = runs.find((r) => r.plain_text === "bold");
+    assert.ok(italic, "italic run exists");
+    assert.equal(italic!.annotations.italic, true);
+    assert.equal(italic!.annotations.bold, false);
+    assert.ok(bold, "bold run exists");
+    assert.equal(bold!.annotations.bold, true);
+    assert.equal(bold!.annotations.italic, false);
+  });
 });

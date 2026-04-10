@@ -176,6 +176,14 @@ export function markdownToRichText(md: string): RichText[] {
       continue;
     }
 
+    // Italic * (single asterisk — checked after ** so bold is consumed first)
+    if (c === "*") {
+      flush();
+      state.italic = !state.italic;
+      i += 1;
+      continue;
+    }
+
     // Strikethrough ~~
     if (c === "~" && next === "~") {
       flush();
