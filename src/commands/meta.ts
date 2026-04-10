@@ -63,6 +63,9 @@ export async function searchCommand(ctx: CommandContext): Promise<string> {
     defaultFormat: "table",
   });
   if (format === "json") return renderJson(res);
+  if (res.results.length === 0) {
+    return "No results. If you expected results, ensure the integration is connected to the page via ··· → Connections in Notion.";
+  }
   return renderTable({
     columns: ["Object", "ID", "URL"],
     rows: res.results.map((r) => [r.object, r.id, r.url ?? ""]),
@@ -79,11 +82,15 @@ export async function apiCommand(ctx: CommandContext): Promise<string> {
   let body: unknown;
   const bodyFlag = flags.get("body");
   if (bodyFlag) {
-    if (bodyFlag.startsWith("@")) {
-      const content = await readFile(bodyFlag.slice(1), "utf8");
-      body = JSON.parse(content);
-    } else {
-      body = JSON.parse(bodyFlag);
+    try {
+      if (bodyFlag.startsWith("@")) {
+        const content = await readFile(bodyFlag.slice(1), "utf8");
+        body = JSON.parse(content);
+      } else {
+        body = JSON.parse(bodyFlag);
+      }
+    } catch {
+      throw new NotionCliError(ErrorCode.USAGE, `--body is not valid JSON`);
     }
   }
   const result = await notionRequest(method, path.startsWith("/") ? path : `/${path}`, body);

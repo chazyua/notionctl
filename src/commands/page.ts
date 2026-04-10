@@ -59,14 +59,23 @@ export async function pageGetCommand(ctx: { args: string[] }): Promise<string> {
     }
   }
 
+  // Prepend # Title for non-database pages (BUG-1 fix)
+  let titleLine = "";
+  if (page.parent.type !== "database_id") {
+    const titleProp = page.properties.title as { title?: Array<{ plain_text?: string }> } | undefined;
+    const title = titleProp?.title?.map((t) => t.plain_text ?? "").join("") ?? "";
+    if (title) titleLine = `# ${title}\n\n`;
+  }
+
   const body = blocksToMarkdown(children.results);
   const yaml = stringifyYaml(frontmatter);
-  return `---\n${yaml}\n---\n\n${body}`;
+  return `---\n${yaml}\n---\n\n${titleLine}${body}`;
 }
 
 async function readInputMarkdown(flags: Map<string, string>): Promise<string> {
   const fromFile = flags.get("from");
-  if (fromFile) return readFile(fromFile, "utf8");
+  // Support --from - as explicit stdin alias (BUG-3 fix)
+  if (fromFile && fromFile !== "-") return readFile(fromFile, "utf8");
   // Read stdin
   const chunks: Buffer[] = [];
   return new Promise((resolve, reject) => {
@@ -74,6 +83,11 @@ async function readInputMarkdown(flags: Map<string, string>): Promise<string> {
     process.stdin.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
     process.stdin.on("error", reject);
   });
+}
+
+/** Strip YAML frontmatter from markdown so page get → page update/append round-trips cleanly */
+function stripFrontmatter(md: string): string {
+  return extractFrontmatter(md).body;
 }
 
 export async function pageCreateCommand(ctx: { args: string[] }): Promise<string> {
@@ -87,7 +101,11 @@ export async function pageCreateCommand(ctx: { args: string[] }): Promise<string
     );
   }
   const parentId = resolvePageId(parent);
-  const bodyMd = flags.get("from") ? await readInputMarkdown(flags) : "";
+  let bodyMd = flags.get("from") ? await readInputMarkdown(flags) : "";
+  // Strip leading H1 if it matches --title (prevents duplicate heading in page body)
+  bodyMd = bodyMd.replace(/^# .+\n?/m, (match) =>
+    match.trim().slice(2) === title ? "" : match
+  ).trimStart();
   const blocks = bodyMd.length > 0 ? markdownToBlocks(bodyMd) : [];
 
   const payload = {
@@ -112,7 +130,7 @@ export async function pageAppendCommand(ctx: { args: string[] }): Promise<string
     throw new NotionCliError(ErrorCode.USAGE, "Usage: notionctl page append <id> [--from file.md]");
   }
   const id = resolvePageId(positional[0]!);
-  const bodyMd = await readInputMarkdown(flags);
+  const bodyMd = stripFrontmatter(await readInputMarkdown(flags));
   const blocks = markdownToBlocks(bodyMd);
 
   if (getBooleanFlag(flags, "dry-run")) {
@@ -126,36 +144,54 @@ export async function pageAppendCommand(ctx: { args: string[] }): Promise<string
 export async function pageUpdateCommand(ctx: { args: string[] }): Promise<string> {
   const { flags, positional } = parseFlags(ctx.args);
   if (positional.length === 0) {
-    throw new NotionCliError(ErrorCode.USAGE, "Usage: notionctl page update <id> [--from file.md]");
+    throw new NotionCliError(ErrorCode.USAGE, "Usage: notionctl page update <id> [--title <text>] [--from file.md]");
   }
   const id = resolvePageId(positional[0]!);
-  const bodyMd = await readInputMarkdown(flags);
-  const newBlocks = markdownToBlocks(bodyMd);
+  const title = flags.get("title");
+  const hasFrom = !!flags.get("from");
 
-  // Fetch existing, delete non-pass-through, append new
-  const existing = await notionRequest<{ results: Block[] }>(
-    "GET",
-    `/blocks/${id}/children`,
-  );
+  if (!title && !hasFrom) {
+    throw new NotionCliError(ErrorCode.USAGE, "Usage: notionctl page update <id> [--title <text>] [--from file.md]\nProvide at least --title or --from.");
+  }
 
-  const deletions = existing.results
-    .filter((b) => !isPassThrough(b.type))
-    .map((b) => b.id);
+  // Strip frontmatter and extract title from H1 when --from is used without --title
+  let resolvedTitle = title;
+  let newBlocks: ReturnType<typeof markdownToBlocks> | null = null;
+  if (hasFrom) {
+    const raw = stripFrontmatter(await readInputMarkdown(flags));
+    const { title: h1Title, syncBody } = extractSyncTitle({}, raw);
+    newBlocks = markdownToBlocks(syncBody);
+    if (!resolvedTitle && h1Title !== "Untitled") resolvedTitle = h1Title;
+  }
 
   if (getBooleanFlag(flags, "dry-run")) {
-    return renderJson({
-      action: "page update",
-      pageId: id,
-      willDelete: deletions,
-      willAppend: newBlocks.length,
-    });
+    const result: Record<string, unknown> = { action: "page update", pageId: id };
+    if (resolvedTitle) result["title"] = resolvedTitle;
+    if (newBlocks !== null) result["willReplaceBlocks"] = newBlocks.length;
+    return renderJson(result);
   }
 
-  for (const blockId of deletions) {
-    await notionRequest("DELETE", `/blocks/${blockId}`);
+  const result: Record<string, unknown> = {};
+
+  if (resolvedTitle) {
+    await notionRequest("PATCH", `/pages/${id}`, {
+      properties: { title: [{ type: "text", text: { content: resolvedTitle, link: null } }] },
+    });
+    result["title"] = resolvedTitle;
   }
-  const appended = await notionRequest("PATCH", `/blocks/${id}/children`, { children: newBlocks });
-  return renderJson({ deleted: deletions.length, appended });
+
+  if (newBlocks !== null) {
+    const existing = await notionRequest<{ results: Block[] }>("GET", `/blocks/${id}/children`);
+    const deletions = existing.results.filter((b) => !isPassThrough(b.type)).map((b) => b.id);
+    for (const blockId of deletions) {
+      await notionRequest("DELETE", `/blocks/${blockId}`);
+    }
+    await notionRequest("PATCH", `/blocks/${id}/children`, { children: newBlocks });
+    result["deletedBlocks"] = deletions.length;
+    result["appendedBlocks"] = newBlocks.length;
+  }
+
+  return renderJson(result);
 }
 
 export async function pageDeleteCommand(ctx: { args: string[] }): Promise<string> {
@@ -172,6 +208,20 @@ export async function pageDeleteCommand(ctx: { args: string[] }): Promise<string
   const id = resolvePageId(positional[0]!);
   const res = await notionRequest("PATCH", `/pages/${id}`, { archived: true });
   return renderJson(res);
+}
+
+function extractSyncTitle(
+  frontmatter: Record<string, unknown>,
+  body: string,
+): { title: string; syncBody: string } {
+  if (frontmatter.title) return { title: String(frontmatter.title), syncBody: body };
+  const h1Match = /^# (.+)$/m.exec(body);
+  if (h1Match) {
+    const title = h1Match[1]!.trim();
+    const syncBody = body.replace(/^# .+\n?/m, "").trimStart();
+    return { title, syncBody };
+  }
+  return { title: "Untitled", syncBody: body };
 }
 
 export async function pageSyncCommand(ctx: { args: string[] }): Promise<string> {
@@ -198,14 +248,14 @@ export async function pageSyncCommand(ctx: { args: string[] }): Promise<string> 
 
   if (state === SyncState.CREATE) {
     const parent = flags.get("parent");
-    const title = (frontmatter.title as string) ?? "Untitled";
     if (!parent) {
       throw new NotionCliError(
         ErrorCode.USAGE,
         "First sync of this file requires --parent <parent-page-id>",
       );
     }
-    const blocks = markdownToBlocks(body);
+    const { title, syncBody } = extractSyncTitle(frontmatter, body);
+    const blocks = markdownToBlocks(syncBody);
     const created = await notionRequest<{ id: string; url: string }>("POST", "/pages", {
       parent: { page_id: resolvePageId(parent) },
       properties: {
@@ -221,11 +271,15 @@ export async function pageSyncCommand(ctx: { args: string[] }): Promise<string> 
 
   if (state === SyncState.CHANGED) {
     const pageId = frontmatter.notion_id as string;
+    const { title, syncBody } = extractSyncTitle(frontmatter, body);
     const existing = await notionRequest<{ results: Block[] }>(
       "GET",
       `/blocks/${pageId}/children`,
     );
-    const newBlocks = markdownToBlocks(body);
+    const newBlocks = markdownToBlocks(syncBody);
+    await notionRequest("PATCH", `/pages/${pageId}`, {
+      properties: { title: [{ type: "text", text: { content: title, link: null } }] },
+    });
     for (const b of existing.results) {
       if (!isPassThrough(b.type)) {
         await notionRequest("DELETE", `/blocks/${b.id}`);

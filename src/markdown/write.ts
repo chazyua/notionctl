@@ -223,6 +223,10 @@ export function markdownToBlocks(md: string): Block[] {
     blocks.push(makeParagraphBlock(paraLines.join("\n")));
   }
 
+  // Strip empty id fields — Notion API rejects id:"" on new blocks
+  for (const b of blocks) {
+    if ((b as any).id === "") delete (b as any).id;
+  }
   return blocks;
 }
 
