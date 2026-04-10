@@ -149,8 +149,11 @@ export function parseSimpleFilter(expr: string, schema: Record<string, PropertyS
   }
 }
 
-function parseSimpleSort(expr: string): unknown {
+function parseSimpleSort(expr: string, schema: Record<string, PropertySchema>): unknown {
   const [prop, dir] = expr.split(":");
+  if (prop && !schema[prop]) {
+    throw new NotionCliError(ErrorCode.INVALID_PROPERTY, `Unknown sort property: ${prop}`);
+  }
   return {
     property: prop,
     direction: dir === "desc" ? "descending" : "ascending",
@@ -181,7 +184,7 @@ export async function dbQueryCommand(ctx: { args: string[] }): Promise<string> {
 
   const sorts = repeated.get("sort") ?? [];
   if (sorts.length > 0) {
-    body.sorts = sorts.map(parseSimpleSort);
+    body.sorts = sorts.map((s) => parseSimpleSort(s, schema));
   }
 
   const res = await notionRequest<{ results: Array<{ id: string; properties: Record<string, unknown> }> }>(
