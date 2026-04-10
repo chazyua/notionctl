@@ -18,6 +18,7 @@ import { fetchBlockTree } from "../blocks.js";
 import { NotionCliError, ErrorCode } from "../errors.js";
 import { renderJson, renderTable, renderCsv, chooseFormat, isStdoutTty, type Format } from "../output.js";
 import { stringifyYaml, type YamlObject } from "../utils/yaml.js";
+import { extractFrontmatter } from "../sync/frontmatter.js";
 
 async function fetchSchema(dbId: string): Promise<Record<string, PropertySchema>> {
   const db = await fetchWith404Hint(
@@ -434,8 +435,19 @@ export async function dbRowCreateCommand(ctx: { args: string[] }): Promise<strin
   let children: Block[] | undefined;
   const fromFile = flags.get("from");
   if (fromFile) {
-    const md = await readFile(fromFile, "utf8");
-    children = markdownToBlocks(md);
+    let raw: string;
+    if (fromFile === "-") {
+      const chunks: Buffer[] = [];
+      raw = await new Promise<string>((resolve, reject) => {
+        process.stdin.on("data", (c: Buffer) => chunks.push(c));
+        process.stdin.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
+        process.stdin.on("error", reject);
+      });
+    } else {
+      raw = await readFile(fromFile, "utf8");
+    }
+    const { body } = extractFrontmatter(raw);
+    children = markdownToBlocks(body);
   }
 
   const payload: Record<string, unknown> = {
