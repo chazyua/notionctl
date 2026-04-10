@@ -103,6 +103,16 @@ export async function pageCreateCommand(ctx: { args: string[] }): Promise<string
     );
   }
   const parentId = resolvePageId(parent);
+
+  // Detect whether parent is a database or page
+  let parentKey: "page_id" | "database_id" = "page_id";
+  try {
+    await notionRequest("GET", `/databases/${parentId}`);
+    parentKey = "database_id";
+  } catch {
+    // Not a database — use page_id (the default)
+  }
+
   let bodyMd = flags.get("from") ? await readInputMarkdown(flags) : "";
   // Strip leading H1 if it matches --title (prevents duplicate heading in page body)
   bodyMd = bodyMd.replace(/^# .+\n?/m, (match) =>
@@ -113,11 +123,13 @@ export async function pageCreateCommand(ctx: { args: string[] }): Promise<string
   const firstChunk = blocks.slice(0, 100);
   const overflow = blocks.slice(100);
 
+  const titleProp = parentKey === "database_id"
+    ? { Name: { title: [{ type: "text", text: { content: title, link: null } }] } }
+    : { title: [{ type: "text", text: { content: title, link: null } }] };
+
   const payload = {
-    parent: { page_id: parentId },
-    properties: {
-      title: [{ type: "text", text: { content: title, link: null } }],
-    },
+    parent: { [parentKey]: parentId },
+    properties: titleProp,
     children: firstChunk,
   };
 
