@@ -67,7 +67,12 @@ export async function blockUpdateCommand(ctx: { args: string[] }): Promise<strin
   if (!propJson) {
     throw new NotionCliError(ErrorCode.USAGE, "block update requires --prop-json '<raw Notion block shape>'");
   }
-  const body = JSON.parse(propJson);
+  let body: unknown;
+  try {
+    body = JSON.parse(propJson);
+  } catch {
+    throw new NotionCliError(ErrorCode.USAGE, `--prop-json is not valid JSON: ${propJson}`);
+  }
   if (getBooleanFlag(flags, "dry-run")) {
     return renderJson({ action: "block update", id, body });
   }

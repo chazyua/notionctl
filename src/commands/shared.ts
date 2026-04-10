@@ -68,7 +68,7 @@ export function parseFlags(args: string[]): ParsedFlags {
 }
 
 export function resolvePageId(input: string): string {
-  let raw = input.trim();
+  let raw = input.trim().split("#")[0]!;  // strip #block-anchor fragments
   const urlMatch = /notion\.so\/(?:[^/]+\/)*([^/?#]+)$/.exec(raw);
   if (urlMatch) raw = urlMatch[1]!;
   const lastDash = raw.lastIndexOf("-");
