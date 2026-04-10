@@ -16,6 +16,7 @@
 import { NotionCliError, ErrorCode, formatErrorJson, formatErrorHuman } from "./errors.js";
 import { isStdoutTty } from "./output.js";
 import { VERSION } from "./version.js";
+import { setActiveProfile } from "./auth.js";
 
 type CommandHandler = (ctx: { args: string[] }) => Promise<string>;
 
@@ -33,8 +34,10 @@ async function loadCommand(noun: string, verb: string | undefined): Promise<Comm
         case "append": return mod.pageAppendCommand;
         case "update": return mod.pageUpdateCommand;
         case "open": return mod.pageOpenCommand;
+        case "find-replace": return mod.pageFindReplaceCommand;
         case "duplicate": return mod.pageDuplicateCommand;
         case "move": return mod.pageMoveCommand;
+        case "restore": return mod.pageRestoreCommand;
         case "delete": return mod.pageDeleteCommand;
         case "sync": return mod.pageSyncCommand;
         default:
@@ -111,6 +114,7 @@ async function loadCommand(noun: string, verb: string | undefined): Promise<Comm
         case "set": return mod.authSetCommand;
         case "status": return mod.authStatusCommand;
         case "doctor": return mod.authDoctorCommand;
+        case "list": return mod.authListCommand;
         case "clear": return mod.authClearCommand;
         default:
           throw new NotionCliError(ErrorCode.USAGE, `Unknown auth verb: ${verb}`);
@@ -136,8 +140,10 @@ Usage:
   notionctl page update <id> [--from file.md]
   notionctl page sync <file.md> [--parent <id>] [--force]
   notionctl page open <id-or-url>
+  notionctl page find-replace <id> --find <text> --replace <text>
   notionctl page duplicate <id> [--parent <id>] [--title "new title"]
   notionctl page move <id> --to <parent-id>
+  notionctl page restore <id>
   notionctl page delete <id> --yes
 
   notionctl db create --parent <page-id> --title <text> [--prop Name=type[:options] ...]
@@ -163,9 +169,10 @@ Usage:
   notionctl user list
   notionctl user me
 
-  notionctl auth set
+  notionctl auth set [--profile <name>]
   notionctl auth status
   notionctl auth doctor
+  notionctl auth list
   notionctl auth clear --yes
 
 Global flags:
@@ -176,9 +183,11 @@ Global flags:
   --no-color                   Force plain output
   --debug                      Full HTTP debug to stderr (scrubbed of token)
   --yes                        Confirm destructive operations
+  --profile <name>             Use a named auth profile
 
 Environment:
-  NOTION_TOKEN         Integration token (preferred)
+  NOTION_TOKEN         Integration token (preferred over any profile)
+  NOTION_PROFILE       Default profile name (if no --profile flag)
   NOTION_TIMEOUT_MS    Request timeout (default 30000)
   XDG_CONFIG_HOME      Base dir for config file (default ~/.config)
 
@@ -197,6 +206,13 @@ async function main(): Promise<void> {
   if (argv[0] === "--version" || argv[0] === "-v") {
     process.stdout.write(`notionctl ${VERSION}\n`);
     process.exit(0);
+  }
+
+  // Extract --profile before command parsing (it's a global flag)
+  const profileIdx = argv.indexOf("--profile");
+  if (profileIdx !== -1 && argv[profileIdx + 1]) {
+    setActiveProfile(argv[profileIdx + 1]!);
+    argv.splice(profileIdx, 2);
   }
 
   const noun = argv[0]!;

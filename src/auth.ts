@@ -27,8 +27,12 @@ export interface LoadedToken {
 }
 
 const ENV_VAR = "NOTION_TOKEN";
+const PROFILE_ENV_VAR = "NOTION_PROFILE";
 const CONFIG_FILENAME = "config.json";
 const CONFIG_SUBDIR = "notion-cli";
+
+/** Global profile override set by --profile flag via setActiveProfile(). */
+let activeProfile: string | undefined;
 
 interface ConfigFile {
   token: string;
@@ -40,8 +44,35 @@ export function getConfigDir(): string {
   return join(base, CONFIG_SUBDIR);
 }
 
-export function getConfigPath(): string {
-  return join(getConfigDir(), CONFIG_FILENAME);
+export function setActiveProfile(name: string): void {
+  activeProfile = name;
+}
+
+function resolveProfile(): string | undefined {
+  return activeProfile ?? process.env[PROFILE_ENV_VAR] ?? undefined;
+}
+
+export function getConfigPath(profile?: string): string {
+  const p = profile ?? resolveProfile();
+  const filename = p ? `config-${p}.json` : CONFIG_FILENAME;
+  return join(getConfigDir(), filename);
+}
+
+export async function listProfiles(): Promise<string[]> {
+  const { readdir } = await import("node:fs/promises");
+  const dir = getConfigDir();
+  try {
+    const files = await readdir(dir);
+    const profiles: string[] = [];
+    for (const f of files) {
+      if (f === CONFIG_FILENAME) profiles.push("default");
+      const m = /^config-(.+)\.json$/.exec(f);
+      if (m) profiles.push(m[1]!);
+    }
+    return profiles.sort();
+  } catch {
+    return [];
+  }
 }
 
 export async function loadToken(): Promise<LoadedToken> {

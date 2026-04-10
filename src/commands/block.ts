@@ -63,16 +63,31 @@ export async function blockChildrenCommand(ctx: { args: string[] }): Promise<str
 export async function blockAppendCommand(ctx: { args: string[] }): Promise<string> {
   const { flags, positional } = parseFlags(ctx.args);
   if (positional.length === 0) {
-    throw new NotionCliError(ErrorCode.USAGE, "Usage: notionctl block append <id> [--from file.md]");
+    throw new NotionCliError(ErrorCode.USAGE, "Usage: notionctl block append <id> [--from file.md] [--after <block-id>]");
   }
   const id = resolvePageId(positional[0]!);
   const fromFile = flags.get("from");
-  const md = fromFile ? await readFile(fromFile, "utf8") : "";
-  const blocks = markdownToBlocks(md);
-  if (getBooleanFlag(flags, "dry-run")) {
-    return renderJson({ action: "block append", id, blocks });
+  let md = "";
+  if (fromFile && fromFile !== "-") {
+    md = await readFile(fromFile, "utf8");
+  } else if (fromFile === "-" || !process.stdin.isTTY) {
+    const chunks: Buffer[] = [];
+    md = await new Promise((resolve, reject) => {
+      process.stdin.on("data", (c) => chunks.push(c));
+      process.stdin.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
+      process.stdin.on("error", reject);
+    });
   }
-  const res = await notionRequest("PATCH", `/blocks/${id}/children`, { children: blocks });
+  const blocks = markdownToBlocks(md);
+  const afterFlag = flags.get("after");
+  const afterId = afterFlag ? resolvePageId(afterFlag) : undefined;
+
+  if (getBooleanFlag(flags, "dry-run")) {
+    return renderJson({ action: "block append", id, blocks, after: afterId ?? null });
+  }
+  const body: Record<string, unknown> = { children: blocks };
+  if (afterId) body.after = afterId;
+  const res = await notionRequest("PATCH", `/blocks/${id}/children`, body);
   return renderJson(res);
 }
 

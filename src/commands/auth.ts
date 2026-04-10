@@ -7,7 +7,7 @@
 
 import { stat } from "node:fs/promises";
 import { notionRequest } from "../http.js";
-import { saveToken, clearToken, loadToken, getConfigPath, getConfigDir, AuthSource } from "../auth.js";
+import { saveToken, clearToken, loadToken, getConfigPath, getConfigDir, listProfiles, AuthSource } from "../auth.js";
 import { parseFlags, getBooleanFlag } from "./shared.js";
 import { NotionCliError, ErrorCode } from "../errors.js";
 import { renderJson } from "../output.js";
@@ -162,6 +162,14 @@ export async function authDoctorCommand(_ctx: { args: string[] }): Promise<strin
   }
 
   return lines.join("\n");
+}
+
+export async function authListCommand(_ctx: { args: string[] }): Promise<string> {
+  const profiles = await listProfiles();
+  if (profiles.length === 0) {
+    return "No profiles configured. Run 'notionctl auth set' to create one.";
+  }
+  return profiles.map((p) => `  ${p}`).join("\n");
 }
 
 export async function authClearCommand(ctx: { args: string[] }): Promise<string> {

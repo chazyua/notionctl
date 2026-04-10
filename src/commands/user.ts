@@ -1,5 +1,5 @@
 import { notionRequest } from "../http.js";
-import { renderJson, renderTable, chooseFormat, isStdoutTty, type Format } from "../output.js";
+import { renderJson, renderTable, renderCsv, chooseFormat, isStdoutTty, type Format } from "../output.js";
 import { parseFlags } from "./shared.js";
 
 export async function userListCommand(ctx: { args: string[] }): Promise<string> {
@@ -10,10 +10,12 @@ export async function userListCommand(ctx: { args: string[] }): Promise<string> 
     defaultFormat: "table",
   });
   if (format === "json") return renderJson(res);
-  return renderTable({
+  const tableData = {
     columns: ["ID", "Name", "Type"],
     rows: res.results.map((u) => [u.id, u.name ?? "", u.type ?? ""]),
-  });
+  };
+  if (format === "csv") return renderCsv(tableData);
+  return renderTable(tableData);
 }
 
 export async function userMeCommand(_ctx: { args: string[] }): Promise<string> {

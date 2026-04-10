@@ -15,7 +15,7 @@ import { resolvePageId, parseFlags, getBooleanFlag, fetchWith404Hint } from "./s
 import { markdownToBlocks, blocksToMarkdown } from "../markdown/index.js";
 import type { Block } from "../markdown/index.js";
 import { NotionCliError, ErrorCode } from "../errors.js";
-import { renderJson, renderTable, chooseFormat, isStdoutTty, type Format } from "../output.js";
+import { renderJson, renderTable, renderCsv, chooseFormat, isStdoutTty, type Format } from "../output.js";
 import { stringifyYaml, type YamlObject } from "../utils/yaml.js";
 
 async function fetchSchema(dbId: string): Promise<Record<string, PropertySchema>> {
@@ -41,10 +41,12 @@ export async function dbSchemaCommand(ctx: { args: string[] }): Promise<string> 
     defaultFormat: "table",
   });
   if (format === "json") return renderJson(schema);
-  return renderTable({
+  const tableData = {
     columns: ["Name", "Type"],
     rows: Object.entries(schema).map(([name, s]) => [name, s.type]),
-  });
+  };
+  if (format === "csv") return renderCsv(tableData);
+  return renderTable(tableData);
 }
 
 /**
@@ -199,6 +201,7 @@ export async function dbQueryCommand(ctx: { args: string[] }): Promise<string> {
     }
     return row;
   });
+  if (format === "csv") return renderCsv({ columns, rows });
   return renderTable({ columns, rows });
 }
 

@@ -325,6 +325,115 @@ export async function pageOpenCommand(ctx: { args: string[] }): Promise<string> 
   });
 }
 
+/** Block types that carry rich_text content suitable for find-replace. */
+const RICH_TEXT_BLOCK_TYPES: Record<string, string> = {
+  paragraph: "paragraph",
+  heading_1: "heading_1",
+  heading_2: "heading_2",
+  heading_3: "heading_3",
+  bulleted_list_item: "bulleted_list_item",
+  numbered_list_item: "numbered_list_item",
+  to_do: "to_do",
+  quote: "quote",
+  callout: "callout",
+  toggle: "toggle",
+};
+
+export async function pageFindReplaceCommand(ctx: { args: string[] }): Promise<string> {
+  const { flags, positional } = parseFlags(ctx.args);
+  if (positional.length === 0) {
+    throw new NotionCliError(
+      ErrorCode.USAGE,
+      "Usage: notionctl page find-replace <id> --find <text> --replace <text>",
+    );
+  }
+  const id = resolvePageId(positional[0]!);
+  const findStr = flags.get("find");
+  const replaceStr = flags.get("replace");
+  if (!findStr) throw new NotionCliError(ErrorCode.USAGE, "Missing --find <text>");
+  if (replaceStr === undefined) throw new NotionCliError(ErrorCode.USAGE, "Missing --replace <text>");
+
+  // Also check/update the page title
+  let titleUpdated = false;
+  const page = await notionRequest<{ properties: Record<string, unknown> }>("GET", `/pages/${id}`);
+  const titleProp = page.properties.title as { title?: Array<{ plain_text?: string; text?: { content: string } }> } | undefined;
+  const titleRuns = titleProp?.title;
+  if (titleRuns) {
+    for (const run of titleRuns) {
+      if (run.text && run.text.content.includes(findStr)) {
+        run.text.content = run.text.content.replaceAll(findStr, replaceStr);
+        run.plain_text = run.text.content;
+        titleUpdated = true;
+      }
+    }
+    if (titleUpdated && !getBooleanFlag(flags, "dry-run")) {
+      await notionRequest("PATCH", `/pages/${id}`, {
+        properties: { title: titleRuns },
+      });
+    }
+  }
+
+  const blocks = await fetchBlockTree(id);
+  let matchCount = 0;
+  let blockCount = 0;
+
+  const processBlocks = async (blks: Block[]): Promise<void> => {
+    for (const block of blks) {
+      const typeKey = RICH_TEXT_BLOCK_TYPES[block.type];
+      if (!typeKey) continue;
+      const typeData = (block as any)[typeKey];
+      const richText = typeData?.rich_text as Array<{ type: string; text?: { content: string }; plain_text: string }> | undefined;
+      if (!richText) continue;
+
+      let blockModified = false;
+      for (const run of richText) {
+        if (run.type === "text" && run.text && run.text.content.includes(findStr)) {
+          const count = run.text.content.split(findStr).length - 1;
+          run.text.content = run.text.content.replaceAll(findStr, replaceStr);
+          run.plain_text = run.text.content;
+          matchCount += count;
+          blockModified = true;
+        }
+      }
+
+      if (blockModified) {
+        if (!getBooleanFlag(flags, "dry-run")) {
+          await notionRequest("PATCH", `/blocks/${block.id}`, {
+            [typeKey]: { rich_text: richText },
+          });
+        }
+        blockCount++;
+      }
+
+      // Recurse into nested children
+      const nested = (block as any)._children as Block[] | undefined;
+      if (nested) await processBlocks(nested);
+    }
+  };
+
+  await processBlocks(blocks);
+
+  return renderJson({
+    action: "find-replace",
+    find: findStr,
+    replace: replaceStr,
+    matchCount,
+    blocksModified: blockCount,
+    titleUpdated,
+    dryRun: getBooleanFlag(flags, "dry-run"),
+  });
+}
+
+export async function pageRestoreCommand(ctx: { args: string[] }): Promise<string> {
+  const { positional } = parseFlags(ctx.args);
+  if (positional.length === 0) {
+    throw new NotionCliError(ErrorCode.USAGE, "Usage: notionctl page restore <id>");
+  }
+  const id = resolvePageId(positional[0]!);
+  const res = await notionRequest<{ id: string; url: string }>("PATCH", `/pages/${id}`, { archived: false });
+  return renderJson({ id: res.id, url: res.url, restored: true });
+}
+
 export async function pageDeleteCommand(ctx: { args: string[] }): Promise<string> {
   const { flags, positional } = parseFlags(ctx.args);
   if (positional.length === 0) {

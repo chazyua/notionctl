@@ -8,7 +8,7 @@
  */
 
 import { notionRequest } from "../http.js";
-import { renderJson, renderTable, chooseFormat, isStdoutTty, type Format } from "../output.js";
+import { renderJson, renderTable, renderCsv, chooseFormat, isStdoutTty, type Format } from "../output.js";
 import { resolvePageId, parseFlags } from "./shared.js";
 import { NotionCliError, ErrorCode } from "../errors.js";
 import { readFile } from "node:fs/promises";
@@ -25,13 +25,15 @@ export async function whoamiCommand(ctx: CommandContext): Promise<string> {
     defaultFormat: "table",
   });
   if (format === "json") return renderJson(me);
-  return renderTable({
+  const tableData = {
     columns: ["Field", "Value"],
     rows: [
       ["Integration name", me.name ?? ""],
       ["Owner user", me.bot?.owner?.user?.name ?? "(workspace)"],
     ],
-  });
+  };
+  if (format === "csv") return renderCsv(tableData);
+  return renderTable(tableData);
 }
 
 export async function resolveCommand(ctx: CommandContext): Promise<string> {
@@ -66,10 +68,12 @@ export async function searchCommand(ctx: CommandContext): Promise<string> {
   if (res.results.length === 0) {
     return "No results. If you expected results, ensure the integration is connected to the page via ··· → Connections in Notion.";
   }
-  return renderTable({
+  const tableData = {
     columns: ["Object", "ID", "URL"],
     rows: res.results.map((r) => [r.object, r.id, r.url ?? ""]),
-  });
+  };
+  if (format === "csv") return renderCsv(tableData);
+  return renderTable(tableData);
 }
 
 export async function apiCommand(ctx: CommandContext): Promise<string> {
