@@ -81,7 +81,11 @@ export async function apiCommand(ctx: CommandContext): Promise<string> {
   if (positional.length < 2) {
     throw new NotionCliError(ErrorCode.USAGE, "Usage: notionctl api <METHOD> <path> [--body @file.json]");
   }
-  const method = positional[0]!.toUpperCase() as "GET" | "POST" | "PATCH" | "DELETE";
+  const VALID_METHODS = new Set(["GET", "POST", "PATCH", "DELETE"]);
+  const method = positional[0]!.toUpperCase();
+  if (!VALID_METHODS.has(method)) {
+    throw new NotionCliError(ErrorCode.USAGE, `Invalid HTTP method: ${method}. Use GET, POST, PATCH, or DELETE.`);
+  }
   const path = positional[1]!;
   let body: unknown;
   const bodyFlag = flags.get("body");
@@ -97,6 +101,6 @@ export async function apiCommand(ctx: CommandContext): Promise<string> {
       throw new NotionCliError(ErrorCode.USAGE, `--body is not valid JSON`);
     }
   }
-  const result = await notionRequest(method, path.startsWith("/") ? path : `/${path}`, body);
+  const result = await notionRequest(method as "GET" | "POST" | "PATCH" | "DELETE", path.startsWith("/") ? path : `/${path}`, body);
   return renderJson(result);
 }

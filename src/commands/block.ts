@@ -8,7 +8,7 @@ import { blocksToMarkdown, markdownToBlocks } from "../markdown/index.js";
 import type { Block } from "../markdown/index.js";
 import { fetchBlockTree } from "../blocks.js";
 import { readFile } from "node:fs/promises";
-import { resolvePageId, parseFlags, getBooleanFlag, fetchWith404Hint } from "./shared.js";
+import { resolvePageId, parseFlags, getBooleanFlag, fetchWith404Hint, parseJsonObject } from "./shared.js";
 import { NotionCliError, ErrorCode } from "../errors.js";
 import { renderJson, chooseFormat, isStdoutTty, type Format } from "../output.js";
 
@@ -102,12 +102,7 @@ export async function blockUpdateCommand(ctx: { args: string[] }): Promise<strin
   if (!propJson) {
     throw new NotionCliError(ErrorCode.USAGE, "block update requires --prop-json '<raw Notion block shape>'");
   }
-  let body: unknown;
-  try {
-    body = JSON.parse(propJson);
-  } catch {
-    throw new NotionCliError(ErrorCode.USAGE, `--prop-json is not valid JSON: ${propJson}`);
-  }
+  const body = parseJsonObject(propJson, "--prop-json");
   if (getBooleanFlag(flags, "dry-run")) {
     return renderJson({ action: "block update", id, body });
   }

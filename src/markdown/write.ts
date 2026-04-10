@@ -76,6 +76,11 @@ export function markdownToBlocks(md: string): Block[] {
     if (imgMatch) {
       const alt = imgMatch[1]!;
       const url = imgMatch[2]!;
+      if (!/^https?:\/\//i.test(url)) {
+        // Skip non-HTTP image URLs (javascript:, data:, file://, etc.)
+        i++;
+        continue;
+      }
       blocks.push({
         object: "block",
         id: "",

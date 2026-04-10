@@ -191,12 +191,14 @@ function mapStatusToErrorCode(status: number): ErrorCode {
   return ErrorCode.API_ERROR;
 }
 
+const MAX_TIMEOUT_MS = 300_000;
+
 function parseTimeoutEnv(): number | undefined {
   const raw = process.env.NOTION_TIMEOUT_MS;
   if (!raw) return undefined;
   const n = Number(raw);
   if (!Number.isFinite(n) || n <= 0) return undefined;
-  return n;
+  return Math.min(n, MAX_TIMEOUT_MS);
 }
 
 interface PaginatedResponse<T> {
@@ -225,7 +227,7 @@ export async function notionRequest<T = unknown>(
   const first = await notionRequestSingle<T>(method, path, body);
   if (!isPaginated(first)) return first;
 
-  const maxPages = opts.maxPages ?? Infinity;
+  const maxPages = opts.maxPages ?? 100;
   const allResults: unknown[] = [...first.results];
   let cursor = first.has_more ? first.next_cursor : null;
   let page = 1;

@@ -13,7 +13,7 @@
 
 import { readFile, writeFile, mkdir, rm, stat, chmod } from "node:fs/promises";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { NotionCliError, ErrorCode } from "./errors.js";
 
 export enum AuthSource {
@@ -41,7 +41,11 @@ interface ConfigFile {
 export function getConfigDir(): string {
   const xdg = process.env.XDG_CONFIG_HOME;
   const base = xdg && xdg.length > 0 ? xdg : join(homedir(), ".config");
-  return join(base, CONFIG_SUBDIR);
+  const resolved = resolve(join(base, CONFIG_SUBDIR));
+  if (!resolved.startsWith(homedir())) {
+    process.stderr.write(`Warning: config directory is outside home directory: ${resolved}\n`);
+  }
+  return resolved;
 }
 
 export function setActiveProfile(name: string): void {
@@ -80,7 +84,7 @@ export async function listProfiles(): Promise<string[]> {
     for (const f of files) {
       if (f === CONFIG_FILENAME) profiles.push("default");
       const m = /^config-(.+)\.json$/.exec(f);
-      if (m) profiles.push(m[1]!);
+      if (m && /^[a-zA-Z0-9_-]{1,64}$/.test(m[1]!)) profiles.push(m[1]!);
     }
     return profiles.sort();
   } catch {

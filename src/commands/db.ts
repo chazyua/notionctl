@@ -11,7 +11,7 @@ import { readFile } from "node:fs/promises";
 import { notionRequest } from "../http.js";
 import { parseProperty, parsePropertyFlag, type PropertySchema } from "../properties/parse.js";
 import { renderProperty } from "../properties/render.js";
-import { resolvePageId, parseFlags, getBooleanFlag, fetchWith404Hint } from "./shared.js";
+import { resolvePageId, parseFlags, getBooleanFlag, fetchWith404Hint, parseJsonObject } from "./shared.js";
 import { markdownToBlocks, blocksToMarkdown } from "../markdown/index.js";
 import type { Block } from "../markdown/index.js";
 import { fetchBlockTree } from "../blocks.js";
@@ -175,7 +175,7 @@ export async function dbQueryCommand(ctx: { args: string[] }): Promise<string> {
     const raw = filterJsonFlag.startsWith("@")
       ? await readFile(filterJsonFlag.slice(1), "utf8")
       : filterJsonFlag;
-    body.filter = JSON.parse(raw);
+    body.filter = parseJsonObject(raw, "--filter-json");
   } else if (filterFlags.length === 1) {
     body.filter = parseSimpleFilter(filterFlags[0]!, schema);
   } else if (filterFlags.length > 1) {
@@ -286,18 +286,10 @@ export async function dbCreateCommand(ctx: { args: string[] }): Promise<string> 
   // --schema-json: wholesale replacement (escape hatch)
   const schemaJson = flags.get("schema-json");
   if (schemaJson) {
-    let parsed: unknown;
-    try {
-      const raw = schemaJson.startsWith("@")
-        ? await readFile(schemaJson.slice(1), "utf8")
-        : schemaJson;
-      parsed = JSON.parse(raw);
-    } catch {
-      throw new NotionCliError(ErrorCode.USAGE, "--schema-json is not valid JSON");
-    }
-    if (parsed && typeof parsed === "object") {
-      Object.assign(properties, parsed as Record<string, unknown>);
-    }
+    const raw = schemaJson.startsWith("@")
+      ? await readFile(schemaJson.slice(1), "utf8")
+      : schemaJson;
+    Object.assign(properties, parseJsonObject(raw, "--schema-json"));
   }
 
   // --prop Name=type[:options]: individual columns added on top
@@ -362,18 +354,10 @@ export async function dbUpdateCommand(ctx: { args: string[] }): Promise<string> 
 
   const schemaJson = flags.get("schema-json");
   if (schemaJson) {
-    let parsed: unknown;
-    try {
-      const raw = schemaJson.startsWith("@")
-        ? await readFile(schemaJson.slice(1), "utf8")
-        : schemaJson;
-      parsed = JSON.parse(raw);
-    } catch {
-      throw new NotionCliError(ErrorCode.USAGE, "--schema-json is not valid JSON");
-    }
-    if (parsed && typeof parsed === "object") {
-      Object.assign(properties, parsed as Record<string, unknown>);
-    }
+    const raw = schemaJson.startsWith("@")
+      ? await readFile(schemaJson.slice(1), "utf8")
+      : schemaJson;
+    Object.assign(properties, parseJsonObject(raw, "--schema-json"));
   }
 
   if (Object.keys(properties).length > 0) {
@@ -428,7 +412,7 @@ export async function dbRowCreateCommand(ctx: { args: string[] }): Promise<strin
   const properties: Record<string, unknown> = {};
   const propJson = flags.get("prop-json");
   if (propJson) {
-    Object.assign(properties, JSON.parse(propJson));
+    Object.assign(properties, parseJsonObject(propJson, "--prop-json"));
   }
   for (const raw of repeated.get("prop") ?? []) {
     const { key, value } = parsePropertyFlag(raw);
@@ -477,7 +461,7 @@ export async function dbRowUpdateCommand(ctx: { args: string[] }): Promise<strin
 
   const properties: Record<string, unknown> = {};
   const propJson = flags.get("prop-json");
-  if (propJson) Object.assign(properties, JSON.parse(propJson));
+  if (propJson) Object.assign(properties, parseJsonObject(propJson, "--prop-json"));
   for (const raw of repeated.get("prop") ?? []) {
     const { key, value } = parsePropertyFlag(raw);
     properties[key] = parseProperty(schema, key, value);

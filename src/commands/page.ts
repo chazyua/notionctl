@@ -7,7 +7,8 @@
  * (from --from file or stdin) and convert to blocks.
  */
 
-import { readFile, writeFile } from "node:fs/promises";
+import { readFile, writeFile, rename } from "node:fs/promises";
+import { resolve } from "node:path";
 import { execFile } from "node:child_process";
 import { extractFrontmatter, reinsertFrontmatter } from "../sync/frontmatter.js";
 import { classifySyncState, computeContentHash, SyncState } from "../sync/sync.js";
@@ -540,12 +541,21 @@ export function extractSyncTitle(
   return { title: "Untitled", syncBody: body };
 }
 
+async function atomicWriteFile(path: string, content: string): Promise<void> {
+  const tmp = `${path}.tmp-${process.pid}`;
+  await writeFile(tmp, content, "utf8");
+  await rename(tmp, path);
+}
+
 export async function pageSyncCommand(ctx: { args: string[] }): Promise<string> {
   const { flags, positional } = parseFlags(ctx.args);
   if (positional.length === 0) {
     throw new NotionCliError(ErrorCode.USAGE, "Usage: notionctl page sync <file.md>");
   }
-  const file = positional[0]!;
+  const file = resolve(positional[0]!);
+  if (!file.startsWith(process.cwd())) {
+    throw new NotionCliError(ErrorCode.USAGE, `Refusing to sync file outside working directory: ${file}`);
+  }
   const source = await readFile(file, "utf8");
   const { data: frontmatter, body } = extractFrontmatter(source);
 
@@ -619,7 +629,7 @@ export async function pageSyncCommand(ctx: { args: string[] }): Promise<string> 
     frontmatter.notion_id = created.id;
     frontmatter.notion_hash = computeContentHash(body);
     frontmatter.notion_synced_at = new Date().toISOString();
-    await writeFile(file, reinsertFrontmatter(frontmatter, body), "utf8");
+    await atomicWriteFile(file, reinsertFrontmatter(frontmatter, body));
     return renderJson({ file, state, createdId: created.id });
   }
 
@@ -651,7 +661,7 @@ export async function pageSyncCommand(ctx: { args: string[] }): Promise<string> 
     await appendBlocksChunked(pageId, newBlocks);
     frontmatter.notion_hash = computeContentHash(body);
     frontmatter.notion_synced_at = new Date().toISOString();
-    await writeFile(file, reinsertFrontmatter(frontmatter, body), "utf8");
+    await atomicWriteFile(file, reinsertFrontmatter(frontmatter, body));
     return renderJson({ file, state, updatedId: pageId });
   }
 

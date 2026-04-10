@@ -98,6 +98,25 @@ export function getBooleanFlag(flags: Map<string, string>, name: string): boolea
 }
 
 /**
+ * Parse a JSON string and validate it is a plain object (not null, array, or scalar).
+ * Strips __proto__ and constructor keys to prevent prototype pollution.
+ */
+export function parseJsonObject(raw: string, flagName: string): Record<string, unknown> {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new NotionCliError(ErrorCode.USAGE, `${flagName} is not valid JSON`);
+  }
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new NotionCliError(ErrorCode.USAGE, `${flagName} must be a JSON object, not an array or scalar`);
+  }
+  return Object.fromEntries(
+    Object.entries(parsed as Record<string, unknown>).filter(([k]) => k !== "__proto__" && k !== "constructor"),
+  );
+}
+
+/**
  * Wrap a resource fetch so that a bare NOT_FOUND becomes actionable:
  * most NOT_FOUNDs in Notion happen because the integration isn't connected
  * to that page tree (the API makes inaccessible pages look like they don't

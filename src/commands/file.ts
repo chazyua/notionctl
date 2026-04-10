@@ -66,6 +66,10 @@ export async function fileUploadCommand(ctx: { args: string[] }): Promise<string
   if (fileSize === 0) {
     throw new NotionCliError(ErrorCode.USAGE, `File is empty: ${filePath}`);
   }
+  const MAX_UPLOAD_BYTES = 20 * 1024 * 1024;
+  if (fileSize > MAX_UPLOAD_BYTES) {
+    throw new NotionCliError(ErrorCode.USAGE, `File too large: ${fileSize} bytes (max ${MAX_UPLOAD_BYTES} bytes)`);
+  }
 
   if (getBooleanFlag(flags, "dry-run")) {
     return renderJson({

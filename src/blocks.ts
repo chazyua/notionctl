@@ -22,16 +22,20 @@ const LIST_BLOCK_TYPES = new Set(["bulleted_list_item", "numbered_list_item", "t
 
 export type FetchBlockTreeMode = "lists-only" | "all";
 
+const MAX_RECURSION_DEPTH = 20;
+
 export async function fetchBlockTree(
   blockId: string,
   mode: FetchBlockTreeMode = "lists-only",
+  depth: number = 0,
 ): Promise<Block[]> {
   const res = await notionRequest<{ results: Block[] }>("GET", `/blocks/${blockId}/children`);
+  if (depth >= MAX_RECURSION_DEPTH) return res.results;
   for (const block of res.results) {
     if (!block.has_children) continue;
     const shouldRecurse = mode === "all" || LIST_BLOCK_TYPES.has(block.type);
     if (shouldRecurse) {
-      (block as unknown as { _children: Block[] })._children = await fetchBlockTree(block.id, mode);
+      (block as unknown as { _children: Block[] })._children = await fetchBlockTree(block.id, mode, depth + 1);
     }
   }
   return res.results;

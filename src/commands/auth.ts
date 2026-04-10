@@ -214,15 +214,16 @@ function openBrowser(url: string): void {
 
 export async function authLoginCommand(ctx: { args: string[] }): Promise<string> {
   const { flags } = parseFlags(ctx.args);
-  const clientId = flags.get("client-id");
-  const clientSecret = flags.get("client-secret");
+  const clientId = flags.get("client-id") ?? process.env.NOTION_CLIENT_ID;
+  const clientSecret = process.env.NOTION_CLIENT_SECRET ?? flags.get("client-secret");
 
   if (!clientId || !clientSecret) {
-    throw new NotionCliError(ErrorCode.USAGE, "auth login requires --client-id and --client-secret", {
+    throw new NotionCliError(ErrorCode.USAGE, "auth login requires --client-id and --client-secret (or env vars)", {
       suggestions: [
         "Create a public integration at https://www.notion.so/profile/integrations",
         `Set the redirect URI to http://localhost:${DEFAULT_OAUTH_PORT}/callback`,
-        "Usage: notionctl auth login --client-id <id> --client-secret <secret>",
+        "Preferred: set NOTION_CLIENT_ID and NOTION_CLIENT_SECRET environment variables",
+        "Or: notionctl auth login --client-id <id> --client-secret <secret>",
       ],
     });
   }
@@ -248,6 +249,11 @@ export async function authLoginCommand(ctx: { args: string[] }): Promise<string>
     };
 
     const server = createServer(async (req, res) => {
+      if ((req.url?.length ?? 0) > 4096) {
+        res.writeHead(400);
+        res.end();
+        return;
+      }
       const url = new URL(req.url!, `http://127.0.0.1`);
       if (url.pathname !== "/callback") {
         res.writeHead(404);
