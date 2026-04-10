@@ -28,6 +28,7 @@ const BOOLEAN_FLAGS = new Set([
 const REPEATABLE_FLAGS = new Set([
   "prop",
   "sort",
+  "filter",
   "add-prop",
   "remove-prop",
   "rename-prop",
@@ -76,13 +77,14 @@ export function parseFlags(args: string[]): ParsedFlags {
 
 export function resolvePageId(input: string): string {
   let raw = input.trim().split("#")[0]!;  // strip #block-anchor fragments
+  raw = raw.split("?")[0]!;              // strip ?query-string parameters
   const urlMatch = /notion\.(?:so|site)\/(?:[^/]+\/)*([^/?#]+)$/.exec(raw);
   if (urlMatch) raw = urlMatch[1]!;
   const lastDash = raw.lastIndexOf("-");
   if (lastDash !== -1 && raw.length - lastDash === 33) raw = raw.slice(lastDash + 1);
 
-  const compact = raw.replace(/-/g, "");
-  if (!/^[0-9a-f]{32}$/i.test(compact)) {
+  const compact = raw.replace(/-/g, "").toLowerCase();
+  if (!/^[0-9a-f]{32}$/.test(compact)) {
     throw new NotionCliError(
       ErrorCode.USAGE,
       `Could not parse Notion ID or URL: ${input}`,

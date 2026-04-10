@@ -165,15 +165,17 @@ export async function dbQueryCommand(ctx: { args: string[] }): Promise<string> {
   const schema = await fetchSchema(id);
 
   const body: Record<string, unknown> = {};
-  const filterFlag = flags.get("filter");
+  const filterFlags = repeated.get("filter") ?? [];
   const filterJsonFlag = flags.get("filter-json");
   if (filterJsonFlag) {
     const raw = filterJsonFlag.startsWith("@")
       ? await readFile(filterJsonFlag.slice(1), "utf8")
       : filterJsonFlag;
     body.filter = JSON.parse(raw);
-  } else if (filterFlag) {
-    body.filter = parseSimpleFilter(filterFlag, schema);
+  } else if (filterFlags.length === 1) {
+    body.filter = parseSimpleFilter(filterFlags[0]!, schema);
+  } else if (filterFlags.length > 1) {
+    body.filter = { and: filterFlags.map((f) => parseSimpleFilter(f, schema)) };
   }
 
   const sorts = repeated.get("sort") ?? [];

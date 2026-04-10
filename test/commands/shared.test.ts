@@ -21,6 +21,11 @@ describe("parseFlags", () => {
     assert.deepEqual(repeated.get("prop"), ["a=1", "b=2"]);
   });
 
+  it("collects repeated --filter flags as arrays", () => {
+    const { repeated } = parseFlags(["--filter", "Status=Done", "--filter", "Count>=10"]);
+    assert.deepEqual(repeated.get("filter"), ["Status=Done", "Count>=10"]);
+  });
+
   it("treats boolean flags without value as true", () => {
     const { flags } = parseFlags(["--dry-run", "--quiet"]);
     assert.equal(flags.get("dry-run"), "true");
