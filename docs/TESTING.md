@@ -75,7 +75,8 @@ Comprehensive test scenarios for notionctl. Use this for manual dogfooding, regr
 - [A] 404 for non-existent page with "Connections" hint
 
 ### 2.2 page create
-- [M] Creates page with `--title` under `--parent`
+- [M] Creates page with `--title` under `--parent` (detects database vs page parent)
+- [M] Database ID as `--parent` creates a database row with correct parent key
 - [M] `--from file.md` creates page with Markdown body
 - [M] Stdin pipe works: `echo "content" | notionctl page create ...`
 - [M] Duplicate H1 matching `--title` is stripped from body
@@ -114,7 +115,7 @@ Comprehensive test scenarios for notionctl. Use this for manual dogfooding, regr
 - [M] Replaces text in paragraphs, headings, lists, quotes, callouts, toggles
 - [M] Replaces text in page title
 - [M] Recurses into nested blocks
-- [M] Reports match count and blocks modified
+- [M] Reports match count and blocks modified (including title matches)
 - [M] `--dry-run` shows what would change without modifying
 - [M] Missing `--find` or `--replace` produces USAGE error
 - [M] No matches reports 0 without error
@@ -124,7 +125,8 @@ Comprehensive test scenarios for notionctl. Use this for manual dogfooding, regr
 - [M] Default title is "Original (copy)"
 - [M] `--title` overrides copy title
 - [M] `--parent` places copy under a different parent
-- [M] Without `--parent`, copies to same parent
+- [M] Without `--parent`, copies to same parent (including database rows)
+- [M] Database row duplicate copies all writable properties (select, number, etc.)
 - [M] Workspace root page without `--parent` produces USAGE error
 - [M] `--dry-run` shows payload without creating
 
@@ -173,6 +175,7 @@ Comprehensive test scenarios for notionctl. Use this for manual dogfooding, regr
 - [M] `--filter "Count>=10"` filters by number comparison
 - [M] `--filter "Due>2026-04-01"` filters by date
 - [M] `--filter "Tags=urgent,important"` AND filter on multi_select
+- [A] Multiple `--filter` flags combined with AND
 - [M] `--sort "Date:desc"` sorts descending
 - [M] `--sort "Date:asc"` sorts ascending (default)
 - [M] `--filter-json @file.json` for complex Notion filter objects
@@ -180,6 +183,7 @@ Comprehensive test scenarios for notionctl. Use this for manual dogfooding, regr
 - [M] `--format csv` renders comma-separated output
 - [M] `--format json` returns raw API response
 - [M] Unknown property in filter produces INVALID_PROPERTY error
+- [M] Unknown property in sort produces INVALID_PROPERTY error
 - [M] Invalid operator for type (e.g., `>` on select) produces USAGE error
 - [A] All filter operators map to correct Notion API filter objects
 - [A] Non-numeric value in number filter is rejected
@@ -195,7 +199,8 @@ Comprehensive test scenarios for notionctl. Use this for manual dogfooding, regr
 
 ### 3.6 db row create
 - [M] `--prop "Name=Ship v2" --prop "Status=Todo"` sets typed properties
-- [M] `--from body.md` attaches Markdown content to the row
+- [M] `--from body.md` attaches Markdown content to the row (frontmatter stripped)
+- [M] `--from -` reads body from stdin
 - [M] `--dry-run` shows payload
 - [M] Unknown property name in `--prop` produces error
 
@@ -228,6 +233,7 @@ Comprehensive test scenarios for notionctl. Use this for manual dogfooding, regr
 - [M] Stdin pipe works
 - [M] `--after <block-id>` inserts at specific position
 - [M] `--dry-run` shows blocks
+- [M] Empty input returns warning instead of silent no-op
 
 ### 4.4 block update
 - [M] `--prop-json` patches block with raw Notion JSON
@@ -279,6 +285,7 @@ Comprehensive test scenarios for notionctl. Use this for manual dogfooding, regr
 
 ### 8.2 search
 - [M] Returns matching pages and databases
+- [M] Multi-word query joins all positional args (no quoting needed)
 - [M] `--type page` filters to pages only
 - [M] `--type db` filters to databases only
 - [M] No results shows hint about Connections
@@ -321,7 +328,11 @@ Comprehensive test scenarios for notionctl. Use this for manual dogfooding, regr
 - [A] `has_children` flag set correctly on parent vs leaf blocks
 - [A] No `id` field on newly created blocks
 - [A] GFM alert syntax (`> [!NOTE]`) becomes callout block
-- [A] HTML `<details>` becomes toggle block
+- [A] HTML `<details>` becomes toggle block with body content as children
+- [A] Multi-line `<details>` with `<summary>` on separate line parsed correctly
+- [A] Inline `<details>...<summary>...</summary>...</details>` does not consume next block
+- [A] `![alt](url)` on its own line becomes Notion image block
+- [A] Multi-paragraph blockquotes preserve line breaks (not collapsed to single line)
 - [M] Large Markdown files (100+ blocks) convert without error
 - [M] Markdown with mixed indentation (tabs vs spaces) handles gracefully
 
@@ -330,6 +341,8 @@ Comprehensive test scenarios for notionctl. Use this for manual dogfooding, regr
 - [A] Nested annotations (bold+italic, bold link, annotated link)
 - [A] Round-trip: `rich_text` to Markdown to `rich_text` preserves annotations
 - [A] `*asterisk italic*` and `***triple asterisk***` parsed correctly
+- [A] `notion://` URLs preserved in links (not dropped)
+- [A] Inline `$expr$` parsed as equation run
 - [A] Empty input returns empty array
 - [M] Very long rich text segments (1000+ characters) handled correctly
 
@@ -406,7 +419,7 @@ These automated checks run as part of the test suite and fail the build on viola
 ## Running
 
 ```sh
-# Automated test suite (246 tests)
+# Automated test suite (481 tests)
 npm test
 
 # Security checks only
