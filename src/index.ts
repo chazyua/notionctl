@@ -15,6 +15,7 @@
 
 import { NotionCliError, ErrorCode, formatErrorJson, formatErrorHuman } from "./errors.js";
 import { isStdoutTty } from "./output.js";
+import { VERSION } from "./version.js";
 
 type CommandHandler = (ctx: { args: string[] }) => Promise<string>;
 
@@ -41,6 +42,7 @@ async function loadCommand(noun: string, verb: string | undefined): Promise<Comm
       const mod = await import("./commands/db.js");
       switch (verb) {
         case "create": return mod.dbCreateCommand;
+        case "update": return mod.dbUpdateCommand;
         case "query": return mod.dbQueryCommand;
         case "schema": return mod.dbSchemaCommand;
         case "row": {
@@ -124,6 +126,7 @@ Usage:
   notionctl page delete <id> --yes
 
   notionctl db create --parent <page-id> --title <text> [--prop Name=type[:options] ...]
+  notionctl db update <id> [--title X] [--add-prop Name=type ...] [--remove-prop Name ...] [--rename-prop Old=New ...]
   notionctl db query <id> [--filter Key=value] [--sort Key:desc] [--filter-json @f.json]
   notionctl db schema <id>
   notionctl db row get <page-id>
@@ -174,7 +177,7 @@ async function main(): Promise<void> {
   }
 
   if (argv[0] === "--version" || argv[0] === "-v") {
-    process.stdout.write("notionctl 0.1.1\n");
+    process.stdout.write(`notionctl ${VERSION}\n`);
     process.exit(0);
   }
 

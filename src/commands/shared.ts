@@ -22,9 +22,16 @@ const BOOLEAN_FLAGS = new Set([
   "include-children",
   "force",
   "merge",
+  "recursive",
 ]);
 
-const REPEATABLE_FLAGS = new Set(["prop", "sort"]);
+const REPEATABLE_FLAGS = new Set([
+  "prop",
+  "sort",
+  "add-prop",
+  "remove-prop",
+  "rename-prop",
+]);
 
 export function parseFlags(args: string[]): ParsedFlags {
   const flags = new Map<string, string>();
@@ -86,4 +93,34 @@ export function resolvePageId(input: string): string {
 
 export function getBooleanFlag(flags: Map<string, string>, name: string): boolean {
   return flags.get(name) === "true";
+}
+
+/**
+ * Wrap a resource fetch so that a bare NOT_FOUND becomes actionable:
+ * most NOT_FOUNDs in Notion happen because the integration isn't connected
+ * to that page tree (the API makes inaccessible pages look like they don't
+ * exist). This helper adds the Connections hint so users can self-diagnose.
+ */
+export async function fetchWith404Hint<T>(
+  fn: () => Promise<T>,
+  resourceName: string,
+): Promise<T> {
+  try {
+    return await fn();
+  } catch (err) {
+    if (err instanceof NotionCliError && err.code === ErrorCode.NOT_FOUND) {
+      throw new NotionCliError(
+        ErrorCode.NOT_FOUND,
+        `${resourceName} not found — either the ID is wrong, or your integration is not connected to this resource.`,
+        {
+          suggestions: [
+            "Open the page/database in Notion → ··· menu → Connections → add your integration.",
+            "Connecting at a parent grants access to all descendants recursively.",
+            "Or verify the ID with: notionctl resolve <url>",
+          ],
+        },
+      );
+    }
+    throw err;
+  }
 }

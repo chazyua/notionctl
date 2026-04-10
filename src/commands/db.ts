@@ -11,7 +11,7 @@ import { readFile } from "node:fs/promises";
 import { notionRequest } from "../http.js";
 import { parseProperty, parsePropertyFlag, type PropertySchema } from "../properties/parse.js";
 import { renderProperty } from "../properties/render.js";
-import { resolvePageId, parseFlags, getBooleanFlag } from "./shared.js";
+import { resolvePageId, parseFlags, getBooleanFlag, fetchWith404Hint } from "./shared.js";
 import { markdownToBlocks, blocksToMarkdown } from "../markdown/index.js";
 import type { Block } from "../markdown/index.js";
 import { NotionCliError, ErrorCode } from "../errors.js";
@@ -19,9 +19,12 @@ import { renderJson, renderTable, chooseFormat, isStdoutTty, type Format } from 
 import { stringifyYaml, type YamlObject } from "../utils/yaml.js";
 
 async function fetchSchema(dbId: string): Promise<Record<string, PropertySchema>> {
-  const db = await notionRequest<{ properties: Record<string, PropertySchema> }>(
-    "GET",
-    `/databases/${dbId}`,
+  const db = await fetchWith404Hint(
+    () => notionRequest<{ properties: Record<string, PropertySchema> }>(
+      "GET",
+      `/databases/${dbId}`,
+    ),
+    `Database ${dbId}`,
   );
   return db.properties;
 }
@@ -44,37 +47,96 @@ export async function dbSchemaCommand(ctx: { args: string[] }): Promise<string> 
   });
 }
 
-function parseSimpleFilter(expr: string, schema: Record<string, PropertySchema>): unknown {
-  const eqIdx = expr.indexOf("=");
-  if (eqIdx === -1) {
-    throw new NotionCliError(ErrorCode.USAGE, `Invalid filter: ${expr}`);
+/**
+ * Find the leftmost comparison operator in an expression. Longer operators
+ * (>=, <=) are preferred at the same position over shorter (>, <, =).
+ */
+function findOperator(expr: string): { op: "=" | ">" | "<" | ">=" | "<="; index: number } | null {
+  const twoChar: Array<">=" | "<="> = [">=", "<="];
+  const oneChar: Array<"=" | ">" | "<"> = [">", "<", "="];
+  let best: { op: "=" | ">" | "<" | ">=" | "<="; index: number } | null = null;
+  for (const op of twoChar) {
+    const idx = expr.indexOf(op);
+    if (idx !== -1 && (best === null || idx < best.index)) {
+      best = { op, index: idx };
+    }
   }
-  const key = expr.slice(0, eqIdx).trim();
-  const value = expr.slice(eqIdx + 1).trim();
+  for (const op of oneChar) {
+    const idx = expr.indexOf(op);
+    if (idx === -1) continue;
+    // Skip the second char of a two-char operator we already found
+    if (best && idx === best.index + 1) continue;
+    if (best === null || idx < best.index) {
+      best = { op, index: idx };
+    }
+  }
+  return best;
+}
+
+// Exported for unit testing. Callers inside the module use this directly.
+export function parseSimpleFilter(expr: string, schema: Record<string, PropertySchema>): unknown {
+  const match = findOperator(expr);
+  if (!match) {
+    throw new NotionCliError(ErrorCode.USAGE, `Invalid filter: ${expr} (expected Key=value, Key>value, etc.)`);
+  }
+  const { op, index } = match;
+  const key = expr.slice(0, index).trim();
+  const value = expr.slice(index + op.length).trim();
   const prop = schema[key];
   if (!prop) {
     throw new NotionCliError(ErrorCode.INVALID_PROPERTY, `Unknown property: ${key}`);
   }
   switch (prop.type) {
     case "select":
+      if (op !== "=") throw new NotionCliError(ErrorCode.USAGE, `select filter only supports =`);
       return { property: key, select: { equals: value } };
     case "status":
+      if (op !== "=") throw new NotionCliError(ErrorCode.USAGE, `status filter only supports =`);
       return { property: key, status: { equals: value } };
+    case "multi_select": {
+      if (op !== "=") throw new NotionCliError(ErrorCode.USAGE, `multi_select filter only supports =`);
+      const values = value.split(",").map((v) => v.trim()).filter(Boolean);
+      if (values.length === 0) {
+        throw new NotionCliError(ErrorCode.USAGE, `multi_select filter needs at least one value`);
+      }
+      if (values.length === 1) {
+        return { property: key, multi_select: { contains: values[0] } };
+      }
+      return { and: values.map((v) => ({ property: key, multi_select: { contains: v } })) };
+    }
     case "checkbox":
+      if (op !== "=") throw new NotionCliError(ErrorCode.USAGE, `checkbox filter only supports =`);
       return { property: key, checkbox: { equals: value === "true" } };
     case "number": {
       const n = Number(value);
       if (!Number.isFinite(n)) {
         throw new NotionCliError(ErrorCode.USAGE, `Invalid number in filter: ${value}`);
       }
-      return { property: key, number: { equals: n } };
+      const numberOp = {
+        "=": "equals",
+        ">": "greater_than",
+        "<": "less_than",
+        ">=": "greater_than_or_equal_to",
+        "<=": "less_than_or_equal_to",
+      }[op];
+      return { property: key, number: { [numberOp]: n } };
     }
     case "title":
+      if (op !== "=") throw new NotionCliError(ErrorCode.USAGE, `title filter only supports =`);
       return { property: key, title: { contains: value } };
     case "rich_text":
+      if (op !== "=") throw new NotionCliError(ErrorCode.USAGE, `rich_text filter only supports =`);
       return { property: key, rich_text: { contains: value } };
-    case "date":
-      return { property: key, date: { equals: value } };
+    case "date": {
+      const dateOp = {
+        "=": "equals",
+        ">": "after",
+        "<": "before",
+        ">=": "on_or_after",
+        "<=": "on_or_before",
+      }[op];
+      return { property: key, date: { [dateOp]: value } };
+    }
     default:
       throw new NotionCliError(
         ErrorCode.USAGE,
@@ -145,7 +207,8 @@ export async function dbQueryCommand(ctx: { args: string[] }): Promise<string> {
  * property schema object. Supports the common types; unusual ones should
  * use --schema-json for the full escape hatch.
  */
-function parseColumnSpec(spec: string): { name: string; schema: Record<string, unknown> } {
+// Exported for unit testing. Used by both db create and db update.
+export function parseColumnSpec(spec: string): { name: string; schema: Record<string, unknown> } {
   const eqIdx = spec.indexOf("=");
   if (eqIdx === -1) {
     throw new NotionCliError(ErrorCode.USAGE, `Invalid column spec: ${spec} (expected Name=type[:options])`);
@@ -244,6 +307,82 @@ export async function dbCreateCommand(ctx: { args: string[] }): Promise<string> 
   }
   const created = await notionRequest<{ id: string; url: string }>("POST", "/databases", payload);
   return renderJson({ id: created.id, url: created.url });
+}
+
+export async function dbUpdateCommand(ctx: { args: string[] }): Promise<string> {
+  const { flags, repeated, positional } = parseFlags(ctx.args);
+  if (positional.length === 0) {
+    throw new NotionCliError(
+      ErrorCode.USAGE,
+      "Usage: notionctl db update <id> [--title X] [--add-prop Name=type[:opts] ...] [--remove-prop Name ...] [--rename-prop Old=New ...] [--schema-json '...']",
+    );
+  }
+  const id = resolvePageId(positional[0]!);
+
+  const payload: Record<string, unknown> = {};
+
+  const title = flags.get("title");
+  if (title) {
+    payload.title = [{ type: "text", text: { content: title, link: null } }];
+  }
+
+  const properties: Record<string, unknown> = {};
+
+  for (const raw of repeated.get("add-prop") ?? []) {
+    const { name, schema } = parseColumnSpec(raw);
+    properties[name] = schema;
+  }
+
+  for (const name of repeated.get("remove-prop") ?? []) {
+    properties[name.trim()] = null;
+  }
+
+  for (const raw of repeated.get("rename-prop") ?? []) {
+    const eqIdx = raw.indexOf("=");
+    if (eqIdx === -1) {
+      throw new NotionCliError(ErrorCode.USAGE, `--rename-prop expects Old=New, got: ${raw}`);
+    }
+    const oldName = raw.slice(0, eqIdx).trim();
+    const newName = raw.slice(eqIdx + 1).trim();
+    if (!oldName || !newName) {
+      throw new NotionCliError(ErrorCode.USAGE, `--rename-prop expects Old=New with non-empty values`);
+    }
+    properties[oldName] = { name: newName };
+  }
+
+  const schemaJson = flags.get("schema-json");
+  if (schemaJson) {
+    let parsed: unknown;
+    try {
+      const raw = schemaJson.startsWith("@")
+        ? await readFile(schemaJson.slice(1), "utf8")
+        : schemaJson;
+      parsed = JSON.parse(raw);
+    } catch {
+      throw new NotionCliError(ErrorCode.USAGE, "--schema-json is not valid JSON");
+    }
+    if (parsed && typeof parsed === "object") {
+      Object.assign(properties, parsed as Record<string, unknown>);
+    }
+  }
+
+  if (Object.keys(properties).length > 0) {
+    payload.properties = properties;
+  }
+
+  if (Object.keys(payload).length === 0) {
+    throw new NotionCliError(
+      ErrorCode.USAGE,
+      "Nothing to update. Provide at least one of: --title, --add-prop, --remove-prop, --rename-prop, --schema-json",
+    );
+  }
+
+  if (getBooleanFlag(flags, "dry-run")) {
+    return renderJson({ action: "db update", dbId: id, payload });
+  }
+
+  const res = await notionRequest<{ id: string; url?: string }>("PATCH", `/databases/${id}`, payload);
+  return renderJson({ id: res.id, url: res.url });
 }
 
 export async function dbRowGetCommand(ctx: { args: string[] }): Promise<string> {

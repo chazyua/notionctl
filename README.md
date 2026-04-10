@@ -51,22 +51,24 @@ an agent takes is a visible terminal invocation.
 
 ### Reading
 
-    notionctl whoami                     Show integration info
-    notionctl search <query>             Search by title or content
-    notionctl resolve <url>              Notion URL → ID
-    notionctl page get <id>              Page as Markdown + front-matter
-    notionctl db query <id> [flags]      Query a database
-    notionctl db schema <id>             Show property types
-    notionctl db row get <id>            Single row as Markdown
-    notionctl block children <id>        List child blocks
+    notionctl whoami                          Show integration info
+    notionctl search <query>                  Search by title or content
+    notionctl resolve <url>                   Notion URL → ID
+    notionctl page get <id>                   Page as Markdown + front-matter
+    notionctl db query <id> [flags]           Query a database
+    notionctl db schema <id>                  Show property types
+    notionctl db row get <id>                 Single row as Markdown
+    notionctl block children <id> [--recursive]   Child blocks (optionally full subtree)
 
 ### Writing
 
     notionctl page create --parent <id> --title "X" [--from file.md]
     notionctl page append <id> [--from file.md]
     notionctl page update <id> [--from file.md]
-    notionctl page sync <file.md>
+    notionctl page sync <file.md> [--force]
+    notionctl page delete <id> --yes
     notionctl db create --parent <page-id> --title "X" [--prop Name=type[:options] ...]
+    notionctl db update <id> [--title X] [--add-prop ...] [--remove-prop ...] [--rename-prop Old=New]
     notionctl db row create <db-id> [--prop Key=value ...]
     notionctl db row update <page-id> [--prop Key=value ...]
     notionctl comment add <page-id> --text "..."
@@ -74,6 +76,32 @@ an agent takes is a visible terminal invocation.
 Nested Markdown lists (2-space indentation) are preserved on both the
 read and write paths — `page get` renders children with indentation and
 `page create/update/sync` creates the corresponding nested block tree.
+
+### Query filter DSL
+
+`db query --filter` supports these operators per property type:
+
+| Type         | Operators                        | Example                  |
+|--------------|----------------------------------|--------------------------|
+| select       | `=`                              | `Status=Done`            |
+| status       | `=`                              | `Status=InReview`        |
+| checkbox     | `=`                              | `Done=true`              |
+| number       | `=` `>` `<` `>=` `<=`            | `Count>=10`              |
+| title        | `=` (contains)                   | `Name=PRD`               |
+| rich_text    | `=` (contains)                   | `Notes=ship`             |
+| date         | `=` `>` `<` `>=` `<=`            | `Due>2026-04-01`         |
+| multi_select | `=`, comma-separated = AND       | `Tags=urgent,important`  |
+
+For anything outside this surface, use `--filter-json @file.json`.
+
+### Sync with drift detection
+
+`page sync <file.md>` is a content-hashed idempotent sync. Each sync
+stores `notion_synced_at` in the file's YAML frontmatter. On the next
+sync, if the remote page was edited in Notion after your last sync,
+`page sync` refuses to overwrite and tells you to fetch the remote
+version first. Override with `--force` if you're sure you want to
+clobber the remote.
 
 ### Escape hatch
 

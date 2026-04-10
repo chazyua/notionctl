@@ -36,7 +36,7 @@
   "scripts": {
     "build": "tsc",
     "clean": "rm -rf dist",
-    "prebuild": "npm run clean",
+    "prebuild": "npm run clean && node scripts/generate-version.js",
     "test": "npm run build && cd dist && node --test --test-reporter=spec",
     "test:unit": "npm run build && cd dist && node --test",
     "test:security": "npm run build && cd dist/test/security && node --test",

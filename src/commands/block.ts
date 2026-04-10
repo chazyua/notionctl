@@ -6,8 +6,9 @@
 import { notionRequest } from "../http.js";
 import { blocksToMarkdown, markdownToBlocks } from "../markdown/index.js";
 import type { Block } from "../markdown/index.js";
+import { fetchBlockTree } from "../blocks.js";
 import { readFile } from "node:fs/promises";
-import { resolvePageId, parseFlags, getBooleanFlag } from "./shared.js";
+import { resolvePageId, parseFlags, getBooleanFlag, fetchWith404Hint } from "./shared.js";
 import { NotionCliError, ErrorCode } from "../errors.js";
 import { renderJson, chooseFormat, isStdoutTty, type Format } from "../output.js";
 
@@ -17,7 +18,10 @@ export async function blockGetCommand(ctx: { args: string[] }): Promise<string> 
     throw new NotionCliError(ErrorCode.USAGE, "Usage: notionctl block get <id>");
   }
   const id = resolvePageId(positional[0]!);
-  const block = await notionRequest("GET", `/blocks/${id}`);
+  const block = await fetchWith404Hint(
+    () => notionRequest("GET", `/blocks/${id}`),
+    `Block ${id}`,
+  );
   const format = chooseFormat(flags.get("format") as Format | undefined, {
     isTty: isStdoutTty(),
     defaultFormat: "json",
@@ -29,16 +33,31 @@ export async function blockGetCommand(ctx: { args: string[] }): Promise<string> 
 export async function blockChildrenCommand(ctx: { args: string[] }): Promise<string> {
   const { flags, positional } = parseFlags(ctx.args);
   if (positional.length === 0) {
-    throw new NotionCliError(ErrorCode.USAGE, "Usage: notionctl block children <id>");
+    throw new NotionCliError(ErrorCode.USAGE, "Usage: notionctl block children <id> [--recursive]");
   }
   const id = resolvePageId(positional[0]!);
-  const res = await notionRequest<{ results: Block[] }>("GET", `/blocks/${id}/children`);
+  const recursive = getBooleanFlag(flags, "recursive");
+
+  let children: Block[];
+  if (recursive) {
+    children = await fetchWith404Hint(
+      () => fetchBlockTree(id, "all"),
+      `Block ${id}`,
+    );
+  } else {
+    const res = await fetchWith404Hint(
+      () => notionRequest<{ results: Block[] }>("GET", `/blocks/${id}/children`),
+      `Block ${id}`,
+    );
+    children = res.results;
+  }
+
   const format = chooseFormat(flags.get("format") as Format | undefined, {
     isTty: isStdoutTty(),
     defaultFormat: "md",
   });
-  if (format === "json") return renderJson(res);
-  return blocksToMarkdown(res.results);
+  if (format === "json") return renderJson({ results: children });
+  return blocksToMarkdown(children);
 }
 
 export async function blockAppendCommand(ctx: { args: string[] }): Promise<string> {

@@ -15,21 +15,10 @@ import { blocksToMarkdown, markdownToBlocks } from "../markdown/index.js";
 import type { Block } from "../markdown/index.js";
 import { renderProperty } from "../properties/render.js";
 import { stringifyYaml, type YamlObject } from "../utils/yaml.js";
-import { resolvePageId, parseFlags, getBooleanFlag } from "./shared.js";
+import { resolvePageId, parseFlags, getBooleanFlag, fetchWith404Hint } from "./shared.js";
+import { fetchBlockTree } from "../blocks.js";
 import { NotionCliError, ErrorCode } from "../errors.js";
 import { renderJson, chooseFormat, isStdoutTty, type Format } from "../output.js";
-
-const LIST_BLOCK_TYPES = new Set(["bulleted_list_item", "numbered_list_item", "to_do"]);
-
-async function fetchBlockTree(blockId: string): Promise<Block[]> {
-  const res = await notionRequest<{ results: Block[] }>("GET", `/blocks/${blockId}/children`);
-  for (const block of res.results) {
-    if (block.has_children && LIST_BLOCK_TYPES.has(block.type)) {
-      (block as any)._children = await fetchBlockTree(block.id);
-    }
-  }
-  return res.results;
-}
 
 export async function pageGetCommand(ctx: { args: string[] }): Promise<string> {
   const { flags, positional } = parseFlags(ctx.args);
@@ -38,13 +27,16 @@ export async function pageGetCommand(ctx: { args: string[] }): Promise<string> {
   }
   const id = resolvePageId(positional[0]!);
 
-  const page = await notionRequest<{
-    id: string;
-    object: string;
-    properties: Record<string, unknown>;
-    parent: { type: string };
-    url: string;
-  }>("GET", `/pages/${id}`);
+  const page = await fetchWith404Hint(
+    () => notionRequest<{
+      id: string;
+      object: string;
+      properties: Record<string, unknown>;
+      parent: { type: string };
+      url: string;
+    }>("GET", `/pages/${id}`),
+    `Page ${id}`,
+  );
 
   const childBlocks = await fetchBlockTree(id);
 
