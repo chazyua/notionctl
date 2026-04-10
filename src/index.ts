@@ -139,7 +139,7 @@ Usage:
   notionctl db row delete <page-id> --yes
 
   notionctl block get <id>
-  notionctl block children <id>
+  notionctl block children <id> [--recursive]
   notionctl block append <id> [--from file.md]
   notionctl block update <id> --prop-json '<json>'
   notionctl block delete <id> --yes
