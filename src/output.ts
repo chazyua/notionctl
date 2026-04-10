@@ -10,6 +10,8 @@
  * coerce to JSON so scripts never receive ANSI-decorated text.
  */
 
+import { NotionCliError, ErrorCode } from "./errors.js";
+
 export type Format = "md" | "json" | "table" | "csv";
 
 export interface ChooseFormatOpts {
@@ -17,11 +19,21 @@ export interface ChooseFormatOpts {
   defaultFormat: Format;
 }
 
+const VALID_FORMATS = new Set<string>(["md", "json", "table", "csv"]);
+
 export function chooseFormat(
   explicit: Format | undefined,
   opts: ChooseFormatOpts,
 ): Format {
-  if (explicit !== undefined) return explicit;
+  if (explicit !== undefined) {
+    if (!VALID_FORMATS.has(explicit)) {
+      throw new NotionCliError(
+        ErrorCode.USAGE,
+        `Unknown format: ${explicit}. Valid formats: md, json, table, csv`,
+      );
+    }
+    return explicit;
+  }
   if (!opts.isTty && opts.defaultFormat === "table") return "json";
   return opts.defaultFormat;
 }

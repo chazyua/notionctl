@@ -94,7 +94,7 @@ export class NotionCliError extends Error {
 const TOKEN_PATTERN = /ntn_[a-zA-Z0-9]{10,}/g;
 const LEGACY_SECRET_PATTERN = /secret_[a-zA-Z0-9]{30,}/g;
 
-function scrub(text: string): string {
+export function scrub(text: string): string {
   return text.replace(TOKEN_PATTERN, "ntn_***").replace(LEGACY_SECRET_PATTERN, "secret_***");
 }
 

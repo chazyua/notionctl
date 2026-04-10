@@ -8,7 +8,7 @@ import { blocksToMarkdown, markdownToBlocks } from "../markdown/index.js";
 import type { Block } from "../markdown/index.js";
 import { fetchBlockTree } from "../blocks.js";
 import { readFile } from "node:fs/promises";
-import { resolvePageId, parseFlags, getBooleanFlag, fetchWith404Hint, parseJsonObject } from "./shared.js";
+import { resolvePageId, parseFlags, getBooleanFlag, fetchWith404Hint, parseJsonObject, readStdinBounded } from "./shared.js";
 import { NotionCliError, ErrorCode } from "../errors.js";
 import { renderJson, chooseFormat, isStdoutTty, type Format } from "../output.js";
 
@@ -71,12 +71,7 @@ export async function blockAppendCommand(ctx: { args: string[] }): Promise<strin
   if (fromFile && fromFile !== "-") {
     md = await readFile(fromFile, "utf8");
   } else if (fromFile === "-" || !process.stdin.isTTY) {
-    const chunks: Buffer[] = [];
-    md = await new Promise((resolve, reject) => {
-      process.stdin.on("data", (c) => chunks.push(c));
-      process.stdin.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
-      process.stdin.on("error", reject);
-    });
+    md = await readStdinBounded();
   }
   const blocks = markdownToBlocks(md);
   if (blocks.length === 0) {

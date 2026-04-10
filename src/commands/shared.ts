@@ -6,6 +6,35 @@
 
 import { NotionCliError, ErrorCode } from "../errors.js";
 
+const MAX_STDIN_BYTES = 10 * 1024 * 1024; // 10 MB
+const MAX_STDIN_TOKEN_BYTES = 4 * 1024;   // 4 KB (tokens are short)
+
+/**
+ * Read stdin with a bounded size limit to prevent OOM from unbounded input.
+ * Use `maxBytes` to override the default 10 MB limit (e.g. for token reads).
+ */
+export function readStdinBounded(maxBytes = MAX_STDIN_BYTES): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    let totalBytes = 0;
+    const onData = (c: Buffer) => {
+      totalBytes += c.length;
+      if (totalBytes > maxBytes) {
+        process.stdin.removeListener("data", onData);
+        process.stdin.destroy();
+        reject(new NotionCliError(ErrorCode.USAGE, `stdin input exceeds maximum size (${maxBytes} bytes)`));
+        return;
+      }
+      chunks.push(c);
+    };
+    process.stdin.on("data", onData);
+    process.stdin.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
+    process.stdin.on("error", reject);
+  });
+}
+
+export { MAX_STDIN_TOKEN_BYTES };
+
 export interface ParsedFlags {
   flags: Map<string, string>;
   repeated: Map<string, string[]>;

@@ -8,7 +8,7 @@
  */
 
 import { readFile, writeFile, rename } from "node:fs/promises";
-import { resolve } from "node:path";
+import { resolve, sep } from "node:path";
 import { execFile } from "node:child_process";
 import { extractFrontmatter, reinsertFrontmatter } from "../sync/frontmatter.js";
 import { classifySyncState, computeContentHash, SyncState } from "../sync/sync.js";
@@ -17,7 +17,7 @@ import { blocksToMarkdown, markdownToBlocks } from "../markdown/index.js";
 import type { Block } from "../markdown/index.js";
 import { renderProperty } from "../properties/render.js";
 import { stringifyYaml, type YamlObject } from "../utils/yaml.js";
-import { resolvePageId, parseFlags, getBooleanFlag, fetchWith404Hint } from "./shared.js";
+import { resolvePageId, parseFlags, getBooleanFlag, fetchWith404Hint, readStdinBounded } from "./shared.js";
 import { fetchBlockTree } from "../blocks.js";
 import { NotionCliError, ErrorCode } from "../errors.js";
 import { renderJson, chooseFormat, isStdoutTty, type Format } from "../output.js";
@@ -79,13 +79,8 @@ async function readInputMarkdown(flags: Map<string, string>): Promise<string> {
   const fromFile = flags.get("from");
   // Support --from - as explicit stdin alias (BUG-3 fix)
   if (fromFile && fromFile !== "-") return readFile(fromFile, "utf8");
-  // Read stdin
-  const chunks: Buffer[] = [];
-  return new Promise((resolve, reject) => {
-    process.stdin.on("data", (c) => chunks.push(c));
-    process.stdin.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
-    process.stdin.on("error", reject);
-  });
+  if (fromFile === "-" || !process.stdin.isTTY) return readStdinBounded();
+  return "";
 }
 
 /** Strip YAML frontmatter from markdown so page get → page update/append round-trips cleanly */
@@ -114,7 +109,7 @@ export async function pageCreateCommand(ctx: { args: string[] }): Promise<string
     // Not a database — use page_id (the default)
   }
 
-  let bodyMd = flags.get("from") ? await readInputMarkdown(flags) : "";
+  let bodyMd = stripFrontmatter(await readInputMarkdown(flags));
   // Strip leading H1 if it matches --title (prevents duplicate heading in page body)
   bodyMd = bodyMd.replace(/^# .+\n?/m, (match) =>
     match.trim().slice(2) === title ? "" : match
@@ -153,6 +148,10 @@ export async function pageAppendCommand(ctx: { args: string[] }): Promise<string
   const id = resolvePageId(positional[0]!);
   const bodyMd = stripFrontmatter(await readInputMarkdown(flags));
   const blocks = markdownToBlocks(bodyMd);
+
+  if (blocks.length === 0) {
+    return renderJson({ action: "page append", blockId: id, blocks: [], warning: "no blocks parsed from input" });
+  }
 
   if (getBooleanFlag(flags, "dry-run")) {
     return renderJson({ action: "page append", blockId: id, blocks });
@@ -203,12 +202,11 @@ export async function pageUpdateCommand(ctx: { args: string[] }): Promise<string
 
   if (newBlocks !== null) {
     const existing = await notionRequest<{ results: Block[] }>("GET", `/blocks/${id}/children`);
-    const deletions = existing.results.filter((b) => !isPassThrough(b.type)).map((b) => b.id);
-    for (const blockId of deletions) {
-      await notionRequest("DELETE", `/blocks/${blockId}`);
+    for (const b of existing.results) {
+      await notionRequest("DELETE", `/blocks/${b.id}`);
     }
     await appendBlocksChunked(id, newBlocks);
-    result["deletedBlocks"] = deletions.length;
+    result["deletedBlocks"] = existing.results.length;
     result["appendedBlocks"] = newBlocks.length;
   }
 
@@ -304,14 +302,12 @@ export async function pageDuplicateCommand(ctx: { args: string[] }): Promise<str
         properties[name] = value;
       }
     }
-    // Override title if user specified --title
-    if (flags.get("title")) {
-      for (const [name, value] of Object.entries(properties)) {
-        const prop = value as { type?: string };
-        if (prop.type === "title") {
-          properties[name] = { title: [{ type: "text", text: { content: newTitle, link: null } }] };
-          break;
-        }
+    // Always override the title property with newTitle (includes "(copy)" suffix by default)
+    for (const [name, value] of Object.entries(properties)) {
+      const prop = value as { type?: string };
+      if (prop.type === "title") {
+        properties[name] = { title: [{ type: "text", text: { content: newTitle, link: null } }] };
+        break;
       }
     }
   } else {
@@ -553,7 +549,9 @@ export async function pageSyncCommand(ctx: { args: string[] }): Promise<string> 
     throw new NotionCliError(ErrorCode.USAGE, "Usage: notionctl page sync <file.md>");
   }
   const file = resolve(positional[0]!);
-  if (!file.startsWith(process.cwd())) {
+  const cwd = process.cwd();
+  const cwdPrefix = cwd.endsWith(sep) ? cwd : cwd + sep;
+  if (file !== cwd && !file.startsWith(cwdPrefix)) {
     throw new NotionCliError(ErrorCode.USAGE, `Refusing to sync file outside working directory: ${file}`);
   }
   const source = await readFile(file, "utf8");
@@ -613,14 +611,24 @@ export async function pageSyncCommand(ctx: { args: string[] }): Promise<string> 
       );
     }
     const { title, syncBody } = extractSyncTitle(frontmatter, body);
+    const parentId = resolvePageId(parent);
+    // Detect whether parent is a database or page (same as pageCreateCommand)
+    let parentKey: "page_id" | "database_id" = "page_id";
+    try {
+      await notionRequest("GET", `/databases/${parentId}`);
+      parentKey = "database_id";
+    } catch {
+      // Not a database — use page_id
+    }
+    const titleProp = parentKey === "database_id"
+      ? { Name: { title: [{ type: "text", text: { content: title, link: null } }] } }
+      : { title: [{ type: "text", text: { content: title, link: null } }] };
     const blocks = markdownToBlocks(syncBody);
     const firstChunk = blocks.slice(0, 100);
     const overflow = blocks.slice(100);
     const created = await notionRequest<{ id: string; url: string }>("POST", "/pages", {
-      parent: { page_id: resolvePageId(parent) },
-      properties: {
-        title: [{ type: "text", text: { content: title, link: null } }],
-      },
+      parent: { [parentKey]: parentId },
+      properties: titleProp,
       children: firstChunk,
     });
     if (overflow.length > 0) {
@@ -654,9 +662,7 @@ export async function pageSyncCommand(ctx: { args: string[] }): Promise<string> 
       properties: { title: [{ type: "text", text: { content: title, link: null } }] },
     });
     for (const b of existing.results) {
-      if (!isPassThrough(b.type)) {
-        await notionRequest("DELETE", `/blocks/${b.id}`);
-      }
+      await notionRequest("DELETE", `/blocks/${b.id}`);
     }
     await appendBlocksChunked(pageId, newBlocks);
     frontmatter.notion_hash = computeContentHash(body);
@@ -668,15 +674,3 @@ export async function pageSyncCommand(ctx: { args: string[] }): Promise<string> 
   throw new NotionCliError(ErrorCode.GENERIC, `Unexpected sync state: ${state as string}`);
 }
 
-const PASS_THROUGH_TYPES = new Set([
-  "synced_block",
-  "column_list",
-  "column",
-  "embed",
-  "table_of_contents",
-  "breadcrumb",
-]);
-
-function isPassThrough(type: string): boolean {
-  return PASS_THROUGH_TYPES.has(type);
-}

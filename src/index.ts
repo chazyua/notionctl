@@ -13,7 +13,7 @@
  * See README for the full command list.
  */
 
-import { NotionCliError, ErrorCode, formatErrorJson, formatErrorHuman } from "./errors.js";
+import { NotionCliError, ErrorCode, formatErrorJson, formatErrorHuman, scrub } from "./errors.js";
 import { isStdoutTty } from "./output.js";
 import { VERSION } from "./version.js";
 import { setActiveProfile } from "./auth.js";
@@ -62,7 +62,9 @@ async function loadCommand(noun: string, verb: string | undefined): Promise<Comm
               case "update": return mod.dbRowUpdateCommand(rest);
               case "delete": return mod.dbRowDeleteCommand(rest);
               default:
-                throw new NotionCliError(ErrorCode.USAGE, `Unknown db row verb: ${sub}`);
+                throw new NotionCliError(ErrorCode.USAGE, sub === undefined
+                  ? "Usage: notionctl db row <get|create|update|delete> [args...]"
+                  : `Unknown db row verb: ${sub}`);
             }
           };
         }
@@ -170,7 +172,7 @@ Usage:
   notionctl user list
   notionctl user me
 
-  notionctl auth login --client-id <id> --client-secret <secret> [--port 9876]
+  notionctl auth login [--client-id <id>] [--port 9876]
   notionctl auth set [--profile <name>]
   notionctl auth status
   notionctl auth doctor
@@ -218,6 +220,17 @@ async function main(): Promise<void> {
   }
 
   const noun = argv[0]!;
+
+  // Handle --help and --version after a noun (e.g. "notionctl page --help")
+  if (argv[1] === "--help" || argv[1] === "-h") {
+    process.stdout.write(printHelp());
+    process.exit(0);
+  }
+  if (argv[1] === "--version" || argv[1] === "-v") {
+    process.stdout.write(`notionctl ${VERSION}\n`);
+    process.exit(0);
+  }
+
   const verb = ["whoami", "resolve", "search", "api"].includes(noun) ? undefined : argv[1];
   const rest = verb !== undefined ? argv.slice(2) : argv.slice(1);
 
@@ -238,7 +251,7 @@ async function main(): Promise<void> {
       }
       process.exit(err.exitCode);
     }
-    process.stderr.write(`Internal error: ${(err as Error).message}\n`);
+    process.stderr.write(`Internal error: ${scrub((err as Error).message)}\n`);
     process.exit(1);
   }
 }

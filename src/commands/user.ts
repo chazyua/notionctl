@@ -18,7 +18,18 @@ export async function userListCommand(ctx: { args: string[] }): Promise<string> 
   return renderTable(tableData);
 }
 
-export async function userMeCommand(_ctx: { args: string[] }): Promise<string> {
-  const me = await notionRequest("GET", "/users/me");
-  return renderJson(me);
+export async function userMeCommand(ctx: { args: string[] }): Promise<string> {
+  const { flags } = parseFlags(ctx.args);
+  const me = await notionRequest<{ id: string; name?: string; type?: string }>("GET", "/users/me");
+  const format = chooseFormat(flags.get("format") as Format | undefined, {
+    isTty: isStdoutTty(),
+    defaultFormat: "json",
+  });
+  if (format === "json") return renderJson(me);
+  const tableData = {
+    columns: ["ID", "Name", "Type"],
+    rows: [[me.id, me.name ?? "", me.type ?? ""]],
+  };
+  if (format === "csv") return renderCsv(tableData);
+  return renderTable(tableData);
 }

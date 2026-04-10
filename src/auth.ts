@@ -11,7 +11,7 @@
  *   - Token source preference: env var > config file > error
  */
 
-import { readFile, writeFile, mkdir, rm, stat, chmod } from "node:fs/promises";
+import { writeFile, mkdir, rm, chmod, open } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { NotionCliError, ErrorCode } from "./errors.js";
@@ -92,32 +92,48 @@ export async function listProfiles(): Promise<string[]> {
   }
 }
 
+/** Warn if token doesn't match expected Notion format (ntn_ or legacy secret_ prefix). */
+const TOKEN_FORMAT = /^(ntn_|secret_)[a-zA-Z0-9]{10,}/;
+function warnIfBadTokenFormat(token: string): void {
+  if (!TOKEN_FORMAT.test(token)) {
+    process.stderr.write("Warning: token does not match expected Notion format (ntn_... or secret_...)\n");
+  }
+}
+
 export async function loadToken(): Promise<LoadedToken> {
   // 1) environment variable takes precedence
   const envToken = process.env[ENV_VAR];
   if (envToken && envToken.length > 0) {
+    warnIfBadTokenFormat(envToken);
     return { token: envToken, source: AuthSource.ENV };
   }
 
-  // 2) config file fallback
+  // 2) config file fallback — use open() + fh.stat() + fh.readFile() on the
+  //    same file descriptor to eliminate the TOCTOU race between permission
+  //    check and read that existed with separate stat() + readFile() calls.
   const path = getConfigPath();
   let raw: string;
   try {
-    const st = await stat(path);
-    const mode = st.mode & 0o777;
-    if (mode !== 0o600) {
-      throw new NotionCliError(
-        ErrorCode.AUTH_INVALID,
-        `Config file ${path} has insecure permissions (mode ${mode.toString(8)}, expected 600)`,
-        {
-          suggestions: [
-            `Run: chmod 600 ${path}`,
-            "Or delete it and re-run 'notionctl auth set' to recreate with correct permissions.",
-          ],
-        },
-      );
+    const fh = await open(path, "r");
+    try {
+      const st = await fh.stat();
+      const mode = st.mode & 0o777;
+      if (mode !== 0o600) {
+        throw new NotionCliError(
+          ErrorCode.AUTH_INVALID,
+          `Config file ${path} has insecure permissions (mode ${mode.toString(8)}, expected 600)`,
+          {
+            suggestions: [
+              `Run: chmod 600 ${path}`,
+              "Or delete it and re-run 'notionctl auth set' to recreate with correct permissions.",
+            ],
+          },
+        );
+      }
+      raw = await fh.readFile("utf8");
+    } finally {
+      await fh.close();
     }
-    raw = await readFile(path, "utf8");
   } catch (err) {
     if (err instanceof NotionCliError) throw err;
     if ((err as NodeJS.ErrnoException).code === "ENOENT") {
@@ -157,6 +173,7 @@ export async function loadToken(): Promise<LoadedToken> {
     );
   }
 
+  warnIfBadTokenFormat(parsed.token);
   return { token: parsed.token, source: AuthSource.CONFIG_FILE };
 }
 
@@ -164,6 +181,7 @@ export async function saveToken(token: string): Promise<void> {
   if (!token || typeof token !== "string" || token.trim().length === 0) {
     throw new NotionCliError(ErrorCode.USAGE, "Refusing to save empty token");
   }
+  warnIfBadTokenFormat(token);
 
   const dir = getConfigDir();
   const path = getConfigPath();

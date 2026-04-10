@@ -101,8 +101,16 @@ function renderBlock(block: Block, depth: number, numberedIndex: number): string
       const nested = (block as any)._children as Block[] | undefined;
       return nested && nested.length > 0 ? `${text}\n${renderNestedList(nested, depth + 1)}` : text;
     }
-    case "quote":
-      return `> ${richTextToMarkdown(block.quote.rich_text)}`;
+    case "quote": {
+      const quoteText = richTextToMarkdown(block.quote.rich_text);
+      const quoteChildren = (block as any)._children as Block[] | undefined;
+      if (quoteChildren && quoteChildren.length > 0) {
+        const childMd = blocksToMarkdown(quoteChildren);
+        const childLines = childMd.split("\n").map((l) => `> ${l}`).join("\n");
+        return `> ${quoteText}\n${childLines}`;
+      }
+      return `> ${quoteText}`;
+    }
     case "code": {
       const lang = block.code.language === "plain text" ? "" : block.code.language;
       const content = block.code.rich_text.map((r) => r.plain_text).join("");
@@ -123,11 +131,21 @@ function renderBlock(block: Block, depth: number, numberedIndex: number): string
       if (block.callout.color && block.callout.color !== "default" && !colorToAlertType(block.callout.color)) {
         lines.splice(1, 0, `<!-- color: ${block.callout.color} -->`);
       }
+      // Render nested children as continuation lines
+      const calloutChildren = (block as any)._children as Block[] | undefined;
+      if (calloutChildren && calloutChildren.length > 0) {
+        const childMd = blocksToMarkdown(calloutChildren);
+        for (const cl of childMd.split("\n")) {
+          lines.push(`> ${cl}`);
+        }
+      }
       return lines.join("\n");
     }
     case "toggle": {
       const summary = richTextToMarkdown(block.toggle.rich_text);
-      return `<details><summary>${summary}</summary>\n\n</details>`;
+      const nested = (block as any)._children as Block[] | undefined;
+      const body = nested && nested.length > 0 ? "\n" + blocksToMarkdown(nested) + "\n" : "\n";
+      return `<details><summary>${summary}</summary>\n${body}</details>`;
     }
     case "equation":
       return `$$${block.equation.expression}$$`;

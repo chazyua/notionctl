@@ -11,7 +11,7 @@ import { readFile } from "node:fs/promises";
 import { notionRequest } from "../http.js";
 import { parseProperty, parsePropertyFlag, type PropertySchema } from "../properties/parse.js";
 import { renderProperty } from "../properties/render.js";
-import { resolvePageId, parseFlags, getBooleanFlag, fetchWith404Hint, parseJsonObject } from "./shared.js";
+import { resolvePageId, parseFlags, getBooleanFlag, fetchWith404Hint, parseJsonObject, readStdinBounded } from "./shared.js";
 import { markdownToBlocks, blocksToMarkdown } from "../markdown/index.js";
 import type { Block } from "../markdown/index.js";
 import { fetchBlockTree } from "../blocks.js";
@@ -424,12 +424,7 @@ export async function dbRowCreateCommand(ctx: { args: string[] }): Promise<strin
   if (fromFile) {
     let raw: string;
     if (fromFile === "-") {
-      const chunks: Buffer[] = [];
-      raw = await new Promise<string>((resolve, reject) => {
-        process.stdin.on("data", (c: Buffer) => chunks.push(c));
-        process.stdin.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
-        process.stdin.on("error", reject);
-      });
+      raw = await readStdinBounded();
     } else {
       raw = await readFile(fromFile, "utf8");
     }
@@ -456,7 +451,10 @@ export async function dbRowUpdateCommand(ctx: { args: string[] }): Promise<strin
     throw new NotionCliError(ErrorCode.USAGE, "Usage: notionctl db row update <page-id> [--prop Key=value ...]");
   }
   const pageId = resolvePageId(positional[0]!);
-  const page = await notionRequest<{ parent: { database_id: string } }>("GET", `/pages/${pageId}`);
+  const page = await notionRequest<{ parent: { type: string; database_id?: string } }>("GET", `/pages/${pageId}`);
+  if (page.parent.type !== "database_id" || !page.parent.database_id) {
+    throw new NotionCliError(ErrorCode.USAGE, `Page ${pageId} is not a database row. Use 'page update' for non-database pages.`);
+  }
   const schema = await fetchSchema(page.parent.database_id);
 
   const properties: Record<string, unknown> = {};

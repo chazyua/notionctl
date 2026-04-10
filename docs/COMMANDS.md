@@ -1,6 +1,6 @@
 # Command Reference
 
-Complete reference for all 42 notionctl commands.
+Complete reference for all 39 notionctl commands.
 
 **Conventions:** All IDs accept Notion URLs, hyphenated UUIDs, or compact hex. All write commands support `--dry-run`. Output defaults to human-friendly in a TTY, JSON when piped. Override with `--format md|json|table|csv`.
 
@@ -67,7 +67,7 @@ notionctl page update <id> --title "New Title"
 notionctl page update <id> --title "New Title" --from body.md
 ```
 
-Existing blocks are deleted and replaced. Synced blocks, embeds, and table-of-contents are preserved.
+Existing blocks are deleted and replaced with the new content.
 
 ### page sync
 

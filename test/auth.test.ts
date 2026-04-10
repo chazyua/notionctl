@@ -159,7 +159,7 @@ describe("auth login (OAuth)", () => {
       (err: unknown) => {
         assert.ok(err instanceof NotionCliError);
         assert.equal((err as NotionCliError).code, ErrorCode.USAGE);
-        assert.ok((err as Error).message.includes("--client-id"));
+        assert.ok((err as Error).message.includes("OAuth credentials"));
         return true;
       },
     );

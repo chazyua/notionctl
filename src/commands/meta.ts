@@ -66,6 +66,11 @@ export async function searchCommand(ctx: CommandContext): Promise<string> {
   });
   if (format === "json") return renderJson(res);
   if (res.results.length === 0) {
+    const tableData = { columns: ["Object", "ID", "URL"], rows: [] as string[][] };
+    if (format === "csv") return renderCsv(tableData);
+    if (format === "table") {
+      return renderTable(tableData) + "\n\nNo results. If you expected results, ensure the integration is connected to the page via ··· → Connections in Notion.";
+    }
     return "No results. If you expected results, ensure the integration is connected to the page via ··· → Connections in Notion.";
   }
   const tableData = {

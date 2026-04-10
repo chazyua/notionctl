@@ -54,7 +54,7 @@ notionctl was designed so that a security team can audit the entire tool in an a
 
 ## Command Surface
 
-42 commands across 8 categories. Full reference: [docs/COMMANDS.md](docs/COMMANDS.md).
+39 commands across 8 categories. Full reference: [docs/COMMANDS.md](docs/COMMANDS.md).
 
 ### Pages
 
@@ -140,7 +140,7 @@ All commands support `--format md|json|table|csv`.
 
 ## Testing
 
-246 automated tests. Zero test framework dependencies (uses Node.js built-in `node:test`).
+481 automated tests. Zero test framework dependencies (uses Node.js built-in `node:test`).
 
 ```sh
 npm test                    # Full suite

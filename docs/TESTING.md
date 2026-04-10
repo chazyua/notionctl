@@ -70,6 +70,9 @@ Comprehensive test scenarios for notionctl. Use this for manual dogfooding, regr
 - [M] Nested lists render with 2-space indentation
 - [M] Code blocks include language annotation
 - [M] Tables render as GFM tables
+- [M] Toggle blocks render as `<details>` with nested children
+- [M] Callout blocks render children as continuation `>` lines
+- [M] Quote blocks render children as continuation `>` lines
 - [M] `--format json` returns raw Notion API response
 - [M] Notion URL accepted as ID (auto-resolved)
 - [A] 404 for non-existent page with "Connections" hint
@@ -78,7 +81,8 @@ Comprehensive test scenarios for notionctl. Use this for manual dogfooding, regr
 - [M] Creates page with `--title` under `--parent` (detects database vs page parent)
 - [M] Database ID as `--parent` creates a database row with correct parent key
 - [M] `--from file.md` creates page with Markdown body
-- [M] Stdin pipe works: `echo "content" | notionctl page create ...`
+- [M] Frontmatter in input is stripped (doesn't become page content)
+- [M] Stdin pipe works: `echo "content" | notionctl page create --parent <id> --title "X"`
 - [M] Duplicate H1 matching `--title` is stripped from body
 - [M] `--dry-run` shows payload without creating
 - [M] Missing `--parent` or `--title` produces USAGE error
@@ -87,20 +91,22 @@ Comprehensive test scenarios for notionctl. Use this for manual dogfooding, regr
 - [M] Appends Markdown blocks to existing page
 - [M] `--from file.md` reads content from file
 - [M] `--from -` reads from stdin explicitly
+- [M] Piped stdin read automatically without `--from` when stdin is not a TTY
 - [M] Frontmatter in input is stripped (doesn't become page content)
+- [M] Empty input returns warning instead of silent no-op
 - [M] `--dry-run` shows blocks without appending
 
 ### 2.4 page update
 - [M] `--from file.md` replaces all body blocks
 - [M] `--title "New"` updates only the title
 - [M] Both `--title` and `--from` together updates both
-- [M] Synced blocks, embeds, table-of-contents are preserved during replace
+- [M] All existing blocks are replaced with new content
 - [M] H1 in file used as title when `--title` not provided
 - [M] `--dry-run` shows block count without modifying
 - [M] No flags produces USAGE error
 
 ### 2.5 page sync
-- [M] First sync with `--parent` creates page and writes `notion_id` to frontmatter
+- [M] First sync with `--parent` creates page and writes `notion_id` to frontmatter (detects database vs page parent)
 - [M] Second sync with no local changes is a no-op (UNCHANGED)
 - [M] Local edit triggers update (CHANGED)
 - [M] Remote edit in Notion after last sync triggers DRIFT error
@@ -316,7 +322,7 @@ Comprehensive test scenarios for notionctl. Use this for manual dogfooding, regr
 - [A] Nested lists at 1, 2, and 3 levels with correct indentation
 - [A] Code blocks with language annotation
 - [A] GFM tables with header row
-- [A] Blockquotes, callouts (with emoji and color), toggles
+- [A] Blockquotes, callouts (with emoji and color), toggles — all with nested children
 - [A] Dividers, images (with caption), equations
 - [A] Synced blocks, column lists, unknown types pass through as HTML comments
 - [A] Adjacent list items grouped without extra blank lines

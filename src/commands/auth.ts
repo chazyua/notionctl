@@ -12,7 +12,7 @@ import { randomBytes } from "node:crypto";
 import { execFile } from "node:child_process";
 import { notionRequest, exchangeOAuthCode } from "../http.js";
 import { saveToken, clearToken, loadToken, getConfigPath, getConfigDir, listProfiles, AuthSource } from "../auth.js";
-import { parseFlags, getBooleanFlag } from "./shared.js";
+import { parseFlags, getBooleanFlag, readStdinBounded, MAX_STDIN_TOKEN_BYTES } from "./shared.js";
 import { NotionCliError, ErrorCode } from "../errors.js";
 import { renderJson } from "../output.js";
 
@@ -20,14 +20,8 @@ async function readStdinToken(): Promise<string> {
   if (process.stdin.isTTY) {
     process.stderr.write("Paste your Notion integration token (ntn_...): ");
   }
-  const chunks: Buffer[] = [];
-  return new Promise((resolve, reject) => {
-    process.stdin.on("data", (c) => chunks.push(c));
-    process.stdin.on("end", () => {
-      resolve(Buffer.concat(chunks).toString("utf8").trim().split(/\r?\n/)[0] ?? "");
-    });
-    process.stdin.on("error", reject);
-  });
+  const raw = await readStdinBounded(MAX_STDIN_TOKEN_BYTES);
+  return raw.trim().split(/\r?\n/)[0] ?? "";
 }
 
 export async function authSetCommand(_ctx: { args: string[] }): Promise<string> {
@@ -217,13 +211,16 @@ export async function authLoginCommand(ctx: { args: string[] }): Promise<string>
   const clientId = flags.get("client-id") ?? process.env.NOTION_CLIENT_ID;
   const clientSecret = process.env.NOTION_CLIENT_SECRET ?? flags.get("client-secret");
 
+  if (flags.has("client-secret")) {
+    process.stderr.write("Warning: --client-secret is visible in process listings. Use NOTION_CLIENT_SECRET env var instead.\n");
+  }
+
   if (!clientId || !clientSecret) {
-    throw new NotionCliError(ErrorCode.USAGE, "auth login requires --client-id and --client-secret (or env vars)", {
+    throw new NotionCliError(ErrorCode.USAGE, "auth login requires OAuth credentials (env vars or flags)", {
       suggestions: [
         "Create a public integration at https://www.notion.so/profile/integrations",
         `Set the redirect URI to http://localhost:${DEFAULT_OAUTH_PORT}/callback`,
-        "Preferred: set NOTION_CLIENT_ID and NOTION_CLIENT_SECRET environment variables",
-        "Or: notionctl auth login --client-id <id> --client-secret <secret>",
+        "Set NOTION_CLIENT_ID and NOTION_CLIENT_SECRET environment variables",
       ],
     });
   }
@@ -248,7 +245,13 @@ export async function authLoginCommand(ctx: { args: string[] }): Promise<string>
       fn();
     };
 
+    let requestCount = 0;
     const server = createServer(async (req, res) => {
+      if (++requestCount > 10) {
+        res.writeHead(429);
+        res.end();
+        return;
+      }
       if ((req.url?.length ?? 0) > 4096) {
         res.writeHead(400);
         res.end();
