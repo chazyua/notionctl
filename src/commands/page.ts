@@ -364,6 +364,9 @@ export async function pageFindReplaceCommand(ctx: { args: string[] }): Promise<s
   if (!findStr) throw new NotionCliError(ErrorCode.USAGE, "Missing --find <text>");
   if (replaceStr === undefined) throw new NotionCliError(ErrorCode.USAGE, "Missing --replace <text>");
 
+  let matchCount = 0;
+  let blockCount = 0;
+
   // Also check/update the page title
   let titleUpdated = false;
   const page = await notionRequest<{ properties: Record<string, unknown> }>("GET", `/pages/${id}`);
@@ -372,6 +375,8 @@ export async function pageFindReplaceCommand(ctx: { args: string[] }): Promise<s
   if (titleRuns) {
     for (const run of titleRuns) {
       if (run.text && run.text.content.includes(findStr)) {
+        const count = run.text.content.split(findStr).length - 1;
+        matchCount += count;
         run.text.content = run.text.content.replaceAll(findStr, replaceStr);
         run.plain_text = run.text.content;
         titleUpdated = true;
@@ -385,8 +390,6 @@ export async function pageFindReplaceCommand(ctx: { args: string[] }): Promise<s
   }
 
   const blocks = await fetchBlockTree(id);
-  let matchCount = 0;
-  let blockCount = 0;
 
   const processBlocks = async (blks: Block[]): Promise<void> => {
     for (const block of blks) {
