@@ -180,10 +180,10 @@ Usage:
 Global flags:
   --format md|json|table|csv   Output format (default depends on command + TTY)
   --dry-run                    Preview write operations without sending
-  --verbose                    Show request counts (never bodies or tokens)
+  --verbose                    Show request counts (not yet implemented)
   --quiet                      Suppress non-essential output
   --no-color                   Force plain output
-  --debug                      Full HTTP debug to stderr (scrubbed of token)
+  --debug                      Full HTTP debug to stderr (not yet implemented)
   --yes                        Confirm destructive operations
   --profile <name>             Use a named auth profile
 

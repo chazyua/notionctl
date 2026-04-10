@@ -79,6 +79,9 @@ export async function blockAppendCommand(ctx: { args: string[] }): Promise<strin
     });
   }
   const blocks = markdownToBlocks(md);
+  if (blocks.length === 0) {
+    return renderJson({ action: "block append", id, blocks: [], warning: "no blocks parsed from input" });
+  }
   const afterFlag = flags.get("after");
   const afterId = afterFlag ? resolvePageId(afterFlag) : undefined;
 

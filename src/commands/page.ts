@@ -560,7 +560,12 @@ export async function pageSyncCommand(ctx: { args: string[] }): Promise<string> 
   const state = classifySyncState({ frontmatter, localBody: body, remoteEditedAt });
 
   if (getBooleanFlag(flags, "dry-run")) {
-    return renderJson({ file, state, remoteEditedAt });
+    return renderJson({
+      file,
+      state,
+      ...(state === SyncState.UNCHANGED ? { message: "no changes to sync" } : {}),
+      remoteEditedAt,
+    });
   }
 
   if (state === SyncState.UNCHANGED) {
