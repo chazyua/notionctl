@@ -483,6 +483,45 @@ describe("markdownToRichText — additional edge cases", () => {
   });
 });
 
+describe("notion:// URL support", () => {
+  it("preserves notion:// links in rich text", () => {
+    const runs = markdownToRichText("[Page Link](notion://page/abc-123)");
+    assert.equal(runs.length, 1);
+    assert.equal((runs[0] as any).text.link?.url, "notion://page/abc-123");
+  });
+});
+
+describe("inline equation parsing", () => {
+  it("parses $expr$ as equation run", () => {
+    const runs = markdownToRichText("before $x^2$ after");
+    assert.equal(runs.length, 3);
+    assert.equal(runs[0]!.plain_text, "before ");
+    assert.equal(runs[1]!.type, "equation");
+    assert.equal((runs[1] as any).equation.expression, "x^2");
+    assert.equal(runs[2]!.plain_text, " after");
+  });
+
+  it("handles standalone equation", () => {
+    const runs = markdownToRichText("$E = mc^2$");
+    assert.equal(runs.length, 1);
+    assert.equal(runs[0]!.type, "equation");
+    assert.equal((runs[0] as any).equation.expression, "E = mc^2");
+  });
+
+  it("does not parse unclosed $ as equation", () => {
+    const runs = markdownToRichText("price is $100");
+    assert.equal(runs.length, 1);
+    assert.equal(runs[0]!.type, "text");
+  });
+
+  it("does not parse empty $$ as equation", () => {
+    const runs = markdownToRichText("$$");
+    // $$ should not match single-$ equation (next !== "$" check)
+    assert.equal(runs.length, 1);
+    assert.equal(runs[0]!.type, "text");
+  });
+});
+
 describe("richTextToMarkdown — additional edge cases", () => {
   it("single run with all annotations", () => {
     const runs: RichText[] = [

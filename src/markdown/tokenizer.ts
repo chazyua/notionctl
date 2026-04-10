@@ -26,6 +26,10 @@ const MARKERS: Record<MarkerKey, string> = {
 export function richTextToMarkdown(runs: RichText[]): string {
   let out = "";
   const openStack: MarkerKey[] = [];
+  // Track whether italic was opened with _ or * so we close with the same char.
+  // We switch to * when the preceding char is a word char (intraword _ would be
+  // parsed as literal by the write-path CommonMark scanner).
+  let italicChar = "_";
 
   for (const run of runs) {
     const desired = activeMarkers(run.annotations);
@@ -47,7 +51,7 @@ export function richTextToMarkdown(runs: RichText[]): string {
     const toReopen: MarkerKey[] = [];
     while (openStack.length > mustCloseFrom) {
       const top = openStack.pop()!;
-      out += MARKERS[top];
+      out += top === "italic" ? italicChar : MARKERS[top];
       if (desired.includes(top)) {
         toReopen.push(top);
       }
@@ -56,34 +60,64 @@ export function richTextToMarkdown(runs: RichText[]): string {
     // Re-open markers that were closed prematurely (reverse to restore order).
     for (let j = toReopen.length - 1; j >= 0; j--) {
       const m = toReopen[j]!;
-      out += MARKERS[m];
+      const openChar = (m === "italic")
+        ? (/\w/.test(out[out.length - 1] ?? "") ? "*" : "_")
+        : MARKERS[m];
+      if (m === "italic") italicChar = openChar;
+      out += openChar;
       openStack.push(m);
     }
 
     // Open any markers in `desired` that are not currently open.
     for (const marker of desired) {
       if (!openStack.includes(marker)) {
-        out += MARKERS[marker];
+        const openChar = (marker === "italic")
+          ? (/\w/.test(out[out.length - 1] ?? "") ? "*" : "_")
+          : MARKERS[marker];
+        if (marker === "italic") italicChar = openChar;
+        out += openChar;
         openStack.push(marker);
       }
     }
 
-    // Guard against intraword underscore: if the last emitted char is `_`
-    // (italic close) and it sits between two word characters, the write-path
-    // parser would treat it as literal. Force-close and re-open remaining
-    // markers so the `_` is surrounded by marker chars, not word chars.
+    // Guard against intraword underscore: if italic just closed with `_` and
+    // the next content starts with a word char, switch the already-emitted `_`
+    // to `*`. This handles the close side; the open side uses italicChar above.
     const content = runContent(run);
     const firstContentChar = hasLink ? "[" : (content[0] ?? "");
     if (
       out.length >= 2 &&
       out[out.length - 1] === "_" &&
       /\w/.test(out[out.length - 2]!) &&
-      /\w/.test(firstContentChar) &&
-      openStack.length > 0
+      /\w/.test(firstContentChar)
     ) {
-      const remaining = [...openStack];
-      while (openStack.length > 0) out += MARKERS[openStack.pop()!];
-      for (const m of remaining) { out += MARKERS[m]; openStack.push(m); }
+      if (openStack.length > 0) {
+        // There are still open markers — close and reopen them to bracket the _
+        const remaining = [...openStack];
+        while (openStack.length > 0) {
+          const top = openStack.pop()!;
+          out += top === "italic" ? italicChar : MARKERS[top];
+        }
+        for (const m of remaining) {
+          const openChar = (m === "italic")
+            ? (/\w/.test(out[out.length - 1] ?? "") ? "*" : "_")
+            : MARKERS[m];
+          if (m === "italic") italicChar = openChar;
+          out += openChar;
+          openStack.push(m);
+        }
+      } else {
+        // No remaining open markers — switch the trailing _ to * to avoid
+        // the intraword rule treating it as literal.
+        out = out.slice(0, -1) + "*";
+        // Also fix the matching open _
+        for (let k = out.length - 2; k >= 0; k--) {
+          if (out[k] === "_" && (k === 0 || out[k - 1] !== "_") && (out[k + 1] !== "_")) {
+            out = out.slice(0, k) + "*" + out.slice(k + 1);
+            break;
+          }
+        }
+      }
     }
 
     // Emit the run content
@@ -97,7 +131,8 @@ export function richTextToMarkdown(runs: RichText[]): string {
 
   // Close any remaining open markers
   while (openStack.length > 0) {
-    out += MARKERS[openStack.pop()!];
+    const top = openStack.pop()!;
+    out += top === "italic" ? italicChar : MARKERS[top];
   }
 
   return out;
@@ -191,6 +226,24 @@ export function markdownToRichText(md: string): RichText[] {
       buffer += next;
       i += 2;
       continue;
+    }
+
+    // Inline equation $...$  (single $, not $$)
+    if (c === "$" && next !== "$") {
+      const end = md.indexOf("$", i + 1);
+      if (end !== -1 && end > i + 1) {
+        flush();
+        const expr = md.slice(i + 1, end);
+        runs.push({
+          type: "equation",
+          equation: { expression: expr },
+          annotations: { ...DEFAULT_ANNOTATIONS },
+          plain_text: `$${expr}$`,
+          href: null,
+        } as unknown as RichText);
+        i = end + 1;
+        continue;
+      }
     }
 
     // Inline code — opaque, no nesting
@@ -310,7 +363,7 @@ function makeRun(content: string, state: ScannerState, linkUrl: string | null): 
     type: "text",
     text: {
       content,
-      link: linkUrl && /^https?:\/\//.test(linkUrl) ? { url: linkUrl } : null,
+      link: linkUrl && /^(https?|notion):\/\//.test(linkUrl) ? { url: linkUrl } : null,
     },
     annotations: {
       ...DEFAULT_ANNOTATIONS,

@@ -113,16 +113,14 @@ describe("richTextToMarkdown — intraword guard edge cases", () => {
 });
 
 describe("markdownToRichText — link URL type handling", () => {
-  it("notion:// page URL: href is stored, text.link is null (not a web URL)", () => {
-    // notion:// links are rendered by richTextToMarkdown from mention runs,
-    // but if the user types one manually it shouldn't get a Notion API link object
+  it("notion:// page URL: href is stored, text.link preserves the URL", () => {
+    // notion:// links should be preserved as proper link objects so they survive round-trips
     const runs = markdownToRichText("[My Page](notion://page/abcd1234-ef56-7890-abcd-1234567890ab)");
     assert.equal(runs.length, 1);
     const run = runs[0]!;
     assert.equal(run.type, "text");
     if (run.type === "text") {
-      // notion:// URLs are not https?:// so text.link should be null
-      assert.equal(run.text.link, null, "notion:// URL must not become a Notion API link");
+      assert.deepEqual(run.text.link, { url: "notion://page/abcd1234-ef56-7890-abcd-1234567890ab" }, "notion:// URL must be preserved as a link");
     }
   });
 
