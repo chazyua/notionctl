@@ -28,6 +28,12 @@ const MIME_MAP: Record<string, string> = {
   ".txt": "text/plain",
   ".json": "application/json",
   ".zip": "application/zip",
+  ".md": "text/markdown",
+  ".html": "text/html",
+  ".htm": "text/html",
+  ".xml": "application/xml",
+  ".yaml": "text/yaml",
+  ".yml": "text/yaml",
 };
 
 function guessMimeType(filename: string): string {
