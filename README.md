@@ -66,6 +66,8 @@ an agent takes is a visible terminal invocation.
     notionctl page append <id> [--from file.md]
     notionctl page update <id> [--from file.md]
     notionctl page sync <file.md> [--force]
+    notionctl page duplicate <id> [--parent <id>] [--title "new title"]
+    notionctl page move <id> --to <parent-id>
     notionctl page delete <id> --yes
     notionctl db create --parent <page-id> --title "X" [--prop Name=type[:options] ...]
     notionctl db update <id> [--title X] [--add-prop ...] [--remove-prop ...] [--rename-prop Old=New]

@@ -24,6 +24,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `last_edited_time` and refuses to overwrite if it's newer than the local
   `notion_synced_at`. Override with `--force`.
 - **`block children --recursive`** — fetches the full block subtree.
+- **`page move` command** — move a page to a new parent with
+  `page move <id> --to <parent-id>`. Uses Notion's dedicated move endpoint.
+- **`page duplicate` command** — deep-copy a page with all its blocks
+  (including nested children) to the same or a different parent.
 - **Integration-not-connected hints** — NOT_FOUND errors from page/database
   fetches now suggest checking the Notion Connections menu.
 

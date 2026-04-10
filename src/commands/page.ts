@@ -195,6 +195,111 @@ export async function pageUpdateCommand(ctx: { args: string[] }): Promise<string
   return renderJson(result);
 }
 
+export async function pageDuplicateCommand(ctx: { args: string[] }): Promise<string> {
+  const { flags, positional } = parseFlags(ctx.args);
+  if (positional.length === 0) {
+    throw new NotionCliError(
+      ErrorCode.USAGE,
+      "Usage: notionctl page duplicate <page-id> [--parent <new-parent-id>] [--title <new-title>]",
+    );
+  }
+  const sourceId = resolvePageId(positional[0]!);
+
+  const sourcePage = await fetchWith404Hint(
+    () => notionRequest<{
+      id: string;
+      properties: Record<string, unknown>;
+      parent: { type: string; page_id?: string; database_id?: string };
+    }>("GET", `/pages/${sourceId}`),
+    `Source page ${sourceId}`,
+  );
+  const sourceBlocks = await fetchBlockTree(sourceId);
+
+  // Determine title from source
+  const titleProp = sourcePage.properties.title as { title?: Array<{ plain_text?: string }> } | undefined;
+  const sourceTitle = titleProp?.title?.map((t) => t.plain_text ?? "").join("") ?? "Untitled";
+  const newTitle = flags.get("title") ?? `${sourceTitle} (copy)`;
+
+  // Determine parent: --parent flag or same as source
+  const parentFlag = flags.get("parent");
+  let parentId: string;
+  if (parentFlag) {
+    parentId = resolvePageId(parentFlag);
+  } else if (sourcePage.parent.page_id) {
+    parentId = sourcePage.parent.page_id;
+  } else {
+    throw new NotionCliError(
+      ErrorCode.USAGE,
+      "Source page has no page parent (it may be a workspace root page). Specify --parent explicitly.",
+    );
+  }
+
+  // Strip API-only fields and null values so blocks are valid for creation
+  const sanitizeForCreate = (blocks: Block[]): unknown[] => {
+    return blocks.map((b) => {
+      const typeKey = b.type;
+      const typeData = (b as any)[typeKey];
+      if (!typeData) return { object: "block", type: typeKey };
+      // Deep-clone the type data and strip null values
+      const cleaned = JSON.parse(JSON.stringify(typeData, (_k, v) => v === null ? undefined : v));
+      const nested = (b as any)._children as Block[] | undefined;
+      if (nested && nested.length > 0) {
+        cleaned.children = sanitizeForCreate(nested);
+      }
+      return { object: "block", type: typeKey, [typeKey]: cleaned };
+    });
+  };
+
+  const children = sanitizeForCreate(sourceBlocks);
+
+  const payload = {
+    parent: { page_id: parentId },
+    properties: {
+      title: [{ type: "text", text: { content: newTitle, link: null } }],
+    },
+    children,
+  };
+
+  if (getBooleanFlag(flags, "dry-run")) {
+    return renderJson({ action: "page duplicate", source: sourceId, title: newTitle, parent: parentId, blockCount: children.length });
+  }
+
+  const created = await notionRequest<{ id: string; url: string }>("POST", "/pages", payload);
+  return renderJson({ id: created.id, url: created.url, copiedFrom: sourceId });
+}
+
+export async function pageMoveCommand(ctx: { args: string[] }): Promise<string> {
+  const { flags, positional } = parseFlags(ctx.args);
+  if (positional.length === 0) {
+    throw new NotionCliError(
+      ErrorCode.USAGE,
+      "Usage: notionctl page move <page-id> --to <new-parent-page-id>",
+    );
+  }
+  const id = resolvePageId(positional[0]!);
+  const to = flags.get("to");
+  if (!to) {
+    throw new NotionCliError(ErrorCode.USAGE, "page move requires --to <new-parent-page-id>");
+  }
+  const toId = resolvePageId(to);
+
+  const body = { parent: { page_id: toId } };
+
+  if (getBooleanFlag(flags, "dry-run")) {
+    return renderJson({ action: "page move", pageId: id, body });
+  }
+
+  const res = await fetchWith404Hint(
+    () => notionRequest<{ id: string; parent: unknown; url: string }>(
+      "POST",
+      `/pages/${id}/move`,
+      body,
+    ),
+    `Page ${id}`,
+  );
+  return renderJson({ id: res.id, parent: res.parent, url: res.url });
+}
+
 export async function pageDeleteCommand(ctx: { args: string[] }): Promise<string> {
   const { flags, positional } = parseFlags(ctx.args);
   if (positional.length === 0) {

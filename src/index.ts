@@ -32,6 +32,8 @@ async function loadCommand(noun: string, verb: string | undefined): Promise<Comm
         case "create": return mod.pageCreateCommand;
         case "append": return mod.pageAppendCommand;
         case "update": return mod.pageUpdateCommand;
+        case "duplicate": return mod.pageDuplicateCommand;
+        case "move": return mod.pageMoveCommand;
         case "delete": return mod.pageDeleteCommand;
         case "sync": return mod.pageSyncCommand;
         default:
@@ -122,7 +124,9 @@ Usage:
   notionctl page create --parent <id> --title <text> [--from file.md]
   notionctl page append <id> [--from file.md]
   notionctl page update <id> [--from file.md]
-  notionctl page sync <file.md> [--parent <id>]
+  notionctl page sync <file.md> [--parent <id>] [--force]
+  notionctl page duplicate <id> [--parent <id>] [--title "new title"]
+  notionctl page move <id> --to <parent-id>
   notionctl page delete <id> --yes
 
   notionctl db create --parent <page-id> --title <text> [--prop Name=type[:options] ...]
