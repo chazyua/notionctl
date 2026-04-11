@@ -33,8 +33,58 @@ const ALERT_TYPE_TO_COLOR: Record<string, string> = {
   CAUTION: "red_background",
 };
 
+// The sidecar comment supports an optional trailing suffix (e.g. `name="foo"
+// hosted=notion`) that the read path uses to convey extra info for
+// Notion-hosted media blocks. The write path only cares about `type` and
+// `id`, so the trailing portion is matched non-greedily and discarded.
+const PASS_THROUGH_RE = /^<!--\s*notion-block:\s*(\w+)\s+id=([\w-]+)(?:\s[^>]*)?\s*-->$/;
+
+const MEDIA_SIDECAR_TYPES = new Set(["image", "video", "file", "pdf"]);
+const LINK_SIDECAR_TYPES = new Set(["bookmark", "link_preview"]);
+
+function peekSidecar(lines: string[], startIdx: number): { type: string; nextIdx: number } | null {
+  let i = startIdx;
+  while (i < lines.length && lines[i]!.trim().length === 0) i++;
+  if (i >= lines.length) return null;
+  const m = PASS_THROUGH_RE.exec(lines[i]!.trim());
+  if (!m) return null;
+  return { type: m[1]!, nextIdx: i + 1 };
+}
+
+function parseBareLinkLine(line: string): { label: string; url: string } | null {
+  if (!line.startsWith("[")) return null;
+  let i = 1;
+  let depth = 1;
+  while (i < line.length && depth > 0) {
+    if (line[i] === "\\") { i += 2; continue; }
+    if (line[i] === "[") depth++;
+    else if (line[i] === "]") { depth--; if (depth === 0) break; }
+    i++;
+  }
+  if (depth !== 0) return null;
+  const labelEnd = i;
+  if (line[i + 1] !== "(") return null;
+  let parenDepth = 1;
+  let j = i + 2;
+  while (j < line.length && parenDepth > 0) {
+    if (line[j] === "\\") { j += 2; continue; }
+    if (line[j] === "(") parenDepth++;
+    else if (line[j] === ")") { parenDepth--; if (parenDepth === 0) break; }
+    j++;
+  }
+  if (parenDepth !== 0) return null;
+  if (j !== line.length - 1) return null;
+  const label = line.slice(1, labelEnd);
+  const url = line.slice(labelEnd + 2, j);
+  if (url.length === 0) return null;
+  return { label, url };
+}
+
 export function markdownToBlocks(md: string): Block[] {
-  const lines = md.split("\n");
+  // Normalize CRLF and stray CR to LF so paragraph runs don't carry trailing
+  // carriage returns that would bleed into Notion rich_text content.
+  const normalized = md.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+  const lines = normalized.split("\n");
   const blocks: Block[] = [];
   let i = 0;
 
@@ -84,19 +134,56 @@ export function markdownToBlocks(md: string): Block[] {
         i++;
         continue;
       }
+      // If the next non-blank line is a round-trip sidecar comment naming a
+      // media type (video/file/pdf), upgrade the block's type so the original
+      // Notion block type survives round-tripping from read → write.
+      let blockType: "image" | "video" | "file" | "pdf" = "image";
+      const sidecar = peekSidecar(lines, i + 1);
+      if (sidecar && MEDIA_SIDECAR_TYPES.has(sidecar.type)) {
+        blockType = sidecar.type as typeof blockType;
+        i = sidecar.nextIdx;
+      } else {
+        i++;
+      }
+      const caption = alt ? [{ type: "text", text: { content: alt, link: null }, annotations: { bold: false, italic: false, strikethrough: false, underline: false, code: false, color: "default" }, plain_text: alt, href: null }] : [];
       blocks.push({
         object: "block",
         id: "",
-        type: "image",
+        type: blockType,
         has_children: false,
-        image: {
+        [blockType]: {
           type: "external",
           external: { url },
-          caption: alt ? [{ type: "text", text: { content: alt, link: null }, annotations: { bold: false, italic: false, strikethrough: false, underline: false, code: false, color: "default" }, plain_text: alt, href: null }] : [],
+          caption,
         },
       } as unknown as Block);
-      i++;
       continue;
+    }
+
+    // Bare link line: [caption](url) alone on a line. On its own this would
+    // become a paragraph with a link, but when followed by a bookmark/
+    // link_preview sidecar from the read path we upgrade it to that block type
+    // so the round-trip preserves the original Notion block shape.
+    if (trimmed.startsWith("[")) {
+      const parsedLink = parseBareLinkLine(trimmed);
+      if (parsedLink) {
+        const sidecar = peekSidecar(lines, i + 1);
+        if (sidecar && LINK_SIDECAR_TYPES.has(sidecar.type)) {
+          const blockType = sidecar.type as "bookmark" | "link_preview";
+          const captionRuns = parsedLink.label && parsedLink.label !== parsedLink.url
+            ? [{ type: "text", text: { content: parsedLink.label, link: null }, annotations: { bold: false, italic: false, strikethrough: false, underline: false, code: false, color: "default" }, plain_text: parsedLink.label, href: null }]
+            : [];
+          blocks.push({
+            object: "block",
+            id: "",
+            type: blockType,
+            has_children: false,
+            [blockType]: { url: parsedLink.url, caption: captionRuns },
+          } as unknown as Block);
+          i = sidecar.nextIdx;
+          continue;
+        }
+      }
     }
 
     // Headings
@@ -160,13 +247,22 @@ export function markdownToBlocks(md: string): Block[] {
       let quoteRichText: RichText[] = [];
       let quoteChildren: Block[] = [];
       if (allParagraphs) {
-        // Join all paragraphs with `\n\n` separators in a single rich_text run.
-        const joined = innerBlocks.map((b) =>
-          ((b as { paragraph: { rich_text: RichText[] } }).paragraph.rich_text)
-            .map((r: any) => (r.text?.content ?? r.plain_text ?? ""))
-            .join(""),
-        ).join("\n\n");
-        quoteRichText = markdownToRichText(joined);
+        // Concatenate each paragraph's rich_text runs directly, separating
+        // paragraphs with a literal "\n\n" text run. Building a flat runs
+        // array preserves inline annotations (bold, italic, links) that
+        // would be stripped if we re-serialized to plain text and re-parsed.
+        const sep: RichText = {
+          type: "text",
+          text: { content: "\n\n", link: null },
+          annotations: { bold: false, italic: false, strikethrough: false, underline: false, code: false, color: "default" },
+          plain_text: "\n\n",
+          href: null,
+        } as unknown as RichText;
+        for (let bi = 0; bi < innerBlocks.length; bi++) {
+          if (bi > 0) quoteRichText.push(sep);
+          const runs = (innerBlocks[bi] as { paragraph: { rich_text: RichText[] } }).paragraph.rich_text;
+          quoteRichText.push(...runs);
+        }
       } else if (innerBlocks.length > 0 && innerBlocks[0]!.type === "paragraph") {
         quoteRichText = (innerBlocks[0]!.paragraph as { rich_text: RichText[] }).rich_text;
         quoteChildren = innerBlocks.slice(1);
@@ -358,15 +454,24 @@ export function markdownToBlocks(md: string): Block[] {
       continue;
     }
 
-    // Pass-through HTML comment
-    const passMatch = /^<!--\s*notion-block:\s*(\w+)\s+id=([\w-]+)\s*-->$/.exec(trimmed);
+    // Round-trip sidecar comment with no preceding media line. These are
+    // emitted by the read path for block types we can't reconstruct from
+    // markdown — structural blocks (synced_block, column_list, embed, etc.)
+    // and Notion-hosted media (uploaded files/images/videos/pdfs whose URLs
+    // are short-lived signed links Notion's own API can't re-ingest).
+    // Creating a stub block here would fail Notion's API or silently store
+    // an empty block, so we drop it and warn.
+    const passMatch = PASS_THROUGH_RE.exec(trimmed);
     if (passMatch) {
-      blocks.push({
-        object: "block",
-        id: passMatch[2]!,
-        type: passMatch[1]! as Block["type"],
-        has_children: false,
-      } as Block);
+      if (warnHandler) {
+        const droppedType = passMatch[1]!;
+        const isMedia = droppedType === "image" || droppedType === "video"
+          || droppedType === "file" || droppedType === "pdf";
+        const reason = isMedia
+          ? `Notion-hosted media (uploaded files/images) cannot round-trip through markdown — the signed S3 URL is ephemeral. Re-upload with 'notionctl file upload' or use 'page append' for additive edits.`
+          : `structural blocks (synced_block, column_list, embed, etc.) cannot be expressed in markdown and are preserved only in the original Notion workspace.`;
+        warnHandler(`notionctl: dropped '${droppedType}' block on write — ${reason}`);
+      }
       i++;
       continue;
     }

@@ -138,11 +138,14 @@ describe("markdownToBlocks complex blocks", () => {
     assert.equal((blocks[0] as any).equation.expression, "E = mc^2");
   });
 
-  it("pass-through block preserves ID", () => {
+  it("standalone sidecar comment for non-markdown-expressible type is dropped", () => {
+    // synced_block, column_list, embed, etc. cannot be expressed in markdown.
+    // The read path emits a sidecar comment with the original block id as a
+    // round-trip breadcrumb. Creating a stub block here would fail Notion's
+    // API (the block has a type but no body data), so the write path drops
+    // it instead and the page sync / update skips it.
     const blocks = markdownToBlocks("<!-- notion-block: synced_block id=abc-123 -->");
-    assert.equal(blocks.length, 1);
-    assert.equal(blocks[0]!.type, "synced_block");
-    assert.equal(blocks[0]!.id, "abc-123");
+    assert.equal(blocks.length, 0);
   });
 
   it("GFM table", () => {
@@ -290,12 +293,11 @@ describe("markdownToBlocks — paragraph/block boundary edge cases", () => {
     assert.equal(blocks[1]!.type, "toggle");
   });
 
-  it("pass-through comment after paragraph is parsed separately", () => {
+  it("standalone sidecar comment after paragraph is dropped, paragraph kept", () => {
     const md = "Some text\n<!-- notion-block: synced_block id=abc-123 -->";
     const blocks = markdownToBlocks(md);
-    assert.equal(blocks.length, 2);
+    assert.equal(blocks.length, 1);
     assert.equal(blocks[0]!.type, "paragraph");
-    assert.equal(blocks[1]!.type, "synced_block");
   });
 });
 
@@ -712,6 +714,77 @@ describe("bug hunt round 6 — markdown write fixes", () => {
     assert.ok(text.includes("Second paragraph."));
     assert.ok(text.includes("\n\n"), "paragraph break preserved");
     assert.ok(!q.children, "no structured children for paragraph-only quote");
+  });
+
+  it("multi-paragraph blockquote preserves bold/italic/link annotations", () => {
+    // Regression: the allParagraphs branch used to flatten each paragraph's
+    // rich_text runs to their plain content and re-parse the joined string,
+    // which silently stripped bold/italic/link annotations on round-trip.
+    const md = "> first **bold** para\n>\n> second _italic_ para with [link](https://example.com)";
+    const blocks = markdownToBlocks(md);
+    assert.equal(blocks.length, 1);
+    const runs = (blocks[0] as any).quote.rich_text;
+    assert.ok(runs.some((r: any) => r.annotations?.bold === true), "bold preserved");
+    assert.ok(runs.some((r: any) => r.annotations?.italic === true), "italic preserved");
+    assert.ok(runs.some((r: any) => r.text?.link?.url === "https://example.com"), "link preserved");
+  });
+});
+
+describe("round-trip sidecar comment absorption", () => {
+  it("image line followed by video sidecar becomes a video block", () => {
+    const md = "![caption](https://example.com/v.mp4)\n<!-- notion-block: video id=vid-abc-1234 -->";
+    const blocks = markdownToBlocks(md);
+    assert.equal(blocks.length, 1, "single block emitted, sidecar absorbed");
+    assert.equal(blocks[0]!.type, "video");
+    const url = (blocks[0] as any).video.external.url;
+    assert.equal(url, "https://example.com/v.mp4");
+  });
+
+  it("image line followed by file sidecar becomes a file block", () => {
+    const md = "![report.pdf](https://example.com/r.pdf)\n<!-- notion-block: file id=file-abc-1234 -->";
+    const blocks = markdownToBlocks(md);
+    assert.equal(blocks.length, 1);
+    assert.equal(blocks[0]!.type, "file");
+  });
+
+  it("image line followed by pdf sidecar becomes a pdf block", () => {
+    const md = "![](https://example.com/doc.pdf)\n<!-- notion-block: pdf id=pdf-abc-1234 -->";
+    const blocks = markdownToBlocks(md);
+    assert.equal(blocks.length, 1);
+    assert.equal(blocks[0]!.type, "pdf");
+  });
+
+  it("bare link line followed by bookmark sidecar becomes a bookmark block", () => {
+    const md = "[Example](https://example.com)\n<!-- notion-block: bookmark id=bm-abc-1234 -->";
+    const blocks = markdownToBlocks(md);
+    assert.equal(blocks.length, 1);
+    assert.equal(blocks[0]!.type, "bookmark");
+    assert.equal((blocks[0] as any).bookmark.url, "https://example.com");
+  });
+
+  it("bare link line followed by link_preview sidecar becomes link_preview block", () => {
+    const md = "[https://github.com/owner/repo](https://github.com/owner/repo)\n<!-- notion-block: link_preview id=lp-abc -->";
+    const blocks = markdownToBlocks(md);
+    assert.equal(blocks.length, 1);
+    assert.equal(blocks[0]!.type, "link_preview");
+  });
+
+  it("image line without sidecar stays as image block", () => {
+    const blocks = markdownToBlocks("![caption](https://example.com/pic.png)");
+    assert.equal(blocks.length, 1);
+    assert.equal(blocks[0]!.type, "image");
+  });
+});
+
+describe("markdownToBlocks — CRLF normalization", () => {
+  it("CRLF line endings do not leave carriage returns in paragraph text", () => {
+    const md = "line one\r\nline two\r\n\r\nanother para";
+    const blocks = markdownToBlocks(md);
+    assert.equal(blocks.length, 2);
+    const text = (blocks[0] as any).paragraph.rich_text
+      .map((r: any) => r.text?.content ?? "")
+      .join("");
+    assert.ok(!text.includes("\r"), "no stray \\r in rich_text content");
   });
 });
 

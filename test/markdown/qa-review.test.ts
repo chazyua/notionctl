@@ -641,7 +641,14 @@ describe("blocksToMarkdown — edge cases from read path", () => {
     assert.match(out, /<!-- notion-block: link_preview id=lp-1 -->/);
   });
 
-  it("image with file URL (not external) renders correctly", () => {
+  it("image with Notion-hosted file URL renders as sidecar-only marker", () => {
+    // Regression: Notion's file.url is a short-lived signed S3 link that
+    // Notion's own API refuses to re-ingest on round-trip. The read path
+    // used to emit the URL in the markdown line, which led `page update`
+    // to recreate a file block with an external URL Notion couldn't fetch,
+    // leaving an empty block on the page. Now these blocks are represented
+    // by a sidecar comment only — the write path treats it as a no-op and
+    // the page update command loudly warns about the drop before executing.
     const block: Block = {
       object: "block",
       id: "img-file-1",
@@ -654,7 +661,8 @@ describe("blocksToMarkdown — edge cases from read path", () => {
       },
     } as unknown as Block;
     const out = blocksToMarkdown([block]);
-    assert.match(out, /!\[image\]\(https:\/\/s3\.amazonaws\.com/);
+    assert.doesNotMatch(out, /!\[image\]/, "no markdown image line");
+    assert.match(out, /<!-- notion-block: image id=img-file-1.*hosted=notion -->/);
   });
 
   it("callout with CAUTION emoji renders as [!CAUTION]", () => {

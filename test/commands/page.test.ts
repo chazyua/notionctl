@@ -48,6 +48,23 @@ describe("extractSyncTitle", () => {
     assert.equal(title, "Untitled");
     assert.equal(explicit, false);
   });
+
+  it("ignores H1s inside a fenced code block whose closer is shorter than the opener", () => {
+    // Regression: the fence tracker used to toggle on any ` `{3,} ` match, so
+    // a ``` line inside a ```` fence flipped inFence=false and the next H1
+    // was picked up as the page title even though it was still code content.
+    const body = [
+      "````",
+      "# Not a real H1 inside code",
+      "```",
+      "# Still inside code",
+      "````",
+      "",
+      "# Real title",
+    ].join("\n");
+    const { title } = extractSyncTitle({}, body);
+    assert.equal(title, "Real title");
+  });
 });
 
 describe("fetchWith404Hint", () => {
@@ -137,6 +154,48 @@ describe("replaceInRichText (bug hunt round 5 — cross-run find-replace)", () =
     const runs = [makeRun("ab ab ab", plain)];
     const { count } = replaceInRichText(runs, "ab", "xx");
     assert.equal(count, 3);
+  });
+
+  it("does not touch equation runs and leaves text replacements around them", () => {
+    // Regression: the previous implementation used each run's plain_text to
+    // build the flat search buffer, so an equation expression containing the
+    // find string was matched and replaced with a plain-text run, losing the
+    // equation shape entirely.
+    const equationRun = {
+      type: "equation",
+      equation: { expression: "x + y" },
+      annotations: { ...plain },
+      plain_text: "x + y",
+      href: null,
+    };
+    const runs = [
+      makeRun("solve for this ", plain),
+      equationRun,
+      makeRun(" then submit", plain),
+    ];
+    const { newRuns, count } = replaceInRichText(runs as any, "this", "THAT");
+    assert.equal(count, 1);
+    const eq = newRuns.find((r: any) => r.type === "equation");
+    assert.ok(eq, "equation run survives");
+    assert.equal((eq as any).equation.expression, "x + y");
+    const flat = newRuns.map((r: any) => r.plain_text).join("");
+    assert.ok(flat.includes("solve for THAT"));
+    assert.ok(flat.includes("then submit"));
+  });
+
+  it("does not touch mention runs", () => {
+    const mention = {
+      type: "mention",
+      mention: { type: "page", page: { id: "abc123" } },
+      annotations: { ...plain },
+      plain_text: "Some Page",
+      href: null,
+    };
+    const runs = [makeRun("hello ", plain), mention, makeRun(" world", plain)];
+    const { newRuns, count } = replaceInRichText(runs as any, "Page", "Doc");
+    assert.equal(count, 0, "mention is skipped");
+    const stillMention = newRuns.find((r: any) => r.type === "mention");
+    assert.ok(stillMention, "mention preserved");
   });
 });
 

@@ -7,7 +7,7 @@
  * (from --from file or stdin) and convert to blocks.
  */
 
-import { writeFile, rename } from "node:fs/promises";
+import { writeFile, rename, realpath } from "node:fs/promises";
 import { resolve, sep } from "node:path";
 import { execFile } from "node:child_process";
 import { extractFrontmatter, reinsertFrontmatter } from "../sync/frontmatter.js";
@@ -242,6 +242,22 @@ export async function pageUpdateCommand(ctx: { args: string[] }): Promise<string
 
   if (newBlocks !== null) {
     const existing = await notionRequest<{ results: Block[] }>("GET", `/blocks/${id}/children`);
+    // Warn loudly if we're about to delete Notion-hosted media blocks that
+    // cannot be recreated from the markdown representation. The user either
+    // re-uploads the files themselves or uses `page append` for additive
+    // changes that don't rewrite the page.
+    const hostedMedia = existing.results.filter((b) => {
+      const t = b.type;
+      if (t !== "image" && t !== "video" && t !== "file" && t !== "pdf") return false;
+      const media = (b as any)[t];
+      if (!media) return false;
+      return media.type === "file" || media.type === "file_upload";
+    });
+    if (hostedMedia.length > 0) {
+      process.stderr.write(
+        `notionctl: page update will DELETE ${hostedMedia.length} Notion-hosted media block(s) (uploaded files/images/videos/pdfs). These cannot be recreated from markdown and will need to be re-uploaded manually. Use 'notionctl file upload' after the update, or use 'page append' for additive edits that preserve existing attachments.\n`,
+      );
+    }
     for (const b of existing.results) {
       await notionRequest("DELETE", `/blocks/${b.id}`);
     }
@@ -305,23 +321,64 @@ export async function pageDuplicateCommand(ctx: { args: string[] }): Promise<str
     );
   }
 
+  // Block types that cannot be recreated via the public blocks API from a
+  // duplication. We filter them out of the duplicate with a warning so the
+  // copy still succeeds for the rest of the content.
+  const UNCOPYABLE_TYPES = new Set([
+    "child_page", "child_database", "synced_block", "column_list", "column",
+    "table_of_contents", "breadcrumb", "unsupported",
+  ]);
+  const MEDIA_TYPES = new Set(["image", "video", "file", "pdf"]);
+  let droppedBlocks = 0;
+  let skippedUploadedFiles = 0;
+
   // Strip API-only fields and null values so blocks are valid for creation
   const sanitizeForCreate = (blocks: Block[]): unknown[] => {
-    return blocks.map((b) => {
+    const out: unknown[] = [];
+    for (const b of blocks) {
       const typeKey = b.type;
+      if (UNCOPYABLE_TYPES.has(typeKey)) {
+        droppedBlocks++;
+        continue;
+      }
       const typeData = (b as any)[typeKey];
-      if (!typeData) return { object: "block", type: typeKey };
+      if (!typeData) {
+        droppedBlocks++;
+        continue;
+      }
+      // Media blocks with a Notion-hosted `file` source carry a short-lived
+      // signed URL that Notion's API cannot ingest as an `external` URL on a
+      // new block (the S3 fetch fails silently and the block ends up with no
+      // URL). Re-uploading would require downloading then re-posting the
+      // bytes, which is out of scope here, so we drop these blocks with a
+      // warning and let the rest of the duplicate succeed.
+      if (MEDIA_TYPES.has(typeKey) && typeData && typeof typeData === "object"
+        && typeData.type === "file") {
+        skippedUploadedFiles++;
+        continue;
+      }
       // Deep-clone the type data and strip null values
       const cleaned = JSON.parse(JSON.stringify(typeData, (_k, v) => v === null ? undefined : v));
       const nested = (b as any)._children as Block[] | undefined;
       if (nested && nested.length > 0) {
         cleaned.children = sanitizeForCreate(nested);
       }
-      return { object: "block", type: typeKey, [typeKey]: cleaned };
-    });
+      out.push({ object: "block", type: typeKey, [typeKey]: cleaned });
+    }
+    return out;
   };
 
   const children = sanitizeForCreate(sourceBlocks);
+  if (droppedBlocks > 0) {
+    process.stderr.write(
+      `notionctl: skipped ${droppedBlocks} block(s) in duplicate — types like child_page, synced_block, column_list cannot be recreated via the API.\n`,
+    );
+  }
+  if (skippedUploadedFiles > 0) {
+    process.stderr.write(
+      `notionctl: skipped ${skippedUploadedFiles} uploaded-file block(s) in duplicate — Notion-hosted files cannot be referenced from a new page via signed URL; re-upload manually in the copy if needed.\n`,
+    );
+  }
   const firstChunk = children.slice(0, 100);
   const overflow = children.slice(100);
 
@@ -445,6 +502,11 @@ interface RichRun {
  * match start — partial annotation loss is unavoidable when spans cross
  * formatting boundaries, so we pick a consistent rule.
  *
+ * Equation and mention runs act as boundaries: they are passed through
+ * unchanged, and matches cannot cross them. This prevents the replacement
+ * from rewriting an equation's expression or a mention's referenced ID
+ * into a plain-text run and losing the original data.
+ *
  * Exported for unit testing. Production callers use pageFindReplaceCommand.
  */
 export function replaceInRichText(
@@ -452,11 +514,34 @@ export function replaceInRichText(
   findStr: string,
   replaceStr: string,
 ): { newRuns: RichRun[]; count: number } {
+  const newRuns: RichRun[] = [];
+  let totalCount = 0;
+  let i = 0;
+  while (i < runs.length) {
+    if (runs[i]!.type !== "text") {
+      newRuns.push(runs[i]!);
+      i++;
+      continue;
+    }
+    const groupStart = i;
+    while (i < runs.length && runs[i]!.type === "text") i++;
+    const group = runs.slice(groupStart, i);
+    const { newRuns: gResult, count } = replaceInTextRunGroup(group, findStr, replaceStr);
+    newRuns.push(...gResult);
+    totalCount += count;
+  }
+  return { newRuns, count: totalCount };
+}
+
+function replaceInTextRunGroup(
+  runs: RichRun[],
+  findStr: string,
+  replaceStr: string,
+): { newRuns: RichRun[]; count: number } {
   const charRuns: number[] = [];
   let flat = "";
   for (let i = 0; i < runs.length; i++) {
-    const run = runs[i]!;
-    const content = run.type === "text" ? (run.text?.content ?? "") : run.plain_text;
+    const content = runs[i]!.text?.content ?? "";
     for (let c = 0; c < content.length; c++) charRuns.push(i);
     flat += content;
   }
@@ -489,7 +574,7 @@ export function replaceInRichText(
   let cursor = 0;
   for (const m of matches) {
     pushSlice(cursor, m.start);
-    segments.push({ content: replaceStr, runIdx: charRuns[m.start]!});
+    segments.push({ content: replaceStr, runIdx: charRuns[m.start]! });
     cursor = m.end;
   }
   pushSlice(cursor, flat.length);
@@ -652,12 +737,31 @@ export function extractSyncTitle(
   if (frontmatter.title) {
     return { title: String(frontmatter.title), syncBody: body, explicit: true };
   }
-  // Find H1 outside fenced code blocks (backtick or tilde)
+  // Find H1 outside fenced code blocks (backtick or tilde). We track the
+  // opening fence's char and length so a shorter closer (e.g. ``` inside a
+  // ```` fence) is treated as code content instead of toggling out of the
+  // fence and misreading an H1 inside the block as the page title.
   const lines = body.split("\n");
-  let inFence = false;
+  let fenceChar: "`" | "~" | null = null;
+  let fenceLen = 0;
   for (let i = 0; i < lines.length; i++) {
-    if (/^(`{3,}|~{3,})/.test(lines[i]!.trim())) { inFence = !inFence; continue; }
-    if (inFence) continue;
+    const trimmed = lines[i]!.trim();
+    const openMatch = /^(`{3,}|~{3,})/.exec(trimmed);
+    if (openMatch) {
+      const mark = openMatch[1]!;
+      if (fenceChar === null) {
+        fenceChar = mark[0] as "`" | "~";
+        fenceLen = mark.length;
+        continue;
+      }
+      if (mark[0] === fenceChar && mark.length >= fenceLen && /^\s*$/.test(trimmed.slice(mark.length))) {
+        fenceChar = null;
+        fenceLen = 0;
+        continue;
+      }
+      continue;
+    }
+    if (fenceChar !== null) continue;
     const h1 = /^# (.+)$/.exec(lines[i]!);
     if (h1) {
       const title = h1[1]!.trim();
@@ -684,6 +788,25 @@ export async function pageSyncCommand(ctx: { args: string[] }): Promise<string> 
   const cwdPrefix = cwd.endsWith(sep) ? cwd : cwd + sep;
   if (file !== cwd && !file.startsWith(cwdPrefix)) {
     throw new NotionCliError(ErrorCode.USAGE, `Refusing to sync file outside working directory: ${file}`);
+  }
+  // Resolve symlinks so a symlink inside the working directory cannot be used
+  // to redirect sync state into a file outside the working directory. If the
+  // file does not yet exist, skip the check and let the read/write calls
+  // surface a filesystem error — we only need to block the symlink-redirect
+  // path when the target already exists.
+  try {
+    const realCwd = await realpath(cwd);
+    const realFile = await realpath(file);
+    const realCwdPrefix = realCwd.endsWith(sep) ? realCwd : realCwd + sep;
+    if (realFile !== realCwd && !realFile.startsWith(realCwdPrefix)) {
+      throw new NotionCliError(
+        ErrorCode.USAGE,
+        `Refusing to sync file outside working directory (resolved target ${realFile} escapes ${realCwd}).`,
+      );
+    }
+  } catch (err) {
+    if (err instanceof NotionCliError) throw err;
+    // ENOENT is fine — the file may not exist yet on first sync.
   }
   const source = await readFileText(file, "sync file");
   const { data: frontmatter, body } = extractFrontmatter(source);

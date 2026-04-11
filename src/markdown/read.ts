@@ -198,8 +198,23 @@ function renderBlock(block: Block, depth: number, numberedIndex: number): string
     case "video":
     case "file":
     case "pdf": {
-      const media = (block as unknown as { [key: string]: { caption?: Array<{ plain_text: string }>; external?: { url: string }; file?: { url: string } } })[block.type];
-      const url = media?.external?.url ?? media?.file?.url ?? "";
+      const media = (block as unknown as { [key: string]: { caption?: Array<{ plain_text: string }>; external?: { url: string }; file?: { url: string }; name?: string; type?: string } })[block.type];
+      // External sources round-trip cleanly through markdown (the URL is a
+      // stable public URL). Notion-hosted sources (`type: "file"` or a
+      // file_upload id) cannot: their URLs are short-lived signed S3 links
+      // that Notion's own API refuses to re-ingest, so round-tripping them
+      // through page update creates an empty block. Emit only the sidecar
+      // comment so the write path can silently drop them and warn.
+      const hasExternalUrl = !!media?.external?.url;
+      const isHosted = media?.type === "file" || media?.type === "file_upload"
+        || (!hasExternalUrl && !!media?.file?.url)
+        || (!hasExternalUrl && !media?.file?.url);
+      if (isHosted) {
+        const name = media?.name ?? "";
+        const nameLabel = name ? ` name=${JSON.stringify(name)}` : "";
+        return `<!-- notion-block: ${block.type} id=${block.id}${nameLabel} hosted=notion -->`;
+      }
+      const url = media?.external?.url ?? "";
       const caption = (media?.caption ?? []).map((r) => r.plain_text).join("");
       const label = caption || block.type;
       return `![${label}](${url})\n<!-- notion-block: ${block.type} id=${block.id} -->`;
