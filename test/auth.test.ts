@@ -9,6 +9,7 @@ import {
   clearToken,
   getConfigPath,
   AuthSource,
+  isValidTokenFormat,
 } from "../src/auth.js";
 import { NotionCliError, ErrorCode } from "../src/errors.js";
 
@@ -120,6 +121,32 @@ describe("auth", () => {
         return true;
       },
     );
+  });
+});
+
+describe("isValidTokenFormat", () => {
+  it("accepts a realistic-length ntn_ token", () => {
+    const token = "ntn_" + "a".repeat(43);
+    assert.equal(isValidTokenFormat(token), true);
+  });
+
+  it("accepts a realistic-length legacy secret_ token", () => {
+    const token = "secret_" + "B".repeat(43);
+    assert.equal(isValidTokenFormat(token), true);
+  });
+
+  it("rejects a short ntn_ token that could be truncated", () => {
+    // Previously the regex accepted 10+ chars which let obviously-short
+    // tokens through. Real Notion tokens are ~43 chars after the prefix.
+    assert.equal(isValidTokenFormat("ntn_aaaaaaaaaa"), false);
+  });
+
+  it("rejects tokens without ntn_ or secret_ prefix", () => {
+    assert.equal(isValidTokenFormat("bearer_abc1234567890123456789012345678901234567"), false);
+  });
+
+  it("rejects tokens with invalid characters in the body", () => {
+    assert.equal(isValidTokenFormat("ntn_has-dashes-which-are-invalid-in-body-part-aa"), false);
   });
 });
 

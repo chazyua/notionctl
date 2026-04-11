@@ -41,15 +41,27 @@ type TokenProvider = () => Promise<LoadedToken>;
 
 let tokenProvider: TokenProvider = loadToken;
 let cachedToken: string | undefined;
+let debugMode = false;
+let requestCount = 0;
 
 export function setTokenProvider(provider: TokenProvider): void {
   tokenProvider = provider;
   cachedToken = undefined;
 }
 
+export function setDebugMode(enabled: boolean): void {
+  debugMode = enabled;
+}
+
+export function getRequestCount(): number {
+  return requestCount;
+}
+
 export function resetForTesting(): void {
   tokenProvider = loadToken;
   cachedToken = undefined;
+  debugMode = false;
+  requestCount = 0;
 }
 
 async function getToken(): Promise<string> {
@@ -109,6 +121,11 @@ async function notionRequestSingle<T = unknown>(
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     init.signal = controller.signal;
+
+    requestCount++;
+    if (debugMode) {
+      process.stderr.write(`[notionctl] ${method} ${path}${attempt > 0 ? ` (retry ${attempt})` : ""}\n`);
+    }
 
     try {
       response = await fetch(url, init);
@@ -295,7 +312,7 @@ export async function appendBlocksChunked(
  * Same auth, same URL enforcement, same domain restriction.
  */
 export async function notionUploadFile(
-  filePath: string,
+  fileBuffer: Buffer,
   fileName: string,
   contentType: string,
 ): Promise<{ id: string; status: string; [key: string]: unknown }> {
@@ -306,10 +323,9 @@ export async function notionUploadFile(
     { file_name: fileName, content_type: contentType },
   );
 
-  // Step 2: send file data with retry and timeout
-  const { readFile } = await import("node:fs/promises");
-  const fileBuffer = await readFile(filePath);
-
+  // Step 2: send file data with retry and timeout. Caller is responsible
+  // for reading the file — taking a Buffer avoids the TOCTOU race where
+  // a separate stat() + readFile() would cross file-descriptor boundaries.
   const uploadUrl = `${API_BASE}/file_uploads/${session.id}/send`;
   if (!uploadUrl.startsWith("https://api.notion.com/")) {
     throw new NotionCliError(ErrorCode.GENERIC, "Internal error: upload URL escaped api.notion.com");
@@ -326,6 +342,11 @@ export async function notionUploadFile(
 
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
+
+    requestCount++;
+    if (debugMode) {
+      process.stderr.write(`[notionctl] POST /file_uploads/${session.id}/send${attempt > 0 ? ` (retry ${attempt})` : ""}\n`);
+    }
 
     try {
       response = await fetch(uploadUrl, {

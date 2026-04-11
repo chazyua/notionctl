@@ -5,31 +5,52 @@
  */
 
 import { NotionCliError, ErrorCode } from "../errors.js";
+import { notionRequest } from "../http.js";
+import type { Readable } from "node:stream";
 
 const MAX_STDIN_BYTES = 10 * 1024 * 1024; // 10 MB
 const MAX_STDIN_TOKEN_BYTES = 4 * 1024;   // 4 KB (tokens are short)
 
 /**
- * Read stdin with a bounded size limit to prevent OOM from unbounded input.
- * Use `maxBytes` to override the default 10 MB limit (e.g. for token reads).
+ * Read a stream with a bounded size limit to prevent OOM from unbounded input.
+ * Defaults to process.stdin; the optional stream parameter exists for testing.
  */
-export function readStdinBounded(maxBytes = MAX_STDIN_BYTES): Promise<string> {
+export function readStdinBounded(
+  maxBytes = MAX_STDIN_BYTES,
+  stream: Readable = process.stdin,
+): Promise<string> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
     let totalBytes = 0;
+    let settled = false;
+
+    // Guarantee exactly one settle and always detach listeners.
+    const settle = (fn: () => void) => {
+      if (settled) return;
+      settled = true;
+      stream.removeListener("data", onData);
+      stream.removeListener("end", onEnd);
+      stream.removeListener("error", onError);
+      fn();
+    };
+
     const onData = (c: Buffer) => {
       totalBytes += c.length;
       if (totalBytes > maxBytes) {
-        process.stdin.removeListener("data", onData);
-        process.stdin.destroy();
-        reject(new NotionCliError(ErrorCode.USAGE, `stdin input exceeds maximum size (${maxBytes} bytes)`));
+        settle(() => {
+          if (stream !== process.stdin) stream.destroy();
+          reject(new NotionCliError(ErrorCode.USAGE, `stdin input exceeds maximum size (${maxBytes} bytes)`));
+        });
         return;
       }
       chunks.push(c);
     };
-    process.stdin.on("data", onData);
-    process.stdin.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
-    process.stdin.on("error", reject);
+    const onEnd = () => settle(() => resolve(Buffer.concat(chunks).toString("utf8")));
+    const onError = (err: Error) => settle(() => reject(err));
+
+    stream.on("data", onData);
+    stream.on("end", onEnd);
+    stream.on("error", onError);
   });
 }
 
@@ -147,6 +168,40 @@ export function parseJsonObject(raw: string, flagName: string): Record<string, u
   }
   return Object.fromEntries(
     Object.entries(parsed as Record<string, unknown>).filter(([k]) => k !== "__proto__" && k !== "constructor"),
+  );
+}
+
+/**
+ * Detect whether a Notion parent ID is a database or a page.
+ * Probe /databases/{id}; if it succeeds the id is a database, otherwise
+ * treat it as a page. Single source of truth — keeping this in one place
+ * prevents the DB/page-parent drift that previously lived in four copies.
+ */
+export async function detectParentType(parentId: string): Promise<"page_id" | "database_id"> {
+  try {
+    await notionRequest("GET", `/databases/${parentId}`);
+    return "database_id";
+  } catch {
+    return "page_id";
+  }
+}
+
+/**
+ * Look up the actual key of the title property on a page. For database rows
+ * this is the user-chosen column name (commonly "Name"); for standalone pages
+ * it is "title". Notion's PATCH /pages expects the real key, not the type.
+ */
+export async function resolveTitlePropertyKey(pageId: string): Promise<string> {
+  const page = await notionRequest<{ properties: Record<string, { type?: string }> }>(
+    "GET",
+    `/pages/${pageId}`,
+  );
+  for (const [key, value] of Object.entries(page.properties)) {
+    if (value?.type === "title") return key;
+  }
+  throw new NotionCliError(
+    ErrorCode.GENERIC,
+    `Page ${pageId} has no title property — cannot update title.`,
   );
 }
 

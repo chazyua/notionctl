@@ -1,8 +1,10 @@
-import { describe, it } from "node:test";
+import { describe, it, before, after, mock } from "node:test";
 import assert from "node:assert/strict";
-import { extractSyncTitle, stripLeadingTitleH1 } from "../../src/commands/page.js";
+import { extractSyncTitle, stripLeadingTitleH1, pageUpdateCommand } from "../../src/commands/page.js";
 import { fetchWith404Hint } from "../../src/commands/shared.js";
 import { NotionCliError, ErrorCode } from "../../src/errors.js";
+import { setTokenProvider, resetForTesting } from "../../src/http.js";
+import { AuthSource } from "../../src/auth.js";
 
 describe("extractSyncTitle", () => {
   it("uses frontmatter title when present", () => {
@@ -31,6 +33,121 @@ describe("extractSyncTitle", () => {
   it("uses first H1 when multiple exist", () => {
     const { title } = extractSyncTitle({}, "# First\n\n# Second\n\nBody");
     assert.equal(title, "First");
+  });
+
+  it("ignores H1-looking lines inside a backtick fenced code block", () => {
+    const body = "```\n# Not a title\n```\n\n# Real Title\n\nBody";
+    const { title, syncBody } = extractSyncTitle({}, body);
+    assert.equal(title, "Real Title");
+    assert.ok(syncBody.includes("# Not a title"), "code block contents must be preserved");
+    assert.ok(!/^# Real Title/m.test(syncBody), "real H1 must be stripped from body");
+  });
+
+  it("ignores H1 inside a tilde fenced code block", () => {
+    const body = "~~~\n# Pretend Title\n~~~\n\n# Real One";
+    const { title } = extractSyncTitle({}, body);
+    assert.equal(title, "Real One");
+  });
+
+  it("finds H1 that appears after a closed fence", () => {
+    const body = "```js\nconsole.log(1);\n```\n# After Fence\n\nBody";
+    const { title } = extractSyncTitle({}, body);
+    assert.equal(title, "After Fence");
+  });
+
+  it("returns Untitled when the only H1 lives entirely inside a fence", () => {
+    const body = "```\n# Inside\n```\n\nJust body";
+    const { title } = extractSyncTitle({}, body);
+    assert.equal(title, "Untitled");
+  });
+
+  it("handles fences with language hints", () => {
+    const body = "```typescript\n# import { x } from 'y';\n```\n\n# Actual Title";
+    const { title } = extractSyncTitle({}, body);
+    assert.equal(title, "Actual Title");
+  });
+});
+
+describe("pageUpdateCommand title patch", () => {
+  let originalFetch: typeof globalThis.fetch;
+
+  before(() => {
+    originalFetch = globalThis.fetch;
+    setTokenProvider(async () => ({ token: "ntn_test_token", source: AuthSource.ENV }));
+  });
+
+  after(() => {
+    globalThis.fetch = originalFetch;
+    resetForTesting();
+  });
+
+  it("uses the DB row's actual title column name ('Name') in the PATCH body", async () => {
+    const pageId = "abcd1234-ef56-7890-abcd-1234567890ab";
+    const patchBodies: Array<{ url: string; body: unknown }> = [];
+
+    globalThis.fetch = mock.fn(async (url: string | URL, init?: RequestInit) => {
+      const u = typeof url === "string" ? url : url.toString();
+      const method = (init?.method ?? "GET").toUpperCase();
+
+      if (method === "GET" && u.endsWith(`/pages/${pageId}`)) {
+        return new Response(JSON.stringify({
+          id: pageId,
+          properties: {
+            Status: { type: "select", select: null },
+            Name: { type: "title", title: [] },
+          },
+        }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      if (method === "PATCH" && u.endsWith(`/pages/${pageId}`)) {
+        patchBodies.push({ url: u, body: JSON.parse((init?.body as string) ?? "{}") });
+        return new Response(JSON.stringify({ id: pageId }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      return new Response("{}", { status: 404, headers: { "content-type": "application/json" } });
+    }) as typeof globalThis.fetch;
+
+    await pageUpdateCommand({ args: [pageId, "--title", "New Title"] });
+
+    assert.equal(patchBodies.length, 1, "expected one PATCH /pages/{id} call");
+    const body = patchBodies[0]!.body as { properties: Record<string, unknown> };
+    assert.ok(
+      "Name" in body.properties,
+      `PATCH body should use the DB title key "Name", got keys: ${Object.keys(body.properties).join(",")}`,
+    );
+    assert.ok(!("title" in body.properties), 'PATCH body should NOT use hardcoded "title" key for DB rows');
+  });
+
+  it("uses 'title' key for standalone (non-database) pages", async () => {
+    const pageId = "11111111-2222-3333-4444-555555555555";
+    const patchBodies: Array<{ body: unknown }> = [];
+
+    globalThis.fetch = mock.fn(async (url: string | URL, init?: RequestInit) => {
+      const u = typeof url === "string" ? url : url.toString();
+      const method = (init?.method ?? "GET").toUpperCase();
+
+      if (method === "GET" && u.endsWith(`/pages/${pageId}`)) {
+        return new Response(JSON.stringify({
+          id: pageId,
+          properties: { title: { type: "title", title: [] } },
+        }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      if (method === "PATCH" && u.endsWith(`/pages/${pageId}`)) {
+        patchBodies.push({ body: JSON.parse((init?.body as string) ?? "{}") });
+        return new Response(JSON.stringify({ id: pageId }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      return new Response("{}", { status: 404, headers: { "content-type": "application/json" } });
+    }) as typeof globalThis.fetch;
+
+    await pageUpdateCommand({ args: [pageId, "--title", "Renamed"] });
+
+    assert.equal(patchBodies.length, 1);
+    const body = patchBodies[0]!.body as { properties: Record<string, unknown> };
+    assert.ok("title" in body.properties, "standalone page should use 'title' key");
   });
 });
 

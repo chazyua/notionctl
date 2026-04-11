@@ -145,6 +145,14 @@ describe("markdownToBlocks complex blocks", () => {
     assert.equal(blocks[0]!.id, "abc-123");
   });
 
+  it("pass-through block with unknown type is NOT parsed as a block", () => {
+    // Defense-in-depth: a manually-edited comment must not inject arbitrary
+    // block types into the API call stream.
+    const blocks = markdownToBlocks("<!-- notion-block: arbitrary_unknown_type id=abc-123 -->");
+    // The comment is ignored — zero blocks produced (not a block, not a paragraph either)
+    assert.equal(blocks.length, 0);
+  });
+
   it("GFM table", () => {
     const md = "| Name | Status |\n| --- | --- |\n| Alice | Active |\n| Bob | Inactive |";
     const blocks = markdownToBlocks(md);
@@ -438,27 +446,33 @@ describe("toggle (details) parsing", () => {
 });
 
 describe("blockquote parsing", () => {
-  it("preserves multi-paragraph blockquotes with newline separation", () => {
+  it("single-paragraph multi-line blockquote stays in rich_text", () => {
     const md = "> First paragraph.\n>\n> Second paragraph.\n>\n> Third paragraph.";
     const blocks = markdownToBlocks(md);
     assert.equal(blocks.length, 1);
     assert.equal(blocks[0]!.type, "quote");
     const text = (blocks[0] as any).quote.rich_text.map((r: any) => r.plain_text).join("");
     assert.ok(text.includes("First paragraph."), "first paragraph present");
-    assert.ok(text.includes("Second paragraph."), "second paragraph present");
-    assert.ok(!text.includes("  "), "no double spaces from collapsed blank lines");
   });
 
-  it("multi-paragraph blockquote preserves paragraph breaks", () => {
+  it("multi-paragraph blockquote puts trailing paragraphs in children blocks (Notion renders those as paragraph breaks)", () => {
     const md = "> First paragraph.\n>\n> Second paragraph.\n>\n> Third paragraph.";
     const blocks = markdownToBlocks(md);
     assert.equal(blocks.length, 1);
-    assert.equal(blocks[0]!.type, "quote");
-    const text = (blocks[0] as any).quote.rich_text.map((r: any) => r.plain_text).join("");
-    assert.ok(text.includes("First paragraph."), "first paragraph present");
-    assert.ok(text.includes("Second paragraph."), "second paragraph present");
-    assert.ok(text.includes("Third paragraph."), "third paragraph present");
-    assert.ok(text.includes("\n\n"), "paragraph breaks preserved");
+    const quote = blocks[0] as any;
+    assert.equal(quote.type, "quote");
+    // first paragraph lives in rich_text
+    const firstText = quote.quote.rich_text.map((r: any) => r.plain_text).join("");
+    assert.equal(firstText.trim(), "First paragraph.");
+    // remaining paragraphs live in children (as paragraph blocks), NOT embedded with \n
+    assert.ok(Array.isArray(quote.quote.children), "multi-paragraph quote must have children array");
+    assert.equal(quote.quote.children.length, 2);
+    assert.equal(quote.quote.children[0].type, "paragraph");
+    const secondText = quote.quote.children[0].paragraph.rich_text.map((r: any) => r.plain_text).join("");
+    assert.equal(secondText.trim(), "Second paragraph.");
+    const thirdText = quote.quote.children[1].paragraph.rich_text.map((r: any) => r.plain_text).join("");
+    assert.equal(thirdText.trim(), "Third paragraph.");
+    assert.ok(!firstText.includes("\n\n"), "first rich_text must not embed \\n\\n — use children instead");
   });
 
   it("blockquote without space after > is recognized", () => {

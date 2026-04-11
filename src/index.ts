@@ -17,6 +17,7 @@ import { NotionCliError, ErrorCode, formatErrorJson, formatErrorHuman, scrub } f
 import { isStdoutTty } from "./output.js";
 import { VERSION } from "./version.js";
 import { setActiveProfile } from "./auth.js";
+import { setDebugMode, getRequestCount } from "./http.js";
 
 type CommandHandler = (ctx: { args: string[] }) => Promise<string>;
 
@@ -182,10 +183,10 @@ Usage:
 Global flags:
   --format md|json|table|csv   Output format (default depends on command + TTY)
   --dry-run                    Preview write operations without sending
-  --verbose                    Show request counts (not yet implemented)
+  --verbose                    Show total API request count after command
   --quiet                      Suppress non-essential output
   --no-color                   Force plain output
-  --debug                      Full HTTP debug to stderr (not yet implemented)
+  --debug                      Log HTTP method and path for each request to stderr
   --yes                        Confirm destructive operations
   --profile <name>             Use a named auth profile
 
@@ -219,6 +220,18 @@ async function main(): Promise<void> {
     argv.splice(profileIdx, 2);
   }
 
+  // Extract global --debug and --verbose (strip from argv so commands don't see them)
+  const debugIdx = argv.indexOf("--debug");
+  if (debugIdx !== -1) {
+    setDebugMode(true);
+    argv.splice(debugIdx, 1);
+  }
+  const verboseIdx = argv.indexOf("--verbose");
+  const verbose = verboseIdx !== -1;
+  if (verbose) {
+    argv.splice(verboseIdx, 1);
+  }
+
   const noun = argv[0]!;
 
   // Handle --help and --version after a noun (e.g. "notionctl page --help")
@@ -239,6 +252,9 @@ async function main(): Promise<void> {
     const output = await handler({ args: rest });
     if (output && output.length > 0) {
       process.stdout.write(output + (output.endsWith("\n") ? "" : "\n"));
+    }
+    if (verbose) {
+      process.stderr.write(`[notionctl] ${getRequestCount()} API request(s)\n`);
     }
     process.exit(0);
   } catch (err) {

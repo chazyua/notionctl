@@ -92,11 +92,19 @@ export async function listProfiles(): Promise<string[]> {
   }
 }
 
-/** Warn if token doesn't match expected Notion format (ntn_ or legacy secret_ prefix). */
-const TOKEN_FORMAT = /^(ntn_|secret_)[a-zA-Z0-9]{10,}/;
+/**
+ * Warn if token doesn't match expected Notion format (ntn_ or legacy secret_ prefix).
+ * Real Notion tokens are ~43–50 alphanumeric characters after the prefix;
+ * requiring 40+ catches accidentally truncated tokens without rejecting
+ * tokens that have legitimate variation in length.
+ */
+export const TOKEN_FORMAT = /^(ntn_|secret_)[a-zA-Z0-9]{40,}$/;
+export function isValidTokenFormat(token: string): boolean {
+  return TOKEN_FORMAT.test(token);
+}
 function warnIfBadTokenFormat(token: string): void {
   if (!TOKEN_FORMAT.test(token)) {
-    process.stderr.write("Warning: token does not match expected Notion format (ntn_... or secret_...)\n");
+    process.stderr.write("Warning: token does not match expected Notion format (ntn_... or secret_... followed by ~40+ chars)\n");
   }
 }
 

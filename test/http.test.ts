@@ -1,6 +1,6 @@
 import { describe, it, before, after, mock } from "node:test";
 import assert from "node:assert/strict";
-import { notionRequest, appendBlocksChunked, setTokenProvider, resetForTesting } from "../src/http.js";
+import { notionRequest, appendBlocksChunked, notionUploadFile, setTokenProvider, resetForTesting } from "../src/http.js";
 import { NotionCliError, ErrorCode } from "../src/errors.js";
 import { AuthSource } from "../src/auth.js";
 
@@ -228,6 +228,53 @@ describe("http.ts retries", () => {
     await notionRequest("GET", "/users/me");
     // Second attempt should be at least ~1000ms after first
     assert.ok(timings[1] >= 900, `retry-after not honored (gap: ${timings[1]}ms)`);
+  });
+});
+
+describe("notionUploadFile", () => {
+  let originalFetch: typeof globalThis.fetch;
+
+  before(() => {
+    originalFetch = globalThis.fetch;
+    setTokenProvider(async () => ({ token: "ntn_upload_test", source: AuthSource.ENV }));
+  });
+
+  after(() => {
+    globalThis.fetch = originalFetch;
+    resetForTesting();
+  });
+
+  it("uploads a provided Buffer without touching the filesystem", async () => {
+    const calls: Array<{ url: string; method: string }> = [];
+    const payload = Buffer.from("hello notion", "utf8");
+
+    globalThis.fetch = mock.fn(async (url: string | URL, init?: RequestInit) => {
+      const u = typeof url === "string" ? url : url.toString();
+      calls.push({ url: u, method: init?.method ?? "GET" });
+
+      if (u.endsWith("/file_uploads")) {
+        return new Response(
+          JSON.stringify({ id: "upload-123", status: "pending" }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      }
+      if (u.endsWith("/file_uploads/upload-123/send")) {
+        // verify we sent multipart FormData (body is a FormData/ReadableStream)
+        return new Response(
+          JSON.stringify({ id: "upload-123", status: "uploaded" }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      }
+      return new Response("", { status: 404 });
+    }) as typeof globalThis.fetch;
+
+    const result = await notionUploadFile(payload, "hello.txt", "text/plain");
+
+    assert.equal(result.id, "upload-123");
+    assert.equal(result.status, "uploaded");
+    assert.equal(calls.length, 2);
+    assert.ok(calls[0]!.url.endsWith("/file_uploads"));
+    assert.ok(calls[1]!.url.endsWith("/file_uploads/upload-123/send"));
   });
 });
 

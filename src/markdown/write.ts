@@ -33,6 +33,24 @@ const ALERT_TYPE_TO_COLOR: Record<string, string> = {
   CAUTION: "red_background",
 };
 
+// Block types that the read path emits as pass-through HTML comments.
+// Keep in sync with renderBlock() in read.ts — any type not listed here
+// will be rejected at parse time to prevent arbitrary block-type injection.
+const PASSTHROUGH_BLOCK_TYPES = new Set([
+  "image",
+  "video",
+  "file",
+  "pdf",
+  "bookmark",
+  "link_preview",
+  "synced_block",
+  "column_list",
+  "column",
+  "embed",
+  "table_of_contents",
+  "breadcrumb",
+]);
+
 export function markdownToBlocks(md: string): Block[] {
   const ctx: ParseContext = { warnedHeadingDowngrade: false };
   return markdownToBlocksInternal(md, ctx);
@@ -158,7 +176,20 @@ function markdownToBlocksInternal(md: string, ctx: ParseContext): Block[] {
         quoteLines.push(raw);
         i++;
       }
-      blocks.push(makeQuoteBlock(quoteLines.join("\n")));
+      // Parse quote body as markdown so multi-paragraph quotes become real
+      // paragraph breaks (children blocks), not a single rich_text with
+      // embedded \n — Notion collapses \n inside rich_text back to one line.
+      const innerMd = quoteLines.join("\n");
+      const inner = innerMd.trim().length > 0 ? markdownToBlocksInternal(innerMd, ctx) : [];
+      let quoteRichText: RichText[] = [];
+      let quoteChildren: Block[] = [];
+      if (inner.length > 0 && inner[0]!.type === "paragraph") {
+        quoteRichText = (inner[0]!.paragraph as { rich_text: RichText[] }).rich_text;
+        quoteChildren = inner.slice(1);
+      } else if (inner.length > 0) {
+        quoteChildren = inner;
+      }
+      blocks.push(makeQuoteBlock(quoteRichText, quoteChildren));
       continue;
     }
 
@@ -335,15 +366,19 @@ function markdownToBlocksInternal(md: string, ctx: ParseContext): Block[] {
       continue;
     }
 
-    // Pass-through HTML comment
+    // Pass-through HTML comment — only accept types the read path actually emits.
     const passMatch = /^<!--\s*notion-block:\s*(\w+)\s+id=([\w-]+)\s*-->$/.exec(trimmed);
     if (passMatch) {
-      blocks.push({
-        object: "block",
-        id: passMatch[2]!,
-        type: passMatch[1]! as Block["type"],
-        has_children: false,
-      } as Block);
+      if (PASSTHROUGH_BLOCK_TYPES.has(passMatch[1]!)) {
+        blocks.push({
+          object: "block",
+          id: passMatch[2]!,
+          type: passMatch[1]! as Block["type"],
+          has_children: false,
+        } as Block);
+      }
+      // Unknown types are silently dropped (defense-in-depth) but still
+      // consume the line so they don't fall through to the paragraph parser.
       i++;
       continue;
     }
@@ -616,13 +651,18 @@ function listItemToBlock(item: ListItem): Block {
   } as unknown as Block;
 }
 
-function makeQuoteBlock(text: string): Block {
+function makeQuoteBlock(richText: RichText[], children: Block[] = []): Block {
+  const quote: { rich_text: RichText[]; color: string; children?: Block[] } = {
+    rich_text: richText,
+    color: "default",
+  };
+  if (children.length > 0) quote.children = children;
   return {
     object: "block",
     id: "",
     type: "quote",
-    has_children: false,
-    quote: { rich_text: markdownToRichText(text), color: "default" },
+    has_children: children.length > 0,
+    quote,
   } as Block;
 }
 

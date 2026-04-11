@@ -19,7 +19,15 @@ import type { RichText } from "../markdown/types.js";
 import { findReplaceRichText } from "../markdown/tokenizer.js";
 import { renderProperty } from "../properties/render.js";
 import { stringifyYaml, type YamlObject } from "../utils/yaml.js";
-import { resolvePageId, parseFlags, getBooleanFlag, fetchWith404Hint, readStdinBounded } from "./shared.js";
+import {
+  resolvePageId,
+  parseFlags,
+  getBooleanFlag,
+  fetchWith404Hint,
+  readStdinBounded,
+  detectParentType,
+  resolveTitlePropertyKey,
+} from "./shared.js";
 import { fetchBlockTree } from "../blocks.js";
 import { NotionCliError, ErrorCode } from "../errors.js";
 import { renderJson, chooseFormat, isStdoutTty, type Format } from "../output.js";
@@ -104,15 +112,7 @@ export async function pageCreateCommand(ctx: { args: string[] }): Promise<string
     );
   }
   const parentId = resolvePageId(parent);
-
-  // Detect whether parent is a database or page
-  let parentKey: "page_id" | "database_id" = "page_id";
-  try {
-    await notionRequest("GET", `/databases/${parentId}`);
-    parentKey = "database_id";
-  } catch {
-    // Not a database — use page_id (the default)
-  }
+  const parentKey = await detectParentType(parentId);
 
   let bodyMd = stripFrontmatter(await readInputMarkdown(flags));
   // Strip leading H1 if it matches --title (prevents duplicate heading in page body).
@@ -198,9 +198,12 @@ export async function pageUpdateCommand(ctx: { args: string[] }): Promise<string
   const result: Record<string, unknown> = {};
 
   if (resolvedTitle) {
-    await notionRequest("PATCH", `/pages/${id}`, {
-      properties: { title: [{ type: "text", text: { content: resolvedTitle, link: null } }] },
-    });
+    const titleKey = await resolveTitlePropertyKey(id);
+    const titleValue = [{ type: "text", text: { content: resolvedTitle, link: null } }];
+    const properties: Record<string, unknown> = titleKey === "title"
+      ? { title: titleValue }
+      : { [titleKey]: { title: titleValue } };
+    await notionRequest("PATCH", `/pages/${id}`, { properties });
     result["title"] = resolvedTitle;
   }
 
@@ -255,13 +258,7 @@ export async function pageDuplicateCommand(ctx: { args: string[] }): Promise<str
   let parentId: string;
   if (parentFlag) {
     parentId = resolvePageId(parentFlag);
-    // Detect whether the parent is a database or page
-    try {
-      await notionRequest("GET", `/databases/${parentId}`);
-      parentKey = "database_id";
-    } catch {
-      parentKey = "page_id";
-    }
+    parentKey = await detectParentType(parentId);
   } else if (sourcePage.parent.database_id) {
     parentId = sourcePage.parent.database_id;
     parentKey = "database_id";
@@ -351,14 +348,7 @@ export async function pageMoveCommand(ctx: { args: string[] }): Promise<string> 
     throw new NotionCliError(ErrorCode.USAGE, "page move requires --to <new-parent-page-id>");
   }
   const toId = resolvePageId(to);
-
-  let parentKey: "page_id" | "database_id" = "page_id";
-  try {
-    await notionRequest("GET", `/databases/${toId}`);
-    parentKey = "database_id";
-  } catch {
-    // Not a database — use page_id
-  }
+  const parentKey = await detectParentType(toId);
   const body = { parent: { [parentKey]: toId } };
 
   if (getBooleanFlag(flags, "dry-run")) {
@@ -659,14 +649,7 @@ export async function pageSyncCommand(ctx: { args: string[] }): Promise<string> 
     }
     const { title, syncBody } = extractSyncTitle(frontmatter, body);
     const parentId = resolvePageId(parent);
-    // Detect whether parent is a database or page (same as pageCreateCommand)
-    let parentKey: "page_id" | "database_id" = "page_id";
-    try {
-      await notionRequest("GET", `/databases/${parentId}`);
-      parentKey = "database_id";
-    } catch {
-      // Not a database — use page_id
-    }
+    const parentKey = await detectParentType(parentId);
     const titleProp = parentKey === "database_id"
       ? { Name: { title: [{ type: "text", text: { content: title, link: null } }] } }
       : { title: [{ type: "text", text: { content: title, link: null } }] };
@@ -705,9 +688,12 @@ export async function pageSyncCommand(ctx: { args: string[] }): Promise<string> 
       throw err;
     }
     const newBlocks = markdownToBlocks(syncBody);
-    await notionRequest("PATCH", `/pages/${pageId}`, {
-      properties: { title: [{ type: "text", text: { content: title, link: null } }] },
-    });
+    const titleKey = await resolveTitlePropertyKey(pageId);
+    const titleValue = [{ type: "text", text: { content: title, link: null } }];
+    const titleProps: Record<string, unknown> = titleKey === "title"
+      ? { title: titleValue }
+      : { [titleKey]: { title: titleValue } };
+    await notionRequest("PATCH", `/pages/${pageId}`, { properties: titleProps });
     for (const b of existing.results) {
       await notionRequest("DELETE", `/blocks/${b.id}`);
     }

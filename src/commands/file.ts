@@ -7,7 +7,7 @@
  */
 
 import { basename, extname } from "node:path";
-import { stat } from "node:fs/promises";
+import { open } from "node:fs/promises";
 import { notionRequest, notionUploadFile } from "../http.js";
 import { resolvePageId, parseFlags, getBooleanFlag } from "./shared.js";
 import { NotionCliError, ErrorCode } from "../errors.js";
@@ -86,14 +86,14 @@ function guessMimeType(filename: string): string {
  * a supported fallback (.txt for text-like, .zip for binary-like) so the
  * upload succeeds. Returns the upload filename and whether a fallback was used.
  */
-function resolveUploadName(originalName: string): { uploadName: string; fallback: boolean } {
+export function resolveUploadName(originalName: string): { uploadName: string; fallback: boolean } {
   const ext = extname(originalName).toLowerCase();
   if (NOTION_SUPPORTED_EXTENSIONS.has(ext)) {
     return { uploadName: originalName, fallback: false };
   }
   // Use .txt fallback — the original name is preserved in the output so the user knows what it was.
   const base = originalName.slice(0, originalName.length - ext.length);
-  return { uploadName: `${base}${ext}.txt`, fallback: true };
+  return { uploadName: `${base}.txt`, fallback: true };
 }
 
 const IMAGE_TYPES = new Set([
@@ -124,39 +124,48 @@ export async function fileUploadCommand(ctx: { args: string[] }): Promise<string
   const { uploadName, fallback } = resolveUploadName(originalName);
   const contentType = guessMimeType(uploadName);
 
-  // Verify file exists and check size
+  // Open the file once, then stat and read from the same descriptor so
+  // the size we validate is the same bytes we upload (no TOCTOU race
+  // between stat() and readFile() on different file descriptors).
+  const CLI_MAX_UPLOAD_BYTES = 20 * 1024 * 1024;
   let fileSize: number;
+  let fileBuffer: Buffer;
+  let fh;
   try {
-    const st = await stat(filePath);
-    fileSize = st.size;
+    fh = await open(filePath, "r");
   } catch {
     throw new NotionCliError(ErrorCode.USAGE, `File not found: ${filePath}`);
   }
-  if (fileSize === 0) {
-    throw new NotionCliError(ErrorCode.USAGE, `File is empty: ${filePath}`);
-  }
-  // BUG-12: the per-workspace limit is authoritative — the CLI hard cap is
-  // just a safety net. Fetch the real limit from /users/me so a user on a
-  // 5 MiB workspace gets a clean pre-flight error instead of a mid-upload failure.
-  const CLI_MAX_UPLOAD_BYTES = 20 * 1024 * 1024;
-  let workspaceLimit = CLI_MAX_UPLOAD_BYTES;
   try {
-    const me = await notionRequest<{ bot?: { workspace_limits?: { max_file_upload_size_in_bytes?: number } } }>(
-      "GET",
-      "/users/me",
-    );
-    const wsCap = me.bot?.workspace_limits?.max_file_upload_size_in_bytes;
-    if (typeof wsCap === "number" && wsCap > 0) workspaceLimit = wsCap;
-  } catch {
-    // Network failure here is non-fatal — fall back to the CLI cap.
-  }
-  const effectiveLimit = Math.min(CLI_MAX_UPLOAD_BYTES, workspaceLimit);
-  if (fileSize > effectiveLimit) {
-    const mib = (n: number): string => `${(n / (1024 * 1024)).toFixed(1)} MiB`;
-    throw new NotionCliError(
-      ErrorCode.USAGE,
-      `File too large: ${mib(fileSize)} exceeds the workspace limit of ${mib(effectiveLimit)}`,
-    );
+    const st = await fh.stat();
+    fileSize = st.size;
+    if (fileSize === 0) {
+      throw new NotionCliError(ErrorCode.USAGE, `File is empty: ${filePath}`);
+    }
+    // BUG-12: fetch workspace limit so a user on a 5 MiB plan gets a
+    // clean pre-flight error instead of a mid-upload failure.
+    let workspaceLimit = CLI_MAX_UPLOAD_BYTES;
+    try {
+      const me = await notionRequest<{ bot?: { workspace_limits?: { max_file_upload_size_in_bytes?: number } } }>(
+        "GET",
+        "/users/me",
+      );
+      const wsCap = me.bot?.workspace_limits?.max_file_upload_size_in_bytes;
+      if (typeof wsCap === "number" && wsCap > 0) workspaceLimit = wsCap;
+    } catch {
+      // Network failure here is non-fatal — fall back to the CLI cap.
+    }
+    const effectiveLimit = Math.min(CLI_MAX_UPLOAD_BYTES, workspaceLimit);
+    if (fileSize > effectiveLimit) {
+      const mib = (n: number): string => `${(n / (1024 * 1024)).toFixed(1)} MiB`;
+      throw new NotionCliError(
+        ErrorCode.USAGE,
+        `File too large: ${mib(fileSize)} exceeds the workspace limit of ${mib(effectiveLimit)}`,
+      );
+    }
+    fileBuffer = await fh.readFile();
+  } finally {
+    await fh.close();
   }
 
   if (fallback) {
@@ -178,7 +187,7 @@ export async function fileUploadCommand(ctx: { args: string[] }): Promise<string
     });
   }
 
-  const uploaded = await notionUploadFile(filePath, uploadName, contentType);
+  const uploaded = await notionUploadFile(fileBuffer, uploadName, contentType);
 
   const result: Record<string, unknown> = {
     id: uploaded.id,
