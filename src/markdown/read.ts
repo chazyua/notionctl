@@ -124,7 +124,8 @@ function renderBlock(block: Block, depth: number, numberedIndex: number): string
       const icon = block.callout.icon;
       const emoji = icon?.type === "emoji" ? icon.emoji : "";
       const alertType = EMOJI_TO_ALERT_TYPE[emoji] ?? colorToAlertType(block.callout.color) ?? "NOTE";
-      const lines: string[] = [`> [!${alertType}]`, `> ${text}`];
+      const textPrefixed = text.split("\n").map((l) => `> ${l}`).join("\n");
+      const lines: string[] = [`> [!${alertType}]`, textPrefixed];
       // Preserve icon/color as sidecar comments only when they can't be inferred from alert type
       if (emoji && !EMOJI_TO_ALERT_TYPE[emoji]) {
         lines.splice(1, 0, `<!-- icon: ${emoji} -->`);

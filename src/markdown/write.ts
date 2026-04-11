@@ -47,12 +47,15 @@ export function markdownToBlocks(md: string): Block[] {
       continue;
     }
 
-    // Fenced code block — match closing fence with same or more backticks
-    const fenceMatch = /^(`{3,})(.*)$/.exec(trimmed);
+    // Fenced code block — match closing fence with same or more backticks/tildes
+    const fenceMatch = /^(`{3,}|~{3,})(.*)$/.exec(trimmed);
     if (fenceMatch) {
+      const fenceChar = fenceMatch[1]![0]!;
       const fenceLen = fenceMatch[1]!.length;
       const lang = fenceMatch[2]!.trim();
-      const closePat = new RegExp(`^\`{${fenceLen},}\\s*$`);
+      const closePat = fenceChar === "`"
+        ? new RegExp(`^\`{${fenceLen},}\\s*$`)
+        : new RegExp(`^~{${fenceLen},}\\s*$`);
       const codeLines: string[] = [];
       i++;
       while (i < lines.length && !closePat.test(lines[i]!.trim())) {
@@ -98,17 +101,17 @@ export function markdownToBlocks(md: string): Block[] {
 
     // Headings
     if (/^#\s+/.test(trimmed)) {
-      blocks.push(makeHeadingBlock(1, trimmed.slice(2)));
+      blocks.push(makeHeadingBlock(1, trimmed.replace(/^#\s+/, "")));
       i++;
       continue;
     }
     if (/^##\s+/.test(trimmed)) {
-      blocks.push(makeHeadingBlock(2, trimmed.slice(3)));
+      blocks.push(makeHeadingBlock(2, trimmed.replace(/^##\s+/, "")));
       i++;
       continue;
     }
     if (/^###\s+/.test(trimmed)) {
-      blocks.push(makeHeadingBlock(3, trimmed.slice(4)));
+      blocks.push(makeHeadingBlock(3, trimmed.replace(/^###\s+/, "")));
       i++;
       continue;
     }
@@ -164,6 +167,12 @@ export function markdownToBlocks(md: string): Block[] {
           i++;
           continue;
         }
+        if (/^>[^\s]/.test(next)) {
+          // No space after > — still a valid continuation line
+          continuationLines.push(next.slice(1));
+          i++;
+          continue;
+        }
         if (next === ">") {
           // Bare > is a blank continuation line (paragraph break within callout)
           continuationLines.push("");
@@ -176,20 +185,19 @@ export function markdownToBlocks(md: string): Block[] {
       const innerMd = continuationLines.join("\n").trim();
       const childBlocks = innerMd.length > 0 ? markdownToBlocks(innerMd) : [];
       // First child paragraph becomes the callout's rich_text; rest become children
-      let calloutText = "";
+      let calloutRichText: RichText[] = [];
       let calloutChildren: Block[] = [];
       if (childBlocks.length > 0 && childBlocks[0]!.type === "paragraph") {
-        calloutText = (childBlocks[0]!.paragraph as { rich_text: RichText[] }).rich_text
-          .map((r) => r.plain_text).join("");
+        calloutRichText = (childBlocks[0]!.paragraph as { rich_text: RichText[] }).rich_text;
         calloutChildren = childBlocks.slice(1);
       } else if (childBlocks.length > 0) {
         // No leading paragraph — put everything in children, use empty rich_text
         calloutChildren = childBlocks;
       } else {
-        calloutText = innerMd;
+        calloutRichText = markdownToRichText(innerMd);
       }
       const calloutData: any = {
-        rich_text: markdownToRichText(calloutText),
+        rich_text: calloutRichText,
         icon: { type: "emoji", emoji: overrideIcon ?? ALERT_TYPE_TO_EMOJI[alertType] ?? "💡" },
         color: overrideColor ?? ALERT_TYPE_TO_COLOR[alertType] ?? "default",
       };
@@ -385,7 +393,7 @@ function isBlockStart(line: string): boolean {
   const t = line.trim();
   return (
     /^#{1,6}\s/.test(t) ||
-    /^-\s/.test(t) ||
+    /^[-*+]\s/.test(t) ||
     /^\d+\.\s/.test(t) ||
     /^>/.test(t) ||
     /^```/.test(t) ||
@@ -428,7 +436,7 @@ interface ListItem {
 }
 
 function isListLine(line: string): boolean {
-  return /^\s*-\s+/.test(line) || /^\s*\d+\.\s+/.test(line);
+  return /^\s*[-*+]\s+/.test(line) || /^\s*\d+\.\s+/.test(line);
 }
 
 function parseListSection(lines: string[], startIdx: number): { blocks: Block[]; nextIdx: number } {
@@ -451,7 +459,7 @@ function classifyListLine(line: string): Omit<ListItem, "children"> | null {
   if (todoMatch) {
     return { indent, type: "todo", text: todoMatch[2]!, checked: todoMatch[1]!.toLowerCase() === "x" };
   }
-  const bulletMatch = /^-\s+(.*)$/.exec(trimmed);
+  const bulletMatch = /^[-*+]\s+(.*)$/.exec(trimmed);
   if (bulletMatch) {
     return { indent, type: "bulleted", text: bulletMatch[1]!, checked: false };
   }
@@ -653,10 +661,20 @@ function stripEmptyIds(blocks: unknown[]): void {
 
 function parseTableRow(line: string): string[] {
   const trimmed = line.trim().replace(/^\||\|$/g, "");
-  // Split on unescaped | only (not \|), then restore escaped pipes
+  // Split on unescaped | only (not \| and not inside backticks)
   const cells: string[] = [];
   let current = "";
+  let inCode = false;
   for (let i = 0; i < trimmed.length; i++) {
+    if (trimmed[i] === "`") {
+      inCode = !inCode;
+      current += "`";
+      continue;
+    }
+    if (inCode) {
+      current += trimmed[i];
+      continue;
+    }
     if (trimmed[i] === "\\" && trimmed[i + 1] === "|") {
       current += "|";
       i++; // skip the escaped pipe

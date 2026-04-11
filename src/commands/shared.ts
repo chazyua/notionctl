@@ -87,6 +87,9 @@ export function parseFlags(args: string[]): ParsedFlags {
       if (BOOLEAN_FLAGS.has(name)) {
         value = "true";
       } else {
+        if (i + 1 >= args.length) {
+          throw new NotionCliError(ErrorCode.USAGE, `Flag --${name} requires a value`);
+        }
         value = args[i + 1];
         i++;
       }

@@ -538,11 +538,18 @@ export function extractSyncTitle(
   body: string,
 ): { title: string; syncBody: string } {
   if (frontmatter.title) return { title: String(frontmatter.title), syncBody: body };
-  const h1Match = /^# (.+)$/m.exec(body);
-  if (h1Match) {
-    const title = h1Match[1]!.trim();
-    const syncBody = body.replace(/^# .+\n?/m, "").trimStart();
-    return { title, syncBody };
+  // Find H1 outside fenced code blocks (backtick or tilde)
+  const lines = body.split("\n");
+  let inFence = false;
+  for (let i = 0; i < lines.length; i++) {
+    if (/^(`{3,}|~{3,})/.test(lines[i]!.trim())) { inFence = !inFence; continue; }
+    if (inFence) continue;
+    const h1 = /^# (.+)$/.exec(lines[i]!);
+    if (h1) {
+      const title = h1[1]!.trim();
+      const syncBody = [...lines.slice(0, i), ...lines.slice(i + 1)].join("\n").trimStart();
+      return { title, syncBody };
+    }
   }
   return { title: "Untitled", syncBody: body };
 }

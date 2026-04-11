@@ -314,7 +314,7 @@ export function markdownToRichText(md: string): RichText[] {
   }
 
   flush();
-  return runs;
+  return splitLongRuns(runs);
 }
 
 function isMarkerChar(c: string): boolean {
@@ -356,6 +356,38 @@ function findLinkEnd(md: string, startIdx: number): { labelEnd: number; urlStart
   }
   if (parenDepth !== 0) return null;
   return { labelEnd, urlStart, urlEnd: j };
+}
+
+const MAX_RICH_TEXT_LENGTH = 2000;
+
+/**
+ * Split any rich-text runs whose content exceeds Notion's 2000-character
+ * limit into multiple runs with identical annotations.
+ */
+function splitLongRuns(runs: RichText[]): RichText[] {
+  const result: RichText[] = [];
+  for (const run of runs) {
+    if (run.type !== "text" || run.text.content.length <= MAX_RICH_TEXT_LENGTH) {
+      result.push(run);
+      continue;
+    }
+    const content = run.text.content;
+    const textRun = run as TextRichText;
+    for (let offset = 0; offset < content.length; offset += MAX_RICH_TEXT_LENGTH) {
+      const chunk = content.slice(offset, offset + MAX_RICH_TEXT_LENGTH);
+      result.push({
+        type: "text",
+        text: {
+          content: chunk,
+          link: textRun.text.link,
+        },
+        annotations: { ...textRun.annotations },
+        plain_text: chunk,
+        href: textRun.href,
+      });
+    }
+  }
+  return result;
 }
 
 function makeRun(content: string, state: ScannerState, linkUrl: string | null): TextRichText {

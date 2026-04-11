@@ -209,7 +209,7 @@ function openBrowser(url: string): void {
 export async function authLoginCommand(ctx: { args: string[] }): Promise<string> {
   const { flags } = parseFlags(ctx.args);
   const clientId = flags.get("client-id") ?? process.env.NOTION_CLIENT_ID;
-  const clientSecret = process.env.NOTION_CLIENT_SECRET ?? flags.get("client-secret");
+  const clientSecret = flags.get("client-secret") ?? process.env.NOTION_CLIENT_SECRET;
 
   if (flags.has("client-secret")) {
     process.stderr.write("Warning: --client-secret is visible in process listings. Use NOTION_CLIENT_SECRET env var instead.\n");
