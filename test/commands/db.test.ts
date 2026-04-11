@@ -258,6 +258,26 @@ describe("parseSimpleFilter — additional types", () => {
     });
   });
 
+  it("checkbox filter accepts yes/no/1/0/on/off aliases", () => {
+    const s = schema({ Done: { type: "checkbox" } });
+    for (const v of ["yes", "1", "on", "Y", "TRUE"]) {
+      assert.deepEqual(parseSimpleFilter(`Done=${v}`, s), {
+        property: "Done",
+        checkbox: { equals: true },
+      });
+    }
+    for (const v of ["no", "0", "off", "N", "FALSE"]) {
+      assert.deepEqual(parseSimpleFilter(`Done=${v}`, s), {
+        property: "Done",
+        checkbox: { equals: false },
+      });
+    }
+    assert.throws(
+      () => parseSimpleFilter("Done=maybe", s),
+      /checkbox filter value/,
+    );
+  });
+
   it("status filter uses equals", () => {
     const s = schema({ State: { type: "status" } });
     assert.deepEqual(parseSimpleFilter("State=In Progress", s), {

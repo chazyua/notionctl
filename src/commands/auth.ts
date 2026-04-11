@@ -125,9 +125,11 @@ export async function authDoctorCommand(_ctx: { args: string[] }): Promise<strin
       });
     }
 
-    // 4. Accessible pages (quick search to verify the integration has page connections)
+    // 4. Accessible pages (quick search to verify the integration has page connections).
+    // Cap pagination to a single page so the check stays fast — we only need to know
+    // whether any result exists, not paginate the whole workspace.
     try {
-      const res = await notionRequest<{ results: unknown[] }>("POST", "/search", { query: "", page_size: 1 });
+      const res = await notionRequest<{ results: unknown[] }>("POST", "/search", { query: "", page_size: 1 }, { maxPages: 1 });
       if (res.results.length > 0) {
         checks.push({ check: "Page access", status: "pass", detail: "At least one page accessible" });
       } else {

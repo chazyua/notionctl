@@ -152,22 +152,40 @@ function renderBlock(block: Block, depth: number, numberedIndex: number): string
     case "equation":
       return `$$${block.equation.expression}$$`;
     case "table": {
-      const tb = block as unknown as { table: { children?: unknown[] }; _children?: unknown[] };
+      const tb = block as unknown as { table: { children?: unknown[]; has_column_header?: boolean }; _children?: unknown[] };
       const rows = (tb.table.children ?? tb._children ?? []) as Array<{
         type: "table_row";
         table_row: { cells: RichText[][] };
       }>;
       if (rows.length === 0) return "";
+      const hasHeader = tb.table.has_column_header !== false;
       const lines: string[] = [];
-      rows.forEach((row, i) => {
-        const cells = row.table_row.cells.map((cell) =>
-          richTextToMarkdown(cell).replace(/\|/g, "\\|"),
-        );
-        lines.push(`| ${cells.join(" | ")} |`);
-        if (i === 0) {
-          lines.push(`| ${cells.map(() => "---").join(" | ")} |`);
+      if (hasHeader) {
+        rows.forEach((row, i) => {
+          const cells = row.table_row.cells.map((cell) =>
+            richTextToMarkdown(cell).replace(/\|/g, "\\|"),
+          );
+          lines.push(`| ${cells.join(" | ")} |`);
+          if (i === 0) {
+            lines.push(`| ${cells.map(() => "---").join(" | ")} |`);
+          }
+        });
+      } else {
+        // No column header: synthesize an empty header row so the output
+        // is still a valid GFM table (write path needs the separator).
+        // Round-trip back to Notion will recreate it as has_column_header=true,
+        // but a comment marker preserves the intent for future versions.
+        const width = rows[0]?.table_row.cells.length ?? 0;
+        lines.push(`<!-- notion-table: has_column_header=false -->`);
+        lines.push(`| ${Array.from({ length: width }, () => " ").join(" | ")} |`);
+        lines.push(`| ${Array.from({ length: width }, () => "---").join(" | ")} |`);
+        for (const row of rows) {
+          const cells = row.table_row.cells.map((cell) =>
+            richTextToMarkdown(cell).replace(/\|/g, "\\|"),
+          );
+          lines.push(`| ${cells.join(" | ")} |`);
         }
-      });
+      }
       return lines.join("\n");
     }
     case "image":

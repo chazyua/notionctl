@@ -163,4 +163,51 @@ describe("stringifyYaml", () => {
     const parsed = parseYaml(yaml);
     assert.equal(parsed.score, 3.14);
   });
+
+  it("escapes newlines and round-trips them", () => {
+    const input = { title: "line1\nline2" };
+    const yaml = stringifyYaml(input);
+    assert.equal(yaml, 'title: "line1\\nline2"');
+    assert.equal(yaml.split("\n").length, 1);
+    assert.deepEqual(parseYaml(yaml), input);
+  });
+
+  it("escapes carriage returns and round-trips them", () => {
+    const input = { title: "a\rb" };
+    assert.deepEqual(parseYaml(stringifyYaml(input)), input);
+  });
+
+  it("escapes embedded double quotes and round-trips them", () => {
+    const input = { title: 'she said "hi"' };
+    assert.deepEqual(parseYaml(stringifyYaml(input)), input);
+  });
+
+  it("escapes literal backslashes and round-trips them", () => {
+    const input = { path: "C:\\Users\\foo" };
+    assert.deepEqual(parseYaml(stringifyYaml(input)), input);
+  });
+
+  it("unescapes quoted items inside flow sequences", () => {
+    // regression: parseFlowSequence used to keep raw \" and \n characters
+    assert.deepEqual(
+      parseYaml('tags: ["one", "two\\"quoted", "three"]'),
+      { tags: ["one", 'two"quoted', "three"] },
+    );
+    assert.deepEqual(
+      parseYaml('tags: ["a\\nb", "c"]'),
+      { tags: ["a\nb", "c"] },
+    );
+  });
+
+  it("prevents YAML key injection via newline-bearing values", () => {
+    // Attacker-controlled Notion title containing a newline + fake key
+    const input = { title: "Hello\nnotion_token: injected" };
+    const yaml = stringifyYaml(input);
+    // Output must be a single physical line — no bare newline in value
+    assert.equal(yaml.split("\n").length, 1, "newline must be escaped, not emitted bare");
+    const parsed = parseYaml(yaml);
+    assert.deepEqual(parsed, input);
+    // Injected key must not appear as a separate top-level key
+    assert.equal((parsed as Record<string, unknown>).notion_token, undefined);
+  });
 });

@@ -138,9 +138,19 @@ export function parseSimpleFilter(expr: string, schema: Record<string, PropertyS
       }
       return { and: values.map((v) => ({ property: key, multi_select: { contains: v } })) };
     }
-    case "checkbox":
+    case "checkbox": {
       if (op !== "=") throw new NotionCliError(ErrorCode.USAGE, `checkbox filter only supports =`);
-      return { property: key, checkbox: { equals: value === "true" } };
+      const v = value.trim().toLowerCase();
+      const truthy = new Set(["true", "1", "yes", "y", "on"]);
+      const falsy = new Set(["false", "0", "no", "n", "off"]);
+      if (!truthy.has(v) && !falsy.has(v)) {
+        throw new NotionCliError(
+          ErrorCode.USAGE,
+          `checkbox filter value must be true/false, yes/no, 1/0, or on/off — got: ${value}`,
+        );
+      }
+      return { property: key, checkbox: { equals: truthy.has(v) } };
+    }
     case "number": {
       const n = Number(value);
       if (!Number.isFinite(n)) {
@@ -415,7 +425,10 @@ export async function dbRowGetCommand(ctx: { args: string[] }): Promise<string> 
     throw new NotionCliError(ErrorCode.USAGE, "Usage: notionctl db row get <page-id>");
   }
   const id = resolvePageId(positional[0]!);
-  const page = await notionRequest<{ properties: Record<string, unknown> }>("GET", `/pages/${id}`);
+  const page = await fetchWith404Hint(
+    () => notionRequest<{ properties: Record<string, unknown> }>("GET", `/pages/${id}`),
+    `Database row ${id}`,
+  );
   const childBlocks = await fetchBlockTree(id);
   const format = chooseFormat(flags.get("format") as Format | undefined, {
     isTty: isStdoutTty(),
@@ -484,7 +497,10 @@ export async function dbRowUpdateCommand(ctx: { args: string[] }): Promise<strin
     throw new NotionCliError(ErrorCode.USAGE, "Usage: notionctl db row update <page-id> [--prop Key=value ...]");
   }
   const pageId = resolvePageId(positional[0]!);
-  const page = await notionRequest<{ parent: { type: string; database_id?: string } }>("GET", `/pages/${pageId}`);
+  const page = await fetchWith404Hint(
+    () => notionRequest<{ parent: { type: string; database_id?: string } }>("GET", `/pages/${pageId}`),
+    `Database row ${pageId}`,
+  );
   if (page.parent.type !== "database_id" || !page.parent.database_id) {
     throw new NotionCliError(ErrorCode.USAGE, `Page ${pageId} is not a database row. Use 'page update' for non-database pages.`);
   }

@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { extractSyncTitle, stripLeadingTitleHeading } from "../../src/commands/page.js";
+import { extractSyncTitle, stripLeadingTitleHeading, replaceInRichText } from "../../src/commands/page.js";
 import { fetchWith404Hint } from "../../src/commands/shared.js";
 import { NotionCliError, ErrorCode } from "../../src/errors.js";
 
@@ -83,6 +83,60 @@ describe("fetchWith404Hint", () => {
         return true;
       },
     );
+  });
+});
+
+describe("replaceInRichText (bug hunt round 5 — cross-run find-replace)", () => {
+  const plain = { bold: false, italic: false, strikethrough: false, underline: false, code: false, color: "default" };
+  const bold = { ...plain, bold: true };
+  const makeRun = (content: string, annotations: typeof plain) => ({
+    type: "text",
+    text: { content, link: null },
+    annotations,
+    plain_text: content,
+    href: null,
+  });
+
+  it("finds and replaces within a single run", () => {
+    const runs = [makeRun("hello world", plain)];
+    const { newRuns, count } = replaceInRichText(runs, "world", "there");
+    assert.equal(count, 1);
+    assert.equal(newRuns.map((r) => r.plain_text).join(""), "hello there");
+  });
+
+  it("finds matches that span two runs", () => {
+    // "This is **bold tar**get inline." → runs split between 'tar' (bold) and 'get' (plain)
+    const runs = [
+      makeRun("This is ", plain),
+      makeRun("bold tar", bold),
+      makeRun("get inline.", plain),
+    ];
+    const { newRuns, count } = replaceInRichText(runs, "target", "XYZ");
+    assert.equal(count, 1);
+    const flat = newRuns.map((r) => r.plain_text).join("");
+    assert.equal(flat, "This is bold XYZ inline.");
+  });
+
+  it("replacement inherits annotations from run at match start", () => {
+    const runs = [makeRun("bold tar", bold), makeRun("get", plain)];
+    const { newRuns } = replaceInRichText(runs, "target", "XYZ");
+    // The replacement 'XYZ' should carry bold (start-of-match annotations)
+    const xyz = newRuns.find((r) => r.plain_text === "XYZ");
+    assert.ok(xyz);
+    assert.equal((xyz as any).annotations.bold, true);
+  });
+
+  it("returns unchanged runs when no match", () => {
+    const runs = [makeRun("hello", plain)];
+    const { newRuns, count } = replaceInRichText(runs, "missing", "X");
+    assert.equal(count, 0);
+    assert.deepEqual(newRuns, runs);
+  });
+
+  it("counts multiple non-overlapping matches", () => {
+    const runs = [makeRun("ab ab ab", plain)];
+    const { count } = replaceInRichText(runs, "ab", "xx");
+    assert.equal(count, 3);
   });
 });
 

@@ -10,7 +10,7 @@ export async function commentListCommand(ctx: { args: string[] }): Promise<strin
     throw new NotionCliError(ErrorCode.USAGE, "Usage: notionctl comment list <page-id>");
   }
   const id = resolvePageId(positional[0]!);
-  const res = await notionRequest("GET", `/comments?block_id=${id}`);
+  const res = await notionRequest("GET", `/comments?block_id=${encodeURIComponent(id)}`);
   return renderJson(res);
 }
 

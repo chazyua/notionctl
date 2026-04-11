@@ -78,6 +78,29 @@ export async function pageGetCommand(ctx: { args: string[] }): Promise<string> {
   return `---\n${yaml}\n---\n\n${titleLine}${body}`;
 }
 
+/**
+ * Detect whether the given id points at a database or a page. Notion
+ * returns NOT_FOUND for missing ids and an API_ERROR like "is a page,
+ * not a database" when the id belongs to a page — both are valid
+ * fall-backs to page_id. Auth / network / 5xx errors propagate so
+ * callers see the real failure instead of a mysterious wrong-parent
+ * rejection later.
+ */
+async function detectParentKey(parentId: string): Promise<"page_id" | "database_id"> {
+  try {
+    await notionRequest("GET", `/databases/${parentId}`);
+    return "database_id";
+  } catch (err) {
+    if (err instanceof NotionCliError) {
+      if (err.code === ErrorCode.NOT_FOUND) return "page_id";
+      if (err.code === ErrorCode.API_ERROR && /not a database|is a page/i.test(err.message)) {
+        return "page_id";
+      }
+    }
+    throw err;
+  }
+}
+
 async function readInputMarkdown(flags: Map<string, string>): Promise<string> {
   const fromFile = flags.get("from");
   // Support --from - as explicit stdin alias (BUG-3 fix)
@@ -122,14 +145,7 @@ export async function pageCreateCommand(ctx: { args: string[] }): Promise<string
   }
   const parentId = resolvePageId(parent);
 
-  // Detect whether parent is a database or page
-  let parentKey: "page_id" | "database_id" = "page_id";
-  try {
-    await notionRequest("GET", `/databases/${parentId}`);
-    parentKey = "database_id";
-  } catch {
-    // Not a database — use page_id (the default)
-  }
+  const parentKey = await detectParentKey(parentId);
 
   let bodyMd = stripFrontmatter(await readInputMarkdown(flags));
   bodyMd = stripLeadingTitleHeading(bodyMd, title);
@@ -270,13 +286,7 @@ export async function pageDuplicateCommand(ctx: { args: string[] }): Promise<str
   let parentId: string;
   if (parentFlag) {
     parentId = resolvePageId(parentFlag);
-    // Detect whether the parent is a database or page
-    try {
-      await notionRequest("GET", `/databases/${parentId}`);
-      parentKey = "database_id";
-    } catch {
-      parentKey = "page_id";
-    }
+    parentKey = await detectParentKey(parentId);
   } else if (sourcePage.parent.database_id) {
     parentId = sourcePage.parent.database_id;
     parentKey = "database_id";
@@ -367,13 +377,7 @@ export async function pageMoveCommand(ctx: { args: string[] }): Promise<string> 
   }
   const toId = resolvePageId(to);
 
-  let parentKey: "page_id" | "database_id" = "page_id";
-  try {
-    await notionRequest("GET", `/databases/${toId}`);
-    parentKey = "database_id";
-  } catch {
-    // Not a database — use page_id
-  }
+  const parentKey = await detectParentKey(toId);
   const body = { parent: { [parentKey]: toId } };
 
   if (getBooleanFlag(flags, "dry-run")) {
@@ -421,6 +425,85 @@ export async function pageOpenCommand(ctx: { args: string[] }): Promise<string> 
   });
 }
 
+interface RichRun {
+  type: string;
+  text?: { content: string; link?: unknown };
+  plain_text: string;
+  annotations?: unknown;
+  href?: unknown;
+}
+
+/**
+ * Find and replace across rich-text runs, including matches that span
+ * run boundaries (e.g. "**bold tar**get" where "target" crosses runs).
+ * Replacement text inherits annotations from the run containing the
+ * match start — partial annotation loss is unavoidable when spans cross
+ * formatting boundaries, so we pick a consistent rule.
+ *
+ * Exported for unit testing. Production callers use pageFindReplaceCommand.
+ */
+export function replaceInRichText(
+  runs: RichRun[],
+  findStr: string,
+  replaceStr: string,
+): { newRuns: RichRun[]; count: number } {
+  const charRuns: number[] = [];
+  let flat = "";
+  for (let i = 0; i < runs.length; i++) {
+    const run = runs[i]!;
+    const content = run.type === "text" ? (run.text?.content ?? "") : run.plain_text;
+    for (let c = 0; c < content.length; c++) charRuns.push(i);
+    flat += content;
+  }
+
+  const matches: Array<{ start: number; end: number }> = [];
+  let pos = 0;
+  while (true) {
+    const idx = flat.indexOf(findStr, pos);
+    if (idx === -1) break;
+    matches.push({ start: idx, end: idx + findStr.length });
+    pos = idx + findStr.length;
+  }
+  if (matches.length === 0) return { newRuns: runs, count: 0 };
+
+  interface Segment { content: string; runIdx: number }
+  const segments: Segment[] = [];
+  const pushSlice = (from: number, to: number): void => {
+    if (from >= to) return;
+    let subStart = from;
+    let currentRun = charRuns[subStart]!;
+    for (let c = from + 1; c <= to; c++) {
+      if (c === to || charRuns[c] !== currentRun) {
+        segments.push({ content: flat.slice(subStart, c), runIdx: currentRun });
+        subStart = c;
+        if (c < to) currentRun = charRuns[c]!;
+      }
+    }
+  };
+
+  let cursor = 0;
+  for (const m of matches) {
+    pushSlice(cursor, m.start);
+    segments.push({ content: replaceStr, runIdx: charRuns[m.start]!});
+    cursor = m.end;
+  }
+  pushSlice(cursor, flat.length);
+
+  const newRuns: RichRun[] = [];
+  for (const seg of segments) {
+    if (seg.content.length === 0) continue;
+    const orig = runs[seg.runIdx]!;
+    newRuns.push({
+      type: "text",
+      text: { content: seg.content, link: orig.text?.link ?? null },
+      annotations: orig.annotations,
+      plain_text: seg.content,
+      href: orig.href ?? null,
+    });
+  }
+  return { newRuns, count: matches.length };
+}
+
 /** Block types that carry rich_text content suitable for find-replace. */
 const RICH_TEXT_BLOCK_TYPES: Record<string, string> = {
   paragraph: "paragraph",
@@ -454,23 +537,22 @@ export async function pageFindReplaceCommand(ctx: { args: string[] }): Promise<s
 
   // Also check/update the page title
   let titleUpdated = false;
-  const page = await notionRequest<{ properties: Record<string, unknown> }>("GET", `/pages/${id}`);
-  const titleProp = page.properties.title as { title?: Array<{ plain_text?: string; text?: { content: string } }> } | undefined;
+  const page = await fetchWith404Hint(
+    () => notionRequest<{ properties: Record<string, unknown> }>("GET", `/pages/${id}`),
+    `Page ${id}`,
+  );
+  const titleProp = page.properties.title as { title?: RichRun[] } | undefined;
   const titleRuns = titleProp?.title;
-  if (titleRuns) {
-    for (const run of titleRuns) {
-      if (run.text && run.text.content.includes(findStr)) {
-        const count = run.text.content.split(findStr).length - 1;
-        matchCount += count;
-        run.text.content = run.text.content.replaceAll(findStr, replaceStr);
-        run.plain_text = run.text.content;
-        titleUpdated = true;
+  if (titleRuns && titleRuns.length > 0) {
+    const { newRuns, count } = replaceInRichText(titleRuns, findStr, replaceStr);
+    if (count > 0) {
+      matchCount += count;
+      titleUpdated = true;
+      if (!getBooleanFlag(flags, "dry-run")) {
+        await notionRequest("PATCH", `/pages/${id}`, {
+          properties: { title: newRuns },
+        });
       }
-    }
-    if (titleUpdated && !getBooleanFlag(flags, "dry-run")) {
-      await notionRequest("PATCH", `/pages/${id}`, {
-        properties: { title: titleRuns },
-      });
     }
   }
 
@@ -479,29 +561,24 @@ export async function pageFindReplaceCommand(ctx: { args: string[] }): Promise<s
   const processBlocks = async (blks: Block[]): Promise<void> => {
     for (const block of blks) {
       const typeKey = RICH_TEXT_BLOCK_TYPES[block.type];
-      if (!typeKey) continue;
+      if (!typeKey) {
+        const nestedOnly = (block as any)._children as Block[] | undefined;
+        if (nestedOnly) await processBlocks(nestedOnly);
+        continue;
+      }
       const typeData = (block as any)[typeKey];
-      const richText = typeData?.rich_text as Array<{ type: string; text?: { content: string }; plain_text: string }> | undefined;
+      const richText = typeData?.rich_text as RichRun[] | undefined;
       if (!richText) continue;
 
-      let blockModified = false;
-      for (const run of richText) {
-        if (run.type === "text" && run.text && run.text.content.includes(findStr)) {
-          const count = run.text.content.split(findStr).length - 1;
-          run.text.content = run.text.content.replaceAll(findStr, replaceStr);
-          run.plain_text = run.text.content;
-          matchCount += count;
-          blockModified = true;
-        }
-      }
-
-      if (blockModified) {
+      const { newRuns, count } = replaceInRichText(richText, findStr, replaceStr);
+      if (count > 0) {
+        matchCount += count;
+        blockCount++;
         if (!getBooleanFlag(flags, "dry-run")) {
           await notionRequest("PATCH", `/blocks/${block.id}`, {
-            [typeKey]: { rich_text: richText },
+            [typeKey]: { rich_text: newRuns },
           });
         }
-        blockCount++;
       }
 
       // Recurse into nested children
@@ -650,14 +727,7 @@ export async function pageSyncCommand(ctx: { args: string[] }): Promise<string> 
     }
     const { title, syncBody } = extractSyncTitle(frontmatter, body);
     const parentId = resolvePageId(parent);
-    // Detect whether parent is a database or page (same as pageCreateCommand)
-    let parentKey: "page_id" | "database_id" = "page_id";
-    try {
-      await notionRequest("GET", `/databases/${parentId}`);
-      parentKey = "database_id";
-    } catch {
-      // Not a database — use page_id
-    }
+    const parentKey = await detectParentKey(parentId);
     const titleProp = parentKey === "database_id"
       ? { Name: { title: [{ type: "text", text: { content: title, link: null } }] } }
       : { title: [{ type: "text", text: { content: title, link: null } }] };

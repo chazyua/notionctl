@@ -14,6 +14,16 @@
 import type { RichText, Annotations, TextRichText } from "./types.js";
 import { DEFAULT_ANNOTATIONS } from "./types.js";
 
+/**
+ * Set by the CLI entry so tokenizer warnings (e.g. dropped link schemes)
+ * surface on stderr without coupling this module to process.stderr.
+ * Tests leave it unset so test output stays clean.
+ */
+let warnHandler: ((msg: string) => void) | null = null;
+export function setTokenizerWarnHandler(fn: ((msg: string) => void) | null): void {
+  warnHandler = fn;
+}
+
 type MarkerKey = "bold" | "italic" | "strikethrough" | "code";
 const MARKER_ORDER: MarkerKey[] = ["bold", "italic", "strikethrough", "code"];
 const MARKERS: Record<MarkerKey, string> = {
@@ -320,6 +330,11 @@ export function markdownToRichText(md: string): RichText[] {
         const urlEnd = linkEnd.urlEnd;
         const label = md.slice(labelStart, labelEnd);
         const url = md.slice(urlStart, urlEnd);
+        if (url.length > 0 && !isAllowedLinkUrl(url) && warnHandler) {
+          warnHandler(
+            `notionctl: link URL '${url}' has an unsupported scheme — kept label '${label}' as plain text. Notion accepts: https, http, mailto, tel, notion, ftp, sms.`,
+          );
+        }
         runs.push(makeRun(label, state, url));
         i = urlEnd + 1;
         continue;

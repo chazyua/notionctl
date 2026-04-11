@@ -73,6 +73,17 @@ describe("resolvePageId", () => {
     assert.equal(resolvePageId(url), "abcd1234-ef56-7890-abcd-1234567890ab");
   });
 
+  it("strips trailing slashes from notion URLs", () => {
+    assert.equal(
+      resolvePageId("https://notion.so/Page-abcd1234ef567890abcd1234567890ab/"),
+      "abcd1234-ef56-7890-abcd-1234567890ab",
+    );
+    assert.equal(
+      resolvePageId("https://notion.so/Page-abcd1234ef567890abcd1234567890ab//"),
+      "abcd1234-ef56-7890-abcd-1234567890ab",
+    );
+  });
+
   it("throws on invalid ID", () => {
     assert.throws(() => resolvePageId("not-a-valid-id"), /Could not parse/);
   });

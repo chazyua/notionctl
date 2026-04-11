@@ -52,7 +52,11 @@ function findUnquotedColon(line: string): number {
   for (let i = 0; i < line.length; i++) {
     const c = line[i];
     if (inQuote) {
-      if (c === quoteChar && line[i - 1] !== "\\") {
+      if (c === "\\" && i + 1 < line.length) {
+        i++;
+        continue;
+      }
+      if (c === quoteChar) {
         inQuote = false;
       }
     } else {
@@ -67,6 +71,25 @@ function findUnquotedColon(line: string): number {
   return -1;
 }
 
+function unescapeDoubleQuoted(s: string): string {
+  let out = "";
+  for (let i = 0; i < s.length; i++) {
+    if (s[i] === "\\" && i + 1 < s.length) {
+      const next = s[i + 1]!;
+      if (next === "n") out += "\n";
+      else if (next === "r") out += "\r";
+      else if (next === "t") out += "\t";
+      else if (next === '"') out += '"';
+      else if (next === "\\") out += "\\";
+      else out += next;
+      i++;
+    } else {
+      out += s[i];
+    }
+  }
+  return out;
+}
+
 function parseValue(raw: string): YamlValue {
   if (raw.length === 0) return "";
   if (raw === "null" || raw === "~") return null;
@@ -74,8 +97,11 @@ function parseValue(raw: string): YamlValue {
   if (raw === "false") return false;
 
   // Quoted string
-  if ((raw.startsWith('"') && raw.endsWith('"')) || (raw.startsWith("'") && raw.endsWith("'"))) {
-    return raw.slice(1, -1).replace(/\\"/g, '"').replace(/\\'/g, "'");
+  if (raw.length >= 2 && raw.startsWith('"') && raw.endsWith('"')) {
+    return unescapeDoubleQuoted(raw.slice(1, -1));
+  }
+  if (raw.length >= 2 && raw.startsWith("'") && raw.endsWith("'")) {
+    return raw.slice(1, -1).replace(/\\'/g, "'");
   }
 
   // Flow sequence
@@ -97,48 +123,52 @@ function isIsoDateLike(s: string): boolean {
 }
 
 function parseFlowSequence(inner: string): string[] {
-  const items: string[] = [];
+  // Collect raw items (preserving quotes) so we can delegate per-item
+  // scalar parsing to parseValue, which correctly unescapes \" \n \\ etc.
+  const rawItems: string[] = [];
   let current = "";
   let inQuote = false;
   let quoteChar = "";
   let depth = 0;
 
   for (let i = 0; i < inner.length; i++) {
-    const c = inner[i];
+    const c = inner[i]!;
     if (inQuote) {
-      if (c === quoteChar && inner[i - 1] !== "\\") {
-        inQuote = false;
-      } else {
-        current += c;
+      if (c === "\\" && i + 1 < inner.length) {
+        current += c + inner[i + 1]!;
+        i++;
+        continue;
       }
+      if (c === quoteChar) {
+        inQuote = false;
+      }
+      current += c;
       continue;
     }
     if (c === '"' || c === "'") {
       inQuote = true;
-      quoteChar = c!;
-      continue;
-    }
-    if (c === "[") {
-      depth++;
+      quoteChar = c;
       current += c;
       continue;
     }
-    if (c === "]") {
-      depth--;
-      current += c;
-      continue;
-    }
+    if (c === "[") { depth++; current += c; continue; }
+    if (c === "]") { depth--; current += c; continue; }
     if (c === "," && depth === 0) {
-      items.push(current.trim());
+      if (current.trim().length > 0) rawItems.push(current.trim());
       current = "";
       continue;
     }
     current += c;
   }
-  if (current.trim().length > 0) {
-    items.push(current.trim());
-  }
-  return items;
+  if (current.trim().length > 0) rawItems.push(current.trim());
+
+  return rawItems.map((raw) => {
+    const parsed = parseValue(raw);
+    // Flow sequences in our schema are always string arrays; coerce scalars.
+    if (parsed === null) return "null";
+    if (Array.isArray(parsed)) return parsed.join(",");
+    return String(parsed);
+  });
 }
 
 export function stringifyYaml(obj: YamlObject): string {
@@ -162,21 +192,29 @@ function serializeValue(value: YamlValue): string {
 function serializeString(s: string): string {
   if (s.length === 0) return '""';
   if (needsQuoting(s)) {
-    return `"${s.replace(/"/g, '\\"')}"`;
+    return `"${escapeDoubleQuoted(s)}"`;
   }
   return s;
 }
 
 function serializeScalarForArray(s: string): string {
   if (needsQuoting(s)) {
-    return `"${s.replace(/"/g, '\\"')}"`;
+    return `"${escapeDoubleQuoted(s)}"`;
   }
   return s;
 }
 
+function escapeDoubleQuoted(s: string): string {
+  return s
+    .replace(/\\/g, "\\\\")
+    .replace(/"/g, '\\"')
+    .replace(/\n/g, "\\n")
+    .replace(/\r/g, "\\r");
+}
+
 function needsQuoting(s: string): boolean {
   if (s.length === 0) return true;
-  if (/[,:#\[\]{}]/.test(s)) return true;
+  if (/[,:#\[\]{}\n\r"\\]/.test(s)) return true;
   if (s.trim() !== s) return true;
   if (/^(true|false|null|~)$/i.test(s)) return true;
   if (/^-?\d/.test(s) && !/^\d{4}-\d{2}-\d{2}/.test(s)) return true;

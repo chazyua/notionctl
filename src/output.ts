@@ -48,17 +48,18 @@ export interface TableInput {
 }
 
 export function renderTable(input: TableInput): string {
+  const coerce = (v: unknown): string => v == null ? "" : String(v);
   const widths = input.columns.map((col, i) => {
-    let w = col.length;
+    let w = coerce(col).length;
     for (const row of input.rows) {
-      const cell = row[i] ?? "";
+      const cell = coerce(row[i]);
       if (cell.length > w) w = cell.length;
     }
     return w;
   });
 
-  const renderRow = (cells: string[]): string =>
-    cells.map((c, i) => (c ?? "").padEnd(widths[i] ?? 0)).join("  ").trimEnd();
+  const renderRow = (cells: unknown[]): string =>
+    cells.map((c, i) => coerce(c).padEnd(widths[i] ?? 0)).join("  ").trimEnd();
 
   const lines: string[] = [];
   lines.push(renderRow(input.columns));
@@ -75,8 +76,10 @@ export function renderMarkdown(content: string): string {
 
 export function renderCsv(input: TableInput): string {
   const esc = (v: string): string => {
-    if (/[",\n]/.test(v)) return `"${v.replace(/"/g, '""')}"`;
-    return v;
+    // Coerce non-strings defensively — JSON.stringify may feed us numbers/booleans.
+    const s = v == null ? "" : String(v);
+    if (/[",\n\r]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
+    return s;
   };
   const lines: string[] = [];
   lines.push(input.columns.map(esc).join(","));
