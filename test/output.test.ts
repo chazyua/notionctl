@@ -113,6 +113,51 @@ describe("output.renderTable — edge cases", () => {
     assert.ok(out.includes("Col0"));
     assert.ok(out.includes("val9"));
   });
+
+  it("aligns CJK-wide characters correctly (BUG-C)", () => {
+    const out = renderTable({
+      columns: ["Name", "Value"],
+      rows: [
+        ["日本語", "Japanese"],
+        ["plain", "abc"],
+      ],
+    });
+    const lines = out.split("\n");
+    // Count visual width (not UTF-16 length) of everything before the second column.
+    const visualWidth = (s: string): number => {
+      let w = 0;
+      for (const ch of s) {
+        const code = ch.codePointAt(0)!;
+        if (
+          (code >= 0x2E80 && code <= 0x9FFF) ||
+          (code >= 0xFF00 && code <= 0xFF60) ||
+          (code >= 0x1F300 && code <= 0x1FAFF)
+        ) w += 2;
+        else w += 1;
+      }
+      return w;
+    };
+    const row1 = lines[2]!;
+    const row2 = lines[3]!;
+    const prefix1 = row1.slice(0, row1.indexOf("Japanese"));
+    const prefix2 = row2.slice(0, row2.indexOf("abc"));
+    assert.equal(
+      visualWidth(prefix1),
+      visualWidth(prefix2),
+      "column 2 must start at the same visual column on every row",
+    );
+  });
+
+  it("replaces embedded newlines inside a cell (BUG-C)", () => {
+    const out = renderTable({
+      columns: ["A", "B"],
+      rows: [["line1\nline2", "tail"]],
+    });
+    const lines = out.split("\n");
+    // Header + separator + one data row = 3 total (no phantom rows from the \n)
+    assert.equal(lines.length, 3, "embedded \\n must not spawn extra rows");
+    assert.ok(lines[2]!.includes("tail"));
+  });
 });
 
 describe("output.renderCsv — edge cases", () => {

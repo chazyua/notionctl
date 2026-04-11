@@ -94,7 +94,12 @@ export async function apiCommand(ctx: CommandContext): Promise<string> {
   if (!VALID_METHODS.has(method)) {
     throw new NotionCliError(ErrorCode.USAGE, `Invalid HTTP method: ${method}. Use GET, POST, PATCH, or DELETE.`);
   }
-  const path = positional[1]!;
+  let path = positional[1]!;
+  // BUG-J: /v1/ is baked into the base URL — strip a user-supplied /v1/ prefix
+  // so `notionctl api GET /v1/users/me` doesn't double-prefix the URL.
+  if (/^\/?v1\//.test(path)) {
+    path = path.replace(/^\/?v1\//, "/");
+  }
   let body: unknown;
   const bodyFlag = flags.get("body");
   if (bodyFlag) {

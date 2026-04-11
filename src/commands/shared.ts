@@ -87,10 +87,11 @@ export function parseFlags(args: string[]): ParsedFlags {
       if (BOOLEAN_FLAGS.has(name)) {
         value = "true";
       } else {
-        if (i + 1 >= args.length) {
+        const next = args[i + 1];
+        if (next === undefined || next.startsWith("--")) {
           throw new NotionCliError(ErrorCode.USAGE, `Flag --${name} requires a value`);
         }
-        value = args[i + 1];
+        value = next;
         i++;
       }
     }
@@ -110,6 +111,7 @@ export function parseFlags(args: string[]): ParsedFlags {
 export function resolvePageId(input: string): string {
   let raw = input.trim().split("#")[0]!;  // strip #block-anchor fragments
   raw = raw.split("?")[0]!;              // strip ?query-string parameters
+  raw = raw.replace(/\/+$/, "");         // strip any trailing slash(es)
   const urlMatch = /notion\.(?:so|site)\/(?:[^/]+\/)*([^/?#]+)$/.exec(raw);
   if (urlMatch) raw = urlMatch[1]!;
   const lastDash = raw.lastIndexOf("-");

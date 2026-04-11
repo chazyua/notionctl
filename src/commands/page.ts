@@ -7,7 +7,7 @@
  * (from --from file or stdin) and convert to blocks.
  */
 
-import { readFile, writeFile, rename } from "node:fs/promises";
+import { readFile, writeFile, rename, realpath } from "node:fs/promises";
 import { resolve, sep } from "node:path";
 import { execFile } from "node:child_process";
 import { extractFrontmatter, reinsertFrontmatter } from "../sync/frontmatter.js";
@@ -15,6 +15,8 @@ import { classifySyncState, computeContentHash, SyncState } from "../sync/sync.j
 import { notionRequest, appendBlocksChunked } from "../http.js";
 import { blocksToMarkdown, markdownToBlocks } from "../markdown/index.js";
 import type { Block } from "../markdown/index.js";
+import type { RichText } from "../markdown/types.js";
+import { findReplaceRichText } from "../markdown/tokenizer.js";
 import { renderProperty } from "../properties/render.js";
 import { stringifyYaml, type YamlObject } from "../utils/yaml.js";
 import { resolvePageId, parseFlags, getBooleanFlag, fetchWith404Hint, readStdinBounded } from "./shared.js";
@@ -113,10 +115,9 @@ export async function pageCreateCommand(ctx: { args: string[] }): Promise<string
   }
 
   let bodyMd = stripFrontmatter(await readInputMarkdown(flags));
-  // Strip leading H1 if it matches --title (prevents duplicate heading in page body)
-  bodyMd = bodyMd.replace(/^# .+\n?/m, (match) =>
-    match.trim().slice(2) === title ? "" : match
-  ).trimStart();
+  // Strip leading H1 if it matches --title (prevents duplicate heading in page body).
+  // Fence-aware (BUG-07): an `# ...` line inside a code fence stays put.
+  bodyMd = stripLeadingTitleH1(bodyMd, title).trimStart();
   const blocks = bodyMd.length > 0 ? markdownToBlocks(bodyMd) : [];
 
   const firstChunk = blocks.slice(0, 100);
@@ -436,25 +437,21 @@ export async function pageFindReplaceCommand(ctx: { args: string[] }): Promise<s
   let matchCount = 0;
   let blockCount = 0;
 
-  // Also check/update the page title
+  // Also check/update the page title. BUG-09: use findReplaceRichText so matches
+  // crossing run boundaries are picked up (e.g. bold/plain transitions).
   let titleUpdated = false;
   const page = await notionRequest<{ properties: Record<string, unknown> }>("GET", `/pages/${id}`);
-  const titleProp = page.properties.title as { title?: Array<{ plain_text?: string; text?: { content: string } }> } | undefined;
-  const titleRuns = titleProp?.title;
-  if (titleRuns) {
-    for (const run of titleRuns) {
-      if (run.text && run.text.content.includes(findStr)) {
-        const count = run.text.content.split(findStr).length - 1;
-        matchCount += count;
-        run.text.content = run.text.content.replaceAll(findStr, replaceStr);
-        run.plain_text = run.text.content;
-        titleUpdated = true;
+  const titleProp = page.properties.title as { title?: RichText[] } | undefined;
+  if (titleProp?.title) {
+    const { runs: newTitleRuns, count } = findReplaceRichText(titleProp.title, findStr, replaceStr);
+    if (count > 0) {
+      matchCount += count;
+      titleUpdated = true;
+      if (!getBooleanFlag(flags, "dry-run")) {
+        await notionRequest("PATCH", `/pages/${id}`, {
+          properties: { title: newTitleRuns },
+        });
       }
-    }
-    if (titleUpdated && !getBooleanFlag(flags, "dry-run")) {
-      await notionRequest("PATCH", `/pages/${id}`, {
-        properties: { title: titleRuns },
-      });
     }
   }
 
@@ -465,27 +462,18 @@ export async function pageFindReplaceCommand(ctx: { args: string[] }): Promise<s
       const typeKey = RICH_TEXT_BLOCK_TYPES[block.type];
       if (!typeKey) continue;
       const typeData = (block as any)[typeKey];
-      const richText = typeData?.rich_text as Array<{ type: string; text?: { content: string }; plain_text: string }> | undefined;
+      const richText = typeData?.rich_text as RichText[] | undefined;
       if (!richText) continue;
 
-      let blockModified = false;
-      for (const run of richText) {
-        if (run.type === "text" && run.text && run.text.content.includes(findStr)) {
-          const count = run.text.content.split(findStr).length - 1;
-          run.text.content = run.text.content.replaceAll(findStr, replaceStr);
-          run.plain_text = run.text.content;
-          matchCount += count;
-          blockModified = true;
-        }
-      }
-
-      if (blockModified) {
+      const { runs: newRuns, count } = findReplaceRichText(richText, findStr, replaceStr);
+      if (count > 0) {
+        matchCount += count;
+        blockCount++;
         if (!getBooleanFlag(flags, "dry-run")) {
           await notionRequest("PATCH", `/blocks/${block.id}`, {
-            [typeKey]: { rich_text: richText },
+            [typeKey]: { rich_text: newRuns },
           });
         }
-        blockCount++;
       }
 
       // Recurse into nested children
@@ -533,6 +521,34 @@ export async function pageDeleteCommand(ctx: { args: string[] }): Promise<string
   return renderJson(res);
 }
 
+/**
+ * Remove the first top-level `# Title` line from `body` when it matches
+ * `title`, skipping any lines inside fenced code blocks. Used by page create
+ * so the explicit `--title` doesn't duplicate an H1 in the body.
+ */
+export function stripLeadingTitleH1(body: string, title: string): string {
+  const lines = body.split("\n");
+  let inFence = false;
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]!;
+    if (/^(`{3,}|~{3,})/.test(line.trim())) {
+      inFence = !inFence;
+      continue;
+    }
+    if (inFence) continue;
+    const match = /^# (.+?)\s*$/.exec(line);
+    if (!match) continue;
+    if (match[1]!.trim() === title) {
+      lines.splice(i, 1);
+      return lines.join("\n").replace(/^\n+/, "");
+    }
+    // First non-matching top-level H1 stops the scan — the title can only
+    // shadow the *first* heading, not one further down.
+    return body;
+  }
+  return body;
+}
+
 export function extractSyncTitle(
   frontmatter: Record<string, unknown>,
   body: string,
@@ -570,6 +586,20 @@ export async function pageSyncCommand(ctx: { args: string[] }): Promise<string> 
   const cwdPrefix = cwd.endsWith(sep) ? cwd : cwd + sep;
   if (file !== cwd && !file.startsWith(cwdPrefix)) {
     throw new NotionCliError(ErrorCode.USAGE, `Refusing to sync file outside working directory: ${file}`);
+  }
+  // BUG-13: resolve symlinks and re-verify containment so a symlink inside cwd
+  // that points outside can't smuggle a write through the check.
+  let canonical: string;
+  try {
+    canonical = await realpath(file);
+  } catch {
+    canonical = file;
+  }
+  if (canonical !== cwd && !canonical.startsWith(cwdPrefix)) {
+    throw new NotionCliError(
+      ErrorCode.USAGE,
+      `Refusing to sync file outside working directory (symlink target: ${canonical})`,
+    );
   }
   const source = await readFile(file, "utf8");
   const { data: frontmatter, body } = extractFrontmatter(source);

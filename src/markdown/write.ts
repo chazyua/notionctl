@@ -34,6 +34,15 @@ const ALERT_TYPE_TO_COLOR: Record<string, string> = {
 };
 
 export function markdownToBlocks(md: string): Block[] {
+  const ctx: ParseContext = { warnedHeadingDowngrade: false };
+  return markdownToBlocksInternal(md, ctx);
+}
+
+interface ParseContext {
+  warnedHeadingDowngrade: boolean;
+}
+
+function markdownToBlocksInternal(md: string, ctx: ParseContext): Block[] {
   const lines = md.split("\n");
   const blocks: Block[] = [];
   let i = 0;
@@ -74,29 +83,31 @@ export function markdownToBlocks(md: string): Block[] {
       continue;
     }
 
-    // Image: ![alt](url) — only when it's the entire line
-    const imgMatch = /^!\[([^\]]*)\]\(([^)]+)\)$/.exec(trimmed);
-    if (imgMatch) {
-      const alt = imgMatch[1]!;
-      const url = imgMatch[2]!;
-      if (!/^https?:\/\//i.test(url)) {
-        // Skip non-HTTP image URLs (javascript:, data:, file://, etc.)
+    // Image: ![alt](url [ "title"]) — only when it's the entire line.
+    // Handles URLs with balanced parens and optional "title" text (BUG-10).
+    if (trimmed.startsWith("![")) {
+      const parsedImg = parseImageLine(trimmed);
+      if (parsedImg) {
+        const { alt, url } = parsedImg;
+        if (!/^https?:\/\//i.test(url)) {
+          // Skip non-HTTP image URLs (javascript:, data:, file://, etc.)
+          i++;
+          continue;
+        }
+        blocks.push({
+          object: "block",
+          id: "",
+          type: "image",
+          has_children: false,
+          image: {
+            type: "external",
+            external: { url },
+            caption: alt ? [{ type: "text", text: { content: alt, link: null }, annotations: { bold: false, italic: false, strikethrough: false, underline: false, code: false, color: "default" }, plain_text: alt, href: null }] : [],
+          },
+        } as unknown as Block);
         i++;
         continue;
       }
-      blocks.push({
-        object: "block",
-        id: "",
-        type: "image",
-        has_children: false,
-        image: {
-          type: "external",
-          external: { url },
-          caption: alt ? [{ type: "text", text: { content: alt, link: null }, annotations: { bold: false, italic: false, strikethrough: false, underline: false, code: false, color: "default" }, plain_text: alt, href: null }] : [],
-        },
-      } as unknown as Block);
-      i++;
-      continue;
     }
 
     // Headings
@@ -117,6 +128,12 @@ export function markdownToBlocks(md: string): Block[] {
     }
     if (/^#{4,6}\s+/.test(trimmed)) {
       const text = trimmed.replace(/^#{4,6}\s+/, "");
+      if (!ctx.warnedHeadingDowngrade) {
+        process.stderr.write(
+          "warning: Notion only supports H1-H3; H4/H5/H6 headings will be written as H3.\n",
+        );
+        ctx.warnedHeadingDowngrade = true;
+      }
       blocks.push(makeHeadingBlock(3, text));
       i++;
       continue;
@@ -183,7 +200,7 @@ export function markdownToBlocks(md: string): Block[] {
       }
       // Parse continuation as markdown to detect child block structure
       const innerMd = continuationLines.join("\n").trim();
-      const childBlocks = innerMd.length > 0 ? markdownToBlocks(innerMd) : [];
+      const childBlocks = innerMd.length > 0 ? markdownToBlocksInternal(innerMd, ctx) : [];
       // First child paragraph becomes the callout's rich_text; rest become children
       let calloutRichText: RichText[] = [];
       let calloutChildren: Block[] = [];
@@ -219,7 +236,7 @@ export function markdownToBlocks(md: string): Block[] {
       if (inlineCloseMatch) {
         const summary = inlineCloseMatch[1] ?? "";
         const bodyText = (inlineCloseMatch[2] ?? "").trim();
-        const childBlocks = bodyText.length > 0 ? markdownToBlocks(bodyText) : [];
+        const childBlocks = bodyText.length > 0 ? markdownToBlocksInternal(bodyText, ctx) : [];
         i++;
         const toggleData: any = { rich_text: markdownToRichText(summary), color: "default" };
         if (childBlocks.length > 0) toggleData.children = childBlocks;
@@ -264,7 +281,7 @@ export function markdownToBlocks(md: string): Block[] {
       i++; // consume </details>
 
       const bodyMd = bodyLines.join("\n").trim();
-      const childBlocks = bodyMd.length > 0 ? markdownToBlocks(bodyMd) : [];
+      const childBlocks = bodyMd.length > 0 ? markdownToBlocksInternal(bodyMd, ctx) : [];
 
       const toggleData: any = {
         rich_text: markdownToRichText(summary),
@@ -387,6 +404,44 @@ export function markdownToBlocks(md: string): Block[] {
   // Must recurse into type-specific children (e.g. table.children).
   stripEmptyIds(blocks);
   return blocks;
+}
+
+function parseImageLine(line: string): { alt: string; url: string } | null {
+  if (!line.startsWith("![")) return null;
+  let i = 2;
+  let bracketDepth = 1;
+  while (i < line.length) {
+    if (line[i] === "\\") { i += 2; continue; }
+    if (line[i] === "[") bracketDepth++;
+    else if (line[i] === "]") {
+      bracketDepth--;
+      if (bracketDepth === 0) break;
+    }
+    i++;
+  }
+  if (bracketDepth !== 0) return null;
+  const alt = line.slice(2, i);
+  if (line[i + 1] !== "(") return null;
+  let j = i + 2;
+  const urlStart = j;
+  let parenDepth = 1;
+  while (j < line.length) {
+    if (line[j] === "\\") { j += 2; continue; }
+    if (line[j] === "(") parenDepth++;
+    else if (line[j] === ")") {
+      parenDepth--;
+      if (parenDepth === 0) break;
+    }
+    j++;
+  }
+  if (parenDepth !== 0) return null;
+  // The line must end right at this closing paren to count as a block-level image.
+  if (j !== line.length - 1) return null;
+  const inner = line.slice(urlStart, j);
+  // Strip optional title: "<url> \"title\"" or "<url> 'title'"
+  const titleMatch = /^(\S+)\s+(["']).*\2$/.exec(inner);
+  const url = titleMatch ? titleMatch[1]! : inner.trim();
+  return { alt, url };
 }
 
 function isBlockStart(line: string): boolean {

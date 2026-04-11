@@ -95,6 +95,26 @@ describe("blocksToMarkdown basic blocks", () => {
     assert.match(blocksToMarkdown(blocks), /```typescript\nconst x = 1;\n```/);
   });
 
+  it("code block containing triple backticks uses a longer fence (BUG-04)", () => {
+    const inner = "Here is a nested fence:\n```python\nprint('hi')\n```\nEnd.";
+    const blocks: Block[] = [
+      mkBlock("code", {
+        rich_text: [rt(inner)],
+        caption: [],
+        language: "markdown",
+      }),
+    ];
+    const out = blocksToMarkdown(blocks);
+    // Outer fence must be longer than any inner backtick run
+    assert.match(out, /^````+markdown\n/m, "outer fence is 4+ backticks");
+    assert.ok(out.includes("```python"), "inner triple backticks preserved verbatim");
+    // The outer fence must close on its own line with the same length
+    const match = out.match(/^(`{4,})markdown/);
+    assert.ok(match);
+    const fence = match![1]!;
+    assert.ok(out.endsWith(`\n${fence}`), "closes with matching fence length");
+  });
+
   it("divider", () => {
     const blocks: Block[] = [mkBlock("divider", {})];
     assert.match(blocksToMarkdown(blocks), /^---$/m);

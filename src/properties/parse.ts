@@ -123,7 +123,7 @@ export function parseProperty(
       return { date: { start: value, end: null } };
     }
     case "checkbox":
-      return { checkbox: value === "true" };
+      return { checkbox: parseCheckbox(value, key) };
     case "url":
       return { url: value };
     case "email":
@@ -168,6 +168,19 @@ export function parseProperty(
         `Property type '${propSchema.type}' is read-only; cannot set`,
       );
   }
+}
+
+const CHECKBOX_TRUE = new Set(["true", "yes", "y", "1", "on"]);
+const CHECKBOX_FALSE = new Set(["false", "no", "n", "0", "off", ""]);
+
+function parseCheckbox(value: string, propKey: string): boolean {
+  const v = value.trim().toLowerCase();
+  if (CHECKBOX_TRUE.has(v)) return true;
+  if (CHECKBOX_FALSE.has(v)) return false;
+  throw new NotionCliError(
+    ErrorCode.INVALID_PROPERTY,
+    `Property '${propKey}' (checkbox) must be true/false, yes/no, 1/0, or on/off — got: ${value}`,
+  );
 }
 
 function resolvePersonRef(ref: string, propKey: string): { id: string } {

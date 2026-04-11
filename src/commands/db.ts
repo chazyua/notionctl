@@ -99,7 +99,8 @@ export function parseSimpleFilter(expr: string, schema: Record<string, PropertyS
       return { property: key, status: { equals: value } };
     case "multi_select": {
       if (op !== "=") throw new NotionCliError(ErrorCode.USAGE, `multi_select filter only supports =`);
-      const values = value.split(",").map((v) => v.trim()).filter(Boolean);
+      // BUG-L: split on unescaped commas so options like "tech,AI" are addressable via backslash-escape.
+      const values = splitEscapedCommas(value).filter(Boolean);
       if (values.length === 0) {
         throw new NotionCliError(ErrorCode.USAGE, `multi_select filter needs at least one value`);
       }
@@ -149,9 +150,35 @@ export function parseSimpleFilter(expr: string, schema: Record<string, PropertyS
   }
 }
 
-function parseSimpleSort(expr: string, schema: Record<string, PropertySchema>): unknown {
+function splitEscapedCommas(input: string): string[] {
+  const out: string[] = [];
+  let cur = "";
+  for (let i = 0; i < input.length; i++) {
+    const c = input[i]!;
+    if (c === "\\" && input[i + 1] === ",") {
+      cur += ",";
+      i++;
+      continue;
+    }
+    if (c === ",") {
+      out.push(cur.trim());
+      cur = "";
+      continue;
+    }
+    cur += c;
+  }
+  if (cur.trim().length > 0 || out.length > 0) out.push(cur.trim());
+  return out;
+}
+
+// Exported for unit testing.
+export function parseSimpleSort(expr: string, schema: Record<string, PropertySchema>): unknown {
   const [prop, dir] = expr.split(":");
-  if (prop && !schema[prop]) {
+  if (!prop) {
+    // BUG-G: --sort ":desc" would previously send {property:""} to Notion.
+    throw new NotionCliError(ErrorCode.USAGE, `--sort requires a property name (got: ${expr})`);
+  }
+  if (!schema[prop]) {
     throw new NotionCliError(ErrorCode.INVALID_PROPERTY, `Unknown sort property: ${prop}`);
   }
   return {
@@ -292,9 +319,16 @@ export async function dbCreateCommand(ctx: { args: string[] }): Promise<string> 
     Object.assign(properties, parseJsonObject(raw, "--schema-json"));
   }
 
-  // --prop Name=type[:options]: individual columns added on top
+  // --prop Name=type[:options]: individual columns added on top.
+  // BUG-D: block --prop Name=<anything-but-title> so the title column is never wiped.
   for (const raw of repeated.get("prop") ?? []) {
     const { name, schema } = parseColumnSpec(raw);
+    if (name === "Name" && !("title" in schema)) {
+      throw new NotionCliError(
+        ErrorCode.USAGE,
+        "Cannot override the 'Name' column with a non-title type — every database needs a title column. Pick a different column name.",
+      );
+    }
     properties[name] = schema;
   }
 
@@ -385,7 +419,10 @@ export async function dbRowGetCommand(ctx: { args: string[] }): Promise<string> 
     throw new NotionCliError(ErrorCode.USAGE, "Usage: notionctl db row get <page-id>");
   }
   const id = resolvePageId(positional[0]!);
-  const page = await notionRequest<{ properties: Record<string, unknown> }>("GET", `/pages/${id}`);
+  const page = await fetchWith404Hint(
+    () => notionRequest<{ properties: Record<string, unknown> }>("GET", `/pages/${id}`),
+    `Database row ${id}`,
+  );
   const childBlocks = await fetchBlockTree(id);
   const format = chooseFormat(flags.get("format") as Format | undefined, {
     isTty: isStdoutTty(),

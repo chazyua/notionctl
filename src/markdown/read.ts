@@ -115,7 +115,20 @@ function renderBlock(block: Block, depth: number, numberedIndex: number): string
     case "code": {
       const lang = block.code.language === "plain text" ? "" : block.code.language;
       const content = block.code.rich_text.map((r) => r.plain_text).join("");
-      return `\`\`\`${lang}\n${content}\n\`\`\``;
+      // Choose a fence longer than any backtick run inside the content so
+      // content with ```markdown`` round-trips cleanly (BUG-04).
+      let maxTicks = 0;
+      let current = 0;
+      for (const ch of content) {
+        if (ch === "`") {
+          current++;
+          if (current > maxTicks) maxTicks = current;
+        } else {
+          current = 0;
+        }
+      }
+      const fence = "`".repeat(Math.max(3, maxTicks + 1));
+      return `${fence}${lang}\n${content}\n${fence}`;
     }
     case "divider":
       return "---";

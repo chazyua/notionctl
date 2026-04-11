@@ -36,6 +36,24 @@ describe("parseFlags", () => {
     const { positional } = parseFlags(["page", "get", "abc-123", "--format", "json"]);
     assert.deepEqual(positional, ["page", "get", "abc-123"]);
   });
+
+  it("throws when a non-boolean flag's value is another flag", () => {
+    // Regression: --title with missing value used to silently consume --from as its value.
+    assert.throws(
+      () => parseFlags(["--title", "--from", "body.md"]),
+      /--title requires a value/,
+    );
+  });
+
+  it("throws when a non-boolean flag is the last arg", () => {
+    assert.throws(() => parseFlags(["--title"]), /--title requires a value/);
+  });
+
+  it("allows --flag=-- style explicit values", () => {
+    // An explicit = binds the value, even if it looks like a flag.
+    const { flags } = parseFlags(["--title=--from"]);
+    assert.equal(flags.get("title"), "--from");
+  });
 });
 
 describe("resolvePageId", () => {
@@ -70,6 +88,16 @@ describe("resolvePageId", () => {
 
   it("strips URL fragment (#block-anchor)", () => {
     const url = "https://www.notion.so/Page-abcd1234ef567890abcd1234567890ab#block-anchor";
+    assert.equal(resolvePageId(url), "abcd1234-ef56-7890-abcd-1234567890ab");
+  });
+
+  it("strips trailing slash on URL", () => {
+    const url = "https://www.notion.so/Page-abcd1234ef567890abcd1234567890ab/";
+    assert.equal(resolvePageId(url), "abcd1234-ef56-7890-abcd-1234567890ab");
+  });
+
+  it("strips trailing slash before query string", () => {
+    const url = "https://www.notion.so/Page-abcd1234ef567890abcd1234567890ab/?pvs=4";
     assert.equal(resolvePageId(url), "abcd1234-ef56-7890-abcd-1234567890ab");
   });
 

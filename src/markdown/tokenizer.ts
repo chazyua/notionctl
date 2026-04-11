@@ -156,6 +156,87 @@ function linkUrl(run: RichText): string {
   return run.text.link.url;
 }
 
+/**
+ * Find-and-replace across a rich-text array, treating the runs as a single
+ * flat string. A match that spans multiple text runs is replaced with the
+ * annotations of the match's first character. Non-text runs (equation,
+ * mention) are opaque — any match that would cross them is skipped.
+ *
+ * Regression fix: BUG-09 (find-replace could not span run boundaries).
+ */
+export function findReplaceRichText(
+  runs: RichText[],
+  find: string,
+  replace: string,
+): { runs: RichText[]; count: number } {
+  if (find.length === 0) return { runs, count: 0 };
+
+  interface FlatChar {
+    c: string;
+    ref: RichText;
+  }
+  const flat: FlatChar[] = [];
+  for (const run of runs) {
+    const content = run.type === "text" ? run.text.content : run.plain_text;
+    for (const c of content) flat.push({ c, ref: run });
+  }
+
+  let full = flat.map((f) => f.c).join("");
+  let count = 0;
+  let searchStart = 0;
+
+  while (searchStart <= full.length) {
+    const idx = full.indexOf(find, searchStart);
+    if (idx === -1) break;
+
+    let crossesNonText = false;
+    for (let k = idx; k < idx + find.length; k++) {
+      if (flat[k]!.ref.type !== "text") {
+        crossesNonText = true;
+        break;
+      }
+    }
+    if (crossesNonText) {
+      searchStart = idx + 1;
+      continue;
+    }
+
+    const firstRef = flat[idx]!.ref;
+    const replacementChars: FlatChar[] = [];
+    for (const c of replace) replacementChars.push({ c, ref: firstRef });
+    flat.splice(idx, find.length, ...replacementChars);
+    full = flat.map((f) => f.c).join("");
+    searchStart = idx + replace.length;
+    count++;
+  }
+
+  if (count === 0) return { runs, count: 0 };
+
+  const result: RichText[] = [];
+  let i = 0;
+  while (i < flat.length) {
+    const currentRef = flat[i]!.ref;
+    const start = i;
+    while (i < flat.length && flat[i]!.ref === currentRef) i++;
+    if (currentRef.type === "text") {
+      const content = flat.slice(start, i).map((f) => f.c).join("");
+      const linked = (currentRef as TextRichText).text.link;
+      result.push({
+        type: "text",
+        text: { content, link: linked },
+        annotations: { ...currentRef.annotations },
+        plain_text: content,
+        href: currentRef.href,
+      } as RichText);
+    } else {
+      // Non-text runs are never split by find (we skip matches that cross them)
+      result.push(currentRef);
+    }
+  }
+
+  return { runs: result, count };
+}
+
 function runContent(run: RichText): string {
   if (run.type === "text") return run.text.content;
   if (run.type === "equation") return `$${run.equation.expression}$`;
@@ -228,10 +309,26 @@ export function markdownToRichText(md: string): RichText[] {
       continue;
     }
 
-    // Inline equation $...$  (single $, not $$)
-    if (c === "$" && next !== "$") {
-      const end = md.indexOf("$", i + 1);
-      if (end !== -1 && end > i + 1) {
+    // Inline equation $...$  (single $, not $$).
+    // Tight-flanking heuristic (BUG-03): only treat $...$ as an equation when
+    // the opener is followed by non-whitespace non-digit, and the closer is
+    // preceded by non-whitespace. This avoids mangling currency like "$100".
+    if (
+      c === "$" &&
+      next !== undefined &&
+      next !== "$" &&
+      /\S/.test(next) &&
+      !/[0-9]/.test(next)
+    ) {
+      let end = -1;
+      for (let j = i + 1; j < md.length; j++) {
+        if (md[j] === "\\") { j++; continue; }
+        if (md[j] === "$" && j > i + 1 && /\S/.test(md[j - 1]!)) {
+          end = j;
+          break;
+        }
+      }
+      if (end !== -1) {
         flush();
         const expr = md.slice(i + 1, end);
         runs.push({
@@ -268,10 +365,44 @@ export function markdownToRichText(md: string): RichText[] {
       continue;
     }
 
-    // Italic * (single asterisk — checked after ** so bold is consumed first)
+    // Italic * (single asterisk — checked after ** so bold is consumed first).
+    // Lightweight CommonMark flanking (BUG-02): the opener must be followed by
+    // non-whitespace, and there must be a matching closer preceded by
+    // non-whitespace. Otherwise emit as literal — this keeps things like
+    // "1 * 2", "int *ptr", and "foo*bar" (with no pair) out of italic runs.
     if (c === "*") {
-      flush();
-      state.italic = !state.italic;
+      if (state.italic) {
+        const prev = md[i - 1];
+        if (prev !== undefined && /\S/.test(prev)) {
+          flush();
+          state.italic = false;
+          i += 1;
+          continue;
+        }
+      } else if (next !== undefined && /\S/.test(next) && next !== "*") {
+        let foundCloser = false;
+        for (let j = i + 1; j < md.length; j++) {
+          if (md[j] === "\\") { j++; continue; }
+          if (md[j] === "`") {
+            const codeEnd = md.indexOf("`", j + 1);
+            if (codeEnd === -1) break;
+            j = codeEnd;
+            continue;
+          }
+          if (md[j] === "*" && /\S/.test(md[j - 1] ?? "")) {
+            foundCloser = true;
+            break;
+          }
+        }
+        if (foundCloser) {
+          flush();
+          state.italic = true;
+          i += 1;
+          continue;
+        }
+      }
+      // Fall-through: treat the * as literal.
+      buffer += c;
       i += 1;
       continue;
     }
@@ -363,6 +494,9 @@ const MAX_RICH_TEXT_LENGTH = 2000;
 /**
  * Split any rich-text runs whose content exceeds Notion's 2000-character
  * limit into multiple runs with identical annotations.
+ *
+ * Splits at UTF-16 code-unit boundaries but never in the middle of a
+ * surrogate pair (BUG-B), so emoji and astral-plane characters stay intact.
  */
 function splitLongRuns(runs: RichText[]): RichText[] {
   const result: RichText[] = [];
@@ -373,8 +507,16 @@ function splitLongRuns(runs: RichText[]): RichText[] {
     }
     const content = run.text.content;
     const textRun = run as TextRichText;
-    for (let offset = 0; offset < content.length; offset += MAX_RICH_TEXT_LENGTH) {
-      const chunk = content.slice(offset, offset + MAX_RICH_TEXT_LENGTH);
+    let offset = 0;
+    while (offset < content.length) {
+      let end = Math.min(offset + MAX_RICH_TEXT_LENGTH, content.length);
+      if (end < content.length) {
+        const code = content.charCodeAt(end - 1);
+        if (code >= 0xD800 && code <= 0xDBFF) {
+          end -= 1;  // don't split a surrogate pair
+        }
+      }
+      const chunk = content.slice(offset, end);
       result.push({
         type: "text",
         text: {
@@ -385,17 +527,20 @@ function splitLongRuns(runs: RichText[]): RichText[] {
         plain_text: chunk,
         href: textRun.href,
       });
+      offset = end;
     }
   }
   return result;
 }
+
+const LINK_SCHEME_RE = /^(https?:\/\/|notion:\/\/|mailto:|tel:)/i;
 
 function makeRun(content: string, state: ScannerState, linkUrl: string | null): TextRichText {
   return {
     type: "text",
     text: {
       content,
-      link: linkUrl && /^(https?|notion):\/\//.test(linkUrl) ? { url: linkUrl } : null,
+      link: linkUrl && LINK_SCHEME_RE.test(linkUrl) ? { url: linkUrl } : null,
     },
     annotations: {
       ...DEFAULT_ANNOTATIONS,

@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { parseSimpleFilter, parseColumnSpec } from "../../src/commands/db.js";
+import { parseSimpleFilter, parseColumnSpec, parseSimpleSort } from "../../src/commands/db.js";
 import type { PropertySchema } from "../../src/properties/parse.js";
 
 function schema(overrides: Record<string, Partial<PropertySchema>>): Record<string, PropertySchema> {
@@ -124,6 +124,33 @@ describe("parseSimpleFilter — multi_select", () => {
 
   it("rejects comparison operators", () => {
     assert.throws(() => parseSimpleFilter("Tags>urgent", s), /only supports =/);
+  });
+
+  it("backslash-escaped comma is part of the value (BUG-L)", () => {
+    assert.deepEqual(parseSimpleFilter("Tags=tech\\,AI", s), {
+      property: "Tags",
+      multi_select: { contains: "tech,AI" },
+    });
+  });
+});
+
+describe("parseSimpleSort (BUG-G)", () => {
+  const s = schema({ Name: { type: "title" }, Due: { type: "date" } });
+
+  it("ascending by default", () => {
+    assert.deepEqual(parseSimpleSort("Name", s), { property: "Name", direction: "ascending" });
+  });
+
+  it(":desc becomes descending", () => {
+    assert.deepEqual(parseSimpleSort("Due:desc", s), { property: "Due", direction: "descending" });
+  });
+
+  it("throws on unknown property", () => {
+    assert.throws(() => parseSimpleSort("Nope:desc", s), /Unknown sort property/);
+  });
+
+  it("throws on empty property (e.g. ':desc')", () => {
+    assert.throws(() => parseSimpleSort(":desc", s), /requires a property name/);
   });
 });
 
