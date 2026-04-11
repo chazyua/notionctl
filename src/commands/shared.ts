@@ -137,7 +137,14 @@ export function getBooleanFlag(flags: Map<string, string>, name: string): boolea
 
 /**
  * Parse a JSON string and validate it is a plain object (not null, array, or scalar).
- * Strips __proto__ and constructor keys to prevent prototype pollution.
+ * Recursively strips `__proto__`, `constructor`, and `prototype` keys from
+ * every nested object / array element so an adversarial payload like
+ * `{"a":{"__proto__":{"polluted":true}}}` cannot survive into downstream
+ * code paths that might spread it back onto a literal.
+ *
+ * We run a single post-parse walker instead of relying on `JSON.parse` reviver
+ * semantics so the sanitization is observable and testable, and so the error
+ * path remains a clean `USAGE` error on parse failure.
  */
 export function parseJsonObject(raw: string, flagName: string): Record<string, unknown> {
   let parsed: unknown;
@@ -149,9 +156,26 @@ export function parseJsonObject(raw: string, flagName: string): Record<string, u
   if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
     throw new NotionCliError(ErrorCode.USAGE, `${flagName} must be a JSON object, not an array or scalar`);
   }
-  return Object.fromEntries(
-    Object.entries(parsed as Record<string, unknown>).filter(([k]) => k !== "__proto__" && k !== "constructor"),
-  );
+  return sanitizeJsonObject(parsed as Record<string, unknown>);
+}
+
+const DANGEROUS_KEYS = new Set(["__proto__", "constructor", "prototype"]);
+
+function sanitizeJsonValue(value: unknown): unknown {
+  if (value === null || typeof value !== "object") return value;
+  if (Array.isArray(value)) return value.map(sanitizeJsonValue);
+  return sanitizeJsonObject(value as Record<string, unknown>);
+}
+
+function sanitizeJsonObject(obj: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = Object.create(null);
+  for (const [k, v] of Object.entries(obj)) {
+    if (DANGEROUS_KEYS.has(k)) continue;
+    out[k] = sanitizeJsonValue(v);
+  }
+  // Return a regular object (not null-prototype) so downstream JSON.stringify
+  // and destructuring continue to behave the same as before.
+  return { ...out };
 }
 
 /**

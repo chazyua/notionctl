@@ -9,7 +9,7 @@
 
 import { notionRequest } from "../http.js";
 import { renderJson, renderTable, renderCsv, chooseFormat, isStdoutTty, type Format } from "../output.js";
-import { resolvePageId, parseFlags, readFileText } from "./shared.js";
+import { resolvePageId, parseFlags, readFileText, getBooleanFlag } from "./shared.js";
 import { NotionCliError, ErrorCode } from "../errors.js";
 
 export interface CommandContext {
@@ -94,6 +94,31 @@ export async function apiCommand(ctx: CommandContext): Promise<string> {
     throw new NotionCliError(ErrorCode.USAGE, `Invalid HTTP method: ${method}. Use GET, POST, PATCH, or DELETE.`);
   }
   const path = positional[1]!;
+
+  // `api` is the raw escape hatch: it bypasses the schema-aware command
+  // surface and talks to Notion directly. `DELETE` therefore needs the
+  // same confirmation gate as the typed delete commands (page delete,
+  // db row delete, block delete) — a fat-fingered `api DELETE /blocks/X`
+  // should not silently tombstone a block.
+  //
+  // We don't gate PATCH here even though PATCH can archive a page
+  // (`{"archived": true}`), because PATCH is also the normal update
+  // verb and the user explicitly supplies the body — they already know
+  // what they're sending. Gating DELETE alone is the minimum viable
+  // guard that matches the rest of the CLI's --yes convention.
+  if (method === "DELETE" && !getBooleanFlag(flags, "yes")) {
+    throw new NotionCliError(
+      ErrorCode.USAGE,
+      "Refusing to perform api DELETE without --yes confirmation",
+      {
+        suggestions: [
+          "Re-run with --yes if you really intend to DELETE this resource.",
+          "Prefer the schema-aware commands (page delete, db row delete, block delete) — they carry richer guardrails.",
+        ],
+      },
+    );
+  }
+
   let body: unknown;
   const bodyFlag = flags.get("body");
   if (bodyFlag) {

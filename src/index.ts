@@ -230,14 +230,20 @@ async function main(): Promise<void> {
     }
   }
 
-  // Help/version may appear anywhere after the noun (e.g. `notionctl page get --help`).
-  // Treat them as terminal flags before dispatching, otherwise the per-command flag
-  // parser tries to consume `--help` as a value-bearing option.
-  if (argv.includes("--help") || argv.includes("-h")) {
+  // `--help`/`--version` are accepted in a bounded head window (positions
+  // 0 and 1) so a `--help` or `-v` buried inside a command's flag values
+  // cannot short-circuit dispatch. The window covers top-level invocations
+  // (`notionctl --help`) and per-noun help (`notionctl page --help`).
+  // Subcommand help (`notionctl page get --help`) is handled by stripping
+  // any `--help`/`-h` that appears after the verb so the per-command flag
+  // parser never sees it.
+  const HEAD_HELP = new Set(["--help", "-h"]);
+  const HEAD_VERSION = new Set(["--version", "-v"]);
+  if (argv.length > 0 && (HEAD_HELP.has(argv[0]!) || (argv.length > 1 && HEAD_HELP.has(argv[1]!)))) {
     process.stdout.write(printHelp());
     process.exit(0);
   }
-  if (argv.includes("--version") || argv.includes("-v")) {
+  if (argv.length > 0 && (HEAD_VERSION.has(argv[0]!) || (argv.length > 1 && HEAD_VERSION.has(argv[1]!)))) {
     process.stdout.write(`notionctl ${VERSION}\n`);
     process.exit(0);
   }
@@ -251,7 +257,16 @@ async function main(): Promise<void> {
     process.stdout.write(printHelp());
     process.exit(0);
   }
-  const rest = verb !== undefined ? argv.slice(2) : argv.slice(1);
+  // Strip a single `--help`/`-h` that appears anywhere in the remaining args
+  // (e.g. `notionctl page get --help`) so subcommand help still works without
+  // letting a buried `-v` after a `--format` argument hijack the version path.
+  const restArgv = verb !== undefined ? argv.slice(2) : argv.slice(1);
+  const helpIdx = restArgv.findIndex((a) => HEAD_HELP.has(a));
+  if (helpIdx !== -1) {
+    process.stdout.write(printHelp());
+    process.exit(0);
+  }
+  const rest = restArgv;
 
   try {
     const handler = await loadCommand(noun, verb);

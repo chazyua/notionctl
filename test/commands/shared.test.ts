@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { writeFile, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { parseFlags, resolvePageId, getBooleanFlag, readFileText } from "../../src/commands/shared.js";
+import { parseFlags, resolvePageId, getBooleanFlag, readFileText, parseJsonObject } from "../../src/commands/shared.js";
 import { NotionCliError, ErrorCode } from "../../src/errors.js";
 
 describe("parseFlags", () => {
@@ -155,5 +155,50 @@ describe("bug hunt round 6 — readFileText error translation", () => {
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe("bug hunt round 6 audit — parseJsonObject prototype-pollution recursion", () => {
+  it("strips top-level __proto__ / constructor / prototype keys", () => {
+    const out = parseJsonObject(
+      '{"__proto__":{"bad":true},"constructor":{"bad":true},"prototype":{"bad":true},"keep":1}',
+      "--x",
+    );
+    assert.deepEqual(Object.keys(out).sort(), ["keep"]);
+    assert.equal((out as any).keep, 1);
+  });
+
+  it("strips nested __proto__ inside an object value", () => {
+    const out = parseJsonObject(
+      '{"outer":{"__proto__":{"polluted":true},"real":"value"}}',
+      "--x",
+    );
+    const outer = (out as any).outer;
+    assert.deepEqual(Object.keys(outer).sort(), ["real"]);
+    assert.equal(outer.real, "value");
+    // Sanity: Object.prototype must not have been polluted
+    assert.equal((({} as any).polluted), undefined);
+  });
+
+  it("strips __proto__ inside an array element", () => {
+    const out = parseJsonObject(
+      '{"list":[{"__proto__":{"polluted":true},"ok":1},{"ok":2}]}',
+      "--x",
+    );
+    const list = (out as any).list as Array<Record<string, unknown>>;
+    assert.equal(list.length, 2);
+    assert.deepEqual(Object.keys(list[0]!).sort(), ["ok"]);
+    assert.equal(list[0]!.ok, 1);
+  });
+
+  it("passes scalars and plain objects through unchanged", () => {
+    const out = parseJsonObject('{"a":1,"b":"x","c":true,"d":null}', "--x");
+    assert.deepEqual(out, { a: 1, b: "x", c: true, d: null });
+  });
+
+  it("still rejects top-level arrays and scalars", () => {
+    assert.throws(() => parseJsonObject("[]", "--x"), /must be a JSON object/);
+    assert.throws(() => parseJsonObject('"s"', "--x"), /must be a JSON object/);
+    assert.throws(() => parseJsonObject("null", "--x"), /must be a JSON object/);
   });
 });
