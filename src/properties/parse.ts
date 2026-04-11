@@ -60,7 +60,10 @@ export function parsePropertyFlag(flag: string): FlagPair {
       `Invalid --prop flag (missing '='): ${flag}`,
     );
   }
-  return { key: flag.slice(0, eqIdx).trim(), value: flag.slice(eqIdx + 1).trim() };
+  return {
+    key: stripQuotes(flag.slice(0, eqIdx).trim()),
+    value: flag.slice(eqIdx + 1).trim(),
+  };
 }
 
 function findUnquotedEquals(s: string): number {
@@ -116,14 +119,20 @@ export function parseProperty(
       return { multi_select: items.map((name) => ({ name })) };
     }
     case "date": {
-      const rangeMatch = /^(.+?)\.\.(.+)$/.exec(value);
-      if (rangeMatch) {
-        return { date: { start: rangeMatch[1]!, end: rangeMatch[2]! } };
+      const parts = value.split("..");
+      if (parts.length > 2) {
+        throw new NotionCliError(
+          ErrorCode.INVALID_PROPERTY,
+          `Property '${key}' date range must have at most one '..' separator, got: ${value}`,
+        );
+      }
+      if (parts.length === 2) {
+        return { date: { start: parts[0]!, end: parts[1]! } };
       }
       return { date: { start: value, end: null } };
     }
     case "checkbox":
-      return { checkbox: value === "true" };
+      return { checkbox: parseCheckboxValue(key, value) };
     case "url":
       return { url: value };
     case "email":
@@ -216,6 +225,19 @@ function parseList(raw: string): string[] {
   }
   if (current.trim().length > 0) items.push(current.trim());
   return items;
+}
+
+const TRUTHY_CHECKBOX = new Set(["true", "1", "yes", "y", "on"]);
+const FALSY_CHECKBOX = new Set(["false", "0", "no", "n", "off"]);
+
+function parseCheckboxValue(key: string, raw: string): boolean {
+  const v = raw.trim().toLowerCase();
+  if (TRUTHY_CHECKBOX.has(v)) return true;
+  if (FALSY_CHECKBOX.has(v)) return false;
+  throw new NotionCliError(
+    ErrorCode.INVALID_PROPERTY,
+    `Property '${key}' (checkbox) must be true/false, yes/no, 1/0, or on/off — got: ${raw}`,
+  );
 }
 
 function stripQuotes(s: string): string {

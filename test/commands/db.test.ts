@@ -292,3 +292,26 @@ describe("parseSimpleFilter — additional types", () => {
     });
   });
 });
+
+describe("bug hunt round 4 regressions — db filter", () => {
+  it("multi_select filter keeps commas inside quoted values", () => {
+    const s = schema({ Tags: { type: "multi_select" } });
+    assert.deepEqual(
+      parseSimpleFilter('Tags="Design, Review",urgent', s),
+      {
+        and: [
+          { property: "Tags", multi_select: { contains: "Design, Review" } },
+          { property: "Tags", multi_select: { contains: "urgent" } },
+        ],
+      },
+    );
+  });
+
+  it("multi_select filter handles single quoted value with commas", () => {
+    const s = schema({ Tags: { type: "multi_select" } });
+    assert.deepEqual(
+      parseSimpleFilter('Tags="a, b, c"', s),
+      { property: "Tags", multi_select: { contains: "a, b, c" } },
+    );
+  });
+});

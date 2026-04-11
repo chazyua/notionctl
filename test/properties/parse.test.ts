@@ -201,8 +201,36 @@ describe("parseProperty — error cases", () => {
     }
   });
 
-  it("checkbox with non-boolean string defaults to false", () => {
-    const result = parseProperty(schema, "Done", "yes");
-    assert.deepEqual(result, { checkbox: false });
+  it("checkbox rejects ambiguous values with a clear error", () => {
+    assert.throws(
+      () => parseProperty(schema, "Done", "maybe"),
+      /checkbox/,
+    );
+  });
+});
+
+describe("bug hunt round 4 regressions — properties", () => {
+  it("checkbox accepts True/TRUE/1/yes/on as true", () => {
+    for (const v of ["True", "TRUE", "1", "yes", "YES", "on", "y"]) {
+      assert.deepEqual(parseProperty(schema, "Done", v), { checkbox: true }, `expected ${v} to be true`);
+    }
+  });
+
+  it("checkbox accepts False/FALSE/0/no/off as false", () => {
+    for (const v of ["False", "FALSE", "0", "no", "NO", "off", "n"]) {
+      assert.deepEqual(parseProperty(schema, "Done", v), { checkbox: false }, `expected ${v} to be false`);
+    }
+  });
+
+  it("date range with more than one '..' is rejected", () => {
+    assert.throws(
+      () => parseProperty(schema, "Due", "2026-04-10..2026-04-15..2026-04-20"),
+      /date range/i,
+    );
+  });
+
+  it("parsePropertyFlag strips quotes from the key", () => {
+    assert.deepEqual(parsePropertyFlag('"Title"=Hello'), { key: "Title", value: "Hello" });
+    assert.deepEqual(parsePropertyFlag("'Title'=Hello"), { key: "Title", value: "Hello" });
   });
 });

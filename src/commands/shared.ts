@@ -87,10 +87,11 @@ export function parseFlags(args: string[]): ParsedFlags {
       if (BOOLEAN_FLAGS.has(name)) {
         value = "true";
       } else {
-        if (i + 1 >= args.length) {
+        const nextArg = args[i + 1];
+        if (nextArg === undefined || nextArg.startsWith("--")) {
           throw new NotionCliError(ErrorCode.USAGE, `Flag --${name} requires a value`);
         }
-        value = args[i + 1];
+        value = nextArg;
         i++;
       }
     }

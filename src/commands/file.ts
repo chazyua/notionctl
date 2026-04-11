@@ -7,7 +7,7 @@
  */
 
 import { basename, extname } from "node:path";
-import { stat } from "node:fs/promises";
+import { stat, open } from "node:fs/promises";
 import { notionRequest, notionUploadFile } from "../http.js";
 import { resolvePageId, parseFlags, getBooleanFlag } from "./shared.js";
 import { NotionCliError, ErrorCode } from "../errors.js";
@@ -56,24 +56,54 @@ const MIME_MAP: Record<string, string> = {
   ".yml": "text/yaml",
 };
 
-function guessMimeType(filename: string): string {
+export function guessMimeType(filename: string): string {
   const ext = extname(filename).toLowerCase();
-  return MIME_MAP[ext] ?? "text/plain";
+  return MIME_MAP[ext] ?? "application/octet-stream";
+}
+
+/**
+ * Detect whether the first chunk of a file looks like text. A file is
+ * considered binary if it contains any NUL bytes or if more than ~10% of
+ * the sampled bytes are non-printable (excluding common whitespace).
+ */
+export function looksLikeText(sample: Uint8Array): boolean {
+  if (sample.length === 0) return true;
+  let nonPrintable = 0;
+  for (let i = 0; i < sample.length; i++) {
+    const b = sample[i]!;
+    if (b === 0) return false;
+    const isPrintable =
+      (b >= 0x20 && b < 0x7f) || b === 0x09 || b === 0x0a || b === 0x0d || b >= 0x80;
+    if (!isPrintable) nonPrintable++;
+  }
+  return nonPrintable / sample.length < 0.1;
 }
 
 /**
  * If the file's extension isn't supported by Notion's API, rename it to
- * a supported fallback (.txt for text-like, .zip for binary-like) so the
- * upload succeeds. Returns the upload filename and whether a fallback was used.
+ * a supported fallback so the upload succeeds:
+ *   - text-looking bytes → .txt (text/plain)
+ *   - binary bytes       → .zip (application/zip, a "wrapper" — the bytes
+ *                          are still the original file's, but the .zip
+ *                          extension keeps Notion happy)
+ * The original name is preserved in the CLI output so the user knows
+ * what the file was. Returns the upload filename, fallback flag, and
+ * the content type to send.
  */
-function resolveUploadName(originalName: string): { uploadName: string; fallback: boolean } {
+export function resolveUploadName(
+  originalName: string,
+  sample?: Uint8Array,
+): { uploadName: string; fallback: boolean; contentType: string } {
   const ext = extname(originalName).toLowerCase();
   if (NOTION_SUPPORTED_EXTENSIONS.has(ext)) {
-    return { uploadName: originalName, fallback: false };
+    return { uploadName: originalName, fallback: false, contentType: guessMimeType(originalName) };
   }
-  // Use .txt fallback — the original name is preserved in the output so the user knows what it was.
   const base = originalName.slice(0, originalName.length - ext.length);
-  return { uploadName: `${base}${ext}.txt`, fallback: true };
+  const isText = sample ? looksLikeText(sample) : false;
+  if (isText) {
+    return { uploadName: `${base}${ext}.txt`, fallback: true, contentType: "text/plain" };
+  }
+  return { uploadName: `${base}${ext}.zip`, fallback: true, contentType: "application/zip" };
 }
 
 const IMAGE_TYPES = new Set(["image/png", "image/jpeg", "image/gif", "image/webp", "image/svg+xml"]);
@@ -88,8 +118,6 @@ export async function fileUploadCommand(ctx: { args: string[] }): Promise<string
   }
   const filePath = positional[0]!;
   const originalName = basename(filePath);
-  const { uploadName, fallback } = resolveUploadName(originalName);
-  const contentType = guessMimeType(uploadName);
 
   // Verify file exists and check size
   let fileSize: number;
@@ -99,6 +127,23 @@ export async function fileUploadCommand(ctx: { args: string[] }): Promise<string
   } catch {
     throw new NotionCliError(ErrorCode.USAGE, `File not found: ${filePath}`);
   }
+
+  // Sniff the first 4 KB only when we may need a fallback extension, so
+  // we pick the right MIME type instead of labeling every unknown file
+  // as text/plain.
+  let sample: Uint8Array | undefined;
+  if (!NOTION_SUPPORTED_EXTENSIONS.has(extname(originalName).toLowerCase()) && fileSize > 0) {
+    const fh = await open(filePath, "r");
+    try {
+      const buf = new Uint8Array(Math.min(4096, fileSize));
+      await fh.read(buf, 0, buf.length, 0);
+      sample = buf;
+    } finally {
+      await fh.close();
+    }
+  }
+
+  const { uploadName, fallback, contentType } = resolveUploadName(originalName, sample);
   if (fileSize === 0) {
     throw new NotionCliError(ErrorCode.USAGE, `File is empty: ${filePath}`);
   }

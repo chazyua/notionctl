@@ -229,20 +229,27 @@ export function markdownToRichText(md: string): RichText[] {
     }
 
     // Inline equation $...$  (single $, not $$)
-    if (c === "$" && next !== "$") {
+    // Uses a pandoc-style tightness rule so currency like "$5 and $10" is not
+    // misparsed: the opening $ must be followed by non-whitespace, the closing
+    // $ must be preceded by non-whitespace, and the closing $ must not be
+    // followed by an alphanumeric (so "$5$45" isn't two concatenated "equations").
+    if (c === "$" && next !== "$" && next !== undefined && !/\s/.test(next)) {
       const end = md.indexOf("$", i + 1);
-      if (end !== -1 && end > i + 1) {
-        flush();
-        const expr = md.slice(i + 1, end);
-        runs.push({
-          type: "equation",
-          equation: { expression: expr },
-          annotations: { ...DEFAULT_ANNOTATIONS },
-          plain_text: `$${expr}$`,
-          href: null,
-        } as unknown as RichText);
-        i = end + 1;
-        continue;
+      if (end !== -1 && end > i + 1 && !/\s/.test(md[end - 1]!)) {
+        const afterClose = md[end + 1];
+        if (afterClose === undefined || !/[A-Za-z0-9]/.test(afterClose)) {
+          flush();
+          const expr = md.slice(i + 1, end);
+          runs.push({
+            type: "equation",
+            equation: { expression: expr },
+            annotations: { ...DEFAULT_ANNOTATIONS },
+            plain_text: `$${expr}$`,
+            href: null,
+          } as unknown as RichText);
+          i = end + 1;
+          continue;
+        }
       }
     }
 
@@ -268,11 +275,21 @@ export function markdownToRichText(md: string): RichText[] {
       continue;
     }
 
-    // Italic * (single asterisk — checked after ** so bold is consumed first)
-    if (c === "*") {
+    // Italic * (single asterisk — checked after ** so bold is consumed first).
+    // Pragmatic rule: a lone * toggles italic only when it sits at a word
+    // boundary or inside an existing bold span. This preserves literals like
+    // "2*3", "*.md", and "$5 * $10" without requiring escapes, while still
+    // parsing proper "*word*" emphasis and "**word*italic***" nesting.
+    if (c === "*" && isAsteriskEmphasis(md, i, state)) {
       flush();
       state.italic = !state.italic;
       i += 1;
+      continue;
+    }
+    if (c === "*") {
+      // Not an emphasis delimiter — treat as literal text.
+      buffer += c;
+      i++;
       continue;
     }
 
@@ -326,6 +343,39 @@ function isIntraword(md: string, idx: number): boolean {
   const prev = idx > 0 ? md[idx - 1]! : "";
   const next = idx < md.length - 1 ? md[idx + 1]! : "";
   return /\w/.test(prev) && /\w/.test(next);
+}
+
+/**
+ * Word-boundary rule for * emphasis. We apply it asymmetrically:
+ *   - Closing (italic currently open): accept any *. Once italic is open,
+ *     the next * closes it — matching CommonMark's balancing behavior and
+ *     keeping ***bold italic*** working.
+ *   - Inside bold (state.bold true): accept any *. The surrounding ** already
+ *     establishes emphasis context, so nested "word*italic*" is fine.
+ *   - Otherwise (italic closed, bold closed): require a non-alphanumeric
+ *     before and an alphanumeric after — the classic word-boundary opener
+ *     that rejects 2*3, *.md, $5 * $10.
+ */
+function isAsteriskEmphasis(md: string, idx: number, state: ScannerState): boolean {
+  if (state.italic) return true;
+  if (state.bold) return true;
+  const prev = idx > 0 ? md[idx - 1]! : "";
+  const next = idx < md.length - 1 ? md[idx + 1]! : "";
+  return !/[A-Za-z0-9]/.test(prev) && /[A-Za-z0-9]/.test(next);
+}
+
+/**
+ * Link URL safelist for rich-text conversion. Notion's API only accepts a
+ * small set of URL schemes in `text.link.url`; anything else is rejected at
+ * write time with "Invalid URL for link". The schemes below are the ones
+ * verified to work against the live API. Fragment-only (#anchor) and
+ * relative (/path) URLs are NOT in this list — Notion rejects both — so
+ * those links degrade gracefully to plain text.
+ */
+const ALLOWED_LINK_SCHEMES = /^(https?|mailto|tel|notion|ftp|sms):/i;
+function isAllowedLinkUrl(url: string): boolean {
+  if (url.length === 0) return false;
+  return ALLOWED_LINK_SCHEMES.test(url);
 }
 
 function findLinkEnd(md: string, startIdx: number): { labelEnd: number; urlStart: number; urlEnd: number } | null {
@@ -395,7 +445,7 @@ function makeRun(content: string, state: ScannerState, linkUrl: string | null): 
     type: "text",
     text: {
       content,
-      link: linkUrl && /^(https?|notion):\/\//.test(linkUrl) ? { url: linkUrl } : null,
+      link: linkUrl && isAllowedLinkUrl(linkUrl) ? { url: linkUrl } : null,
     },
     annotations: {
       ...DEFAULT_ANNOTATIONS,

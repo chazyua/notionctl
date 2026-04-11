@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { extractSyncTitle } from "../../src/commands/page.js";
+import { extractSyncTitle, stripLeadingTitleHeading } from "../../src/commands/page.js";
 import { fetchWith404Hint } from "../../src/commands/shared.js";
 import { NotionCliError, ErrorCode } from "../../src/errors.js";
 
@@ -31,6 +31,22 @@ describe("extractSyncTitle", () => {
   it("uses first H1 when multiple exist", () => {
     const { title } = extractSyncTitle({}, "# First\n\n# Second\n\nBody");
     assert.equal(title, "First");
+  });
+
+  it("marks explicit=true when title comes from frontmatter", () => {
+    const { explicit } = extractSyncTitle({ title: "Foo" }, "Body");
+    assert.equal(explicit, true);
+  });
+
+  it("marks explicit=true when title comes from an H1", () => {
+    const { explicit } = extractSyncTitle({}, "# Foo\n\nBody");
+    assert.equal(explicit, true);
+  });
+
+  it("marks explicit=false when title defaults to Untitled", () => {
+    const { title, explicit } = extractSyncTitle({}, "Just a body.");
+    assert.equal(title, "Untitled");
+    assert.equal(explicit, false);
   });
 });
 
@@ -67,5 +83,35 @@ describe("fetchWith404Hint", () => {
         return true;
       },
     );
+  });
+});
+
+describe("stripLeadingTitleHeading (bug hunt round 4)", () => {
+  it("strips a leading # Title matching the title argument", () => {
+    const body = "# My Title\n\nBody content.";
+    assert.equal(stripLeadingTitleHeading(body, "My Title"), "Body content.");
+  });
+
+  it("does not strip a later H1 that matches the title", () => {
+    // Regression: regex /^# .+\n?/m scanned the whole body and returned the
+    // first H1. If that first H1 wasn't the title, nothing was stripped and
+    // the duplicate stayed. We now only look at the very first line.
+    const body = "# Intro section\n\n# My Title\n\nBody.";
+    assert.equal(stripLeadingTitleHeading(body, "My Title"), body);
+  });
+
+  it("leaves the first H1 alone when it doesn't match the title", () => {
+    const body = "# Other heading\n\nBody content.";
+    assert.equal(stripLeadingTitleHeading(body, "My Title"), body);
+  });
+
+  it("tolerates blank lines above the leading H1", () => {
+    const body = "\n\n# My Title\n\nBody.";
+    assert.equal(stripLeadingTitleHeading(body, "My Title"), "Body.");
+  });
+
+  it("handles a trailing newline-free H1 at end of body", () => {
+    const body = "# My Title";
+    assert.equal(stripLeadingTitleHeading(body, "My Title"), "");
   });
 });

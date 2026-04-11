@@ -91,6 +91,25 @@ function stripFrontmatter(md: string): string {
   return extractFrontmatter(md).body;
 }
 
+/**
+ * Remove a leading `# <title>` line from a markdown body when it matches the
+ * page's title. Only inspects the very first non-blank line — later H1s are
+ * preserved, even if they happen to match. Keeps page-create output from
+ * showing the title twice while staying out of the way of multi-section docs.
+ */
+export function stripLeadingTitleHeading(body: string, title: string): string {
+  const lines = body.split("\n");
+  let firstNonBlank = 0;
+  while (firstNonBlank < lines.length && lines[firstNonBlank]!.trim() === "") firstNonBlank++;
+  if (firstNonBlank >= lines.length) return body;
+  const first = lines[firstNonBlank]!;
+  const headingMatch = /^#\s+(.+?)\s*$/.exec(first);
+  if (!headingMatch) return body;
+  if (headingMatch[1] !== title) return body;
+  const remaining = lines.slice(firstNonBlank + 1).join("\n");
+  return remaining.replace(/^[\n\r]+/, "");
+}
+
 export async function pageCreateCommand(ctx: { args: string[] }): Promise<string> {
   const { flags } = parseFlags(ctx.args);
   const parent = flags.get("parent");
@@ -113,10 +132,7 @@ export async function pageCreateCommand(ctx: { args: string[] }): Promise<string
   }
 
   let bodyMd = stripFrontmatter(await readInputMarkdown(flags));
-  // Strip leading H1 if it matches --title (prevents duplicate heading in page body)
-  bodyMd = bodyMd.replace(/^# .+\n?/m, (match) =>
-    match.trim().slice(2) === title ? "" : match
-  ).trimStart();
+  bodyMd = stripLeadingTitleHeading(bodyMd, title);
   const blocks = bodyMd.length > 0 ? markdownToBlocks(bodyMd) : [];
 
   const firstChunk = blocks.slice(0, 100);
@@ -522,13 +538,16 @@ export async function pageDeleteCommand(ctx: { args: string[] }): Promise<string
   if (positional.length === 0) {
     throw new NotionCliError(ErrorCode.USAGE, "Usage: notionctl page delete <id> --yes");
   }
+  const id = resolvePageId(positional[0]!);
+  if (getBooleanFlag(flags, "dry-run")) {
+    return renderJson({ action: "page delete", pageId: id, wouldArchive: true });
+  }
   if (!getBooleanFlag(flags, "yes")) {
     throw new NotionCliError(
       ErrorCode.USAGE,
       "Refusing to archive without --yes confirmation",
     );
   }
-  const id = resolvePageId(positional[0]!);
   const res = await notionRequest("PATCH", `/pages/${id}`, { archived: true });
   return renderJson(res);
 }
@@ -536,8 +555,10 @@ export async function pageDeleteCommand(ctx: { args: string[] }): Promise<string
 export function extractSyncTitle(
   frontmatter: Record<string, unknown>,
   body: string,
-): { title: string; syncBody: string } {
-  if (frontmatter.title) return { title: String(frontmatter.title), syncBody: body };
+): { title: string; syncBody: string; explicit: boolean } {
+  if (frontmatter.title) {
+    return { title: String(frontmatter.title), syncBody: body, explicit: true };
+  }
   // Find H1 outside fenced code blocks (backtick or tilde)
   const lines = body.split("\n");
   let inFence = false;
@@ -548,10 +569,10 @@ export function extractSyncTitle(
     if (h1) {
       const title = h1[1]!.trim();
       const syncBody = [...lines.slice(0, i), ...lines.slice(i + 1)].join("\n").trimStart();
-      return { title, syncBody };
+      return { title, syncBody, explicit: true };
     }
   }
-  return { title: "Untitled", syncBody: body };
+  return { title: "Untitled", syncBody: body, explicit: false };
 }
 
 async function atomicWriteFile(path: string, content: string): Promise<void> {
@@ -660,7 +681,7 @@ export async function pageSyncCommand(ctx: { args: string[] }): Promise<string> 
 
   if (state === SyncState.CHANGED || state === SyncState.DRIFT) {
     const pageId = validatedNotionId!;
-    const { title, syncBody } = extractSyncTitle(frontmatter, body);
+    const { title, syncBody, explicit: titleExplicit } = extractSyncTitle(frontmatter, body);
     let existing: { results: Block[] };
     try {
       existing = await notionRequest<{ results: Block[] }>("GET", `/blocks/${pageId}/children`);
@@ -675,9 +696,15 @@ export async function pageSyncCommand(ctx: { args: string[] }): Promise<string> 
       throw err;
     }
     const newBlocks = markdownToBlocks(syncBody);
-    await notionRequest("PATCH", `/pages/${pageId}`, {
-      properties: { title: [{ type: "text", text: { content: title, link: null } }] },
-    });
+    // Only PATCH the title when the file explicitly specifies one (via
+    // frontmatter `title:` or a leading `# H1`). Otherwise, a DB row or
+    // regular page keeps its existing name — otherwise files without a
+    // title source silently clobber the row with "Untitled".
+    if (titleExplicit) {
+      await notionRequest("PATCH", `/pages/${pageId}`, {
+        properties: { title: [{ type: "text", text: { content: title, link: null } }] },
+      });
+    }
     for (const b of existing.results) {
       await notionRequest("DELETE", `/blocks/${b.id}`);
     }

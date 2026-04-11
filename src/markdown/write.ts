@@ -74,11 +74,11 @@ export function markdownToBlocks(md: string): Block[] {
       continue;
     }
 
-    // Image: ![alt](url) — only when it's the entire line
-    const imgMatch = /^!\[([^\]]*)\]\(([^)]+)\)$/.exec(trimmed);
-    if (imgMatch) {
-      const alt = imgMatch[1]!;
-      const url = imgMatch[2]!;
+    // Image: ![alt](url) — only when it's the entire line. Parses the URL
+    // with balanced parentheses so links like Wikipedia's Foo_(bar).png work.
+    const parsedImage = parseImageLine(trimmed);
+    if (parsedImage) {
+      const { alt, url } = parsedImage;
       if (!/^https?:\/\//i.test(url)) {
         // Skip non-HTTP image URLs (javascript:, data:, file://, etc.)
         i++;
@@ -389,6 +389,33 @@ export function markdownToBlocks(md: string): Block[] {
   return blocks;
 }
 
+/**
+ * Parse a standalone image line `![alt](url)` where the URL may contain
+ * balanced parentheses (Wikipedia-style links). Returns null if the line
+ * does not match the full `![...](...)` shape end-to-end.
+ */
+function parseImageLine(line: string): { alt: string; url: string } | null {
+  if (!line.startsWith("![")) return null;
+  const labelClose = line.indexOf("]", 2);
+  if (labelClose === -1) return null;
+  if (line[labelClose + 1] !== "(") return null;
+  const alt = line.slice(2, labelClose);
+  let depth = 1;
+  let i = labelClose + 2;
+  while (i < line.length && depth > 0) {
+    const ch = line[i]!;
+    if (ch === "\\") { i += 2; continue; }
+    if (ch === "(") depth++;
+    else if (ch === ")") { depth--; if (depth === 0) break; }
+    i++;
+  }
+  if (depth !== 0) return null;
+  if (i !== line.length - 1) return null;
+  const url = line.slice(labelClose + 2, i);
+  if (url.length === 0) return null;
+  return { alt, url };
+}
+
 function isBlockStart(line: string): boolean {
   const t = line.trim();
   return (
@@ -448,7 +475,12 @@ function parseListSection(lines: string[], startIdx: number): { blocks: Block[];
     rawItems.push(parsed);
     i++;
   }
-  const tree = capListDepth(buildListTree(rawItems));
+  const { items: tree, flattened } = capListDepth(buildListTree(rawItems));
+  if (flattened > 0 && warnHandler) {
+    warnHandler(
+      `notionctl: ${flattened} list item${flattened === 1 ? "" : "s"} deeper than 2 levels were promoted to the maximum allowed depth. Notion's API supports at most 2 levels of nested children.`,
+    );
+  }
   return { blocks: tree.map(listItemToBlock), nextIdx: i };
 }
 
@@ -495,19 +527,34 @@ function buildListTree(flat: Omit<ListItem, "children">[]): ListItem[] {
  */
 const MAX_CHILD_DEPTH = 2;
 
-function capListDepth(items: ListItem[], depth: number = 0): ListItem[] {
+/**
+ * Set by the CLI entry so write.ts can warn about list depth flattening
+ * without importing process.stderr directly. Tests leave it unset so test
+ * output stays clean.
+ */
+let warnHandler: ((msg: string) => void) | null = null;
+export function setMarkdownWarnHandler(fn: ((msg: string) => void) | null): void {
+  warnHandler = fn;
+}
+
+function capListDepth(items: ListItem[], depth: number = 0): { items: ListItem[]; flattened: number } {
   const result: ListItem[] = [];
+  let flattened = 0;
   for (const item of items) {
     if (depth + 1 >= MAX_CHILD_DEPTH) {
       // This item's children would exceed the limit. Promote all
       // descendants to be siblings of this item (at the same level).
       result.push({ ...item, children: [] });
-      result.push(...collectDescendants(item.children).map((c) => ({ ...c, children: [] })));
+      const descendants = collectDescendants(item.children);
+      if (descendants.length > 0) flattened += descendants.length;
+      result.push(...descendants.map((c) => ({ ...c, children: [] })));
     } else {
-      result.push({ ...item, children: capListDepth(item.children, depth + 1) });
+      const capped = capListDepth(item.children, depth + 1);
+      flattened += capped.flattened;
+      result.push({ ...item, children: capped.items });
     }
   }
-  return result;
+  return { items: result, flattened };
 }
 
 function collectDescendants(items: ListItem[]): ListItem[] {

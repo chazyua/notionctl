@@ -17,6 +17,7 @@ import { NotionCliError, ErrorCode, formatErrorJson, formatErrorHuman, scrub } f
 import { isStdoutTty } from "./output.js";
 import { VERSION } from "./version.js";
 import { setActiveProfile } from "./auth.js";
+import { setMarkdownWarnHandler } from "./markdown/write.js";
 
 type CommandHandler = (ctx: { args: string[] }) => Promise<string>;
 
@@ -200,6 +201,7 @@ See https://github.com/chazyua/notionctl for full documentation.
 }
 
 async function main(): Promise<void> {
+  setMarkdownWarnHandler((msg) => process.stderr.write(msg + "\n"));
   const argv = process.argv.slice(2);
 
   if (argv.length === 0 || argv[0] === "--help" || argv[0] === "-h") {

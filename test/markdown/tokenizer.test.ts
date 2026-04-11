@@ -588,3 +588,63 @@ describe("richTextToMarkdown — additional edge cases", () => {
     assert.equal(md, "Hello @user:abc, welcome!");
   });
 });
+
+describe("bug hunt round 4 regressions", () => {
+  it("does not parse currency as equation when closing $ is preceded by whitespace", () => {
+    const runs = markdownToRichText("I paid $5 for coffee and $10 for lunch.");
+    assert.equal(runs.length, 1);
+    assert.equal(runs[0]!.type, "text");
+    assert.equal((runs[0] as any).text.content, "I paid $5 for coffee and $10 for lunch.");
+  });
+
+  it("does not parse currency as equation across multiple amounts", () => {
+    const runs = markdownToRichText("Prices: $100 and $200.");
+    assert.equal(runs.length, 1);
+    assert.equal(runs[0]!.type, "text");
+  });
+
+  it("still parses genuine inline math with non-whitespace delimiters", () => {
+    const runs = markdownToRichText("before $x^2$ after");
+    assert.equal(runs.length, 3);
+    assert.equal(runs[1]!.type, "equation");
+    assert.equal((runs[1] as any).equation.expression, "x^2");
+  });
+
+  it("treats bare * between alphanumerics as literal (CommonMark intraword rule)", () => {
+    const runs = markdownToRichText("Compute 2*3 = 6.");
+    assert.equal(runs.length, 1);
+    assert.equal(runs[0]!.type, "text");
+    assert.equal((runs[0] as any).annotations.italic, false);
+    assert.equal((runs[0] as any).text.content, "Compute 2*3 = 6.");
+  });
+
+  it("treats glob pattern *.md as literal, not italic opener", () => {
+    const runs = markdownToRichText("Files matching *.md here.");
+    const joined = runs.map(r => (r as any).text?.content ?? "").join("");
+    assert.equal(joined, "Files matching *.md here.");
+    for (const r of runs) {
+      assert.equal(r.annotations.italic, false, "no run should be italic");
+    }
+  });
+
+  it("still parses proper *italic* with word-boundary asterisks", () => {
+    const runs = markdownToRichText("This is *important* here.");
+    const italicRun = runs.find(r => r.annotations.italic);
+    assert.ok(italicRun, "should have an italic run");
+    assert.equal((italicRun as any).text.content, "important");
+  });
+
+  it("preserves mailto: links", () => {
+    const runs = markdownToRichText("Email [us](mailto:hi@example.com).");
+    const linkRun = runs.find(r => (r as any).text?.link?.url);
+    assert.ok(linkRun, "link run should exist");
+    assert.equal((linkRun as any).text.link.url, "mailto:hi@example.com");
+  });
+
+  it("preserves tel: links", () => {
+    const runs = markdownToRichText("Call [now](tel:+15551234567).");
+    const linkRun = runs.find(r => (r as any).text?.link?.url);
+    assert.ok(linkRun);
+    assert.equal((linkRun as any).text.link.url, "tel:+15551234567");
+  });
+});

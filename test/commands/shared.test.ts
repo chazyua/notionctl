@@ -89,3 +89,30 @@ describe("getBooleanFlag", () => {
     assert.equal(getBooleanFlag(flags, "quiet"), false);
   });
 });
+
+describe("bug hunt round 4 regressions — parseFlags", () => {
+  it("throws when a value flag is followed by another --flag instead of a value", () => {
+    assert.throws(
+      () => parseFlags(["--title", "--parent", "xyz"]),
+      /--title requires a value/,
+    );
+  });
+
+  it("throws when a repeatable flag without value is followed by another --flag", () => {
+    // regression for --filter --dry-run silently swallowing --dry-run
+    assert.throws(
+      () => parseFlags(["--filter", "Status=Done", "--filter", "--dry-run"]),
+      /--filter requires a value/,
+    );
+  });
+
+  it("still accepts negative numbers as flag values", () => {
+    const { flags } = parseFlags(["--count", "-5"]);
+    assert.equal(flags.get("count"), "-5");
+  });
+
+  it("--flag= (empty string) remains allowed", () => {
+    const { flags } = parseFlags(["--title="]);
+    assert.equal(flags.get("title"), "");
+  });
+});

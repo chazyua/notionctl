@@ -52,6 +52,36 @@ export async function dbSchemaCommand(ctx: { args: string[] }): Promise<string> 
 }
 
 /**
+ * Split a comma-separated list while respecting double/single quoted
+ * segments. Used by multi_select filters so values with embedded commas
+ * ("Design, Review") can be passed literally.
+ */
+function splitQuotedCsv(raw: string): string[] {
+  const out: string[] = [];
+  let current = "";
+  let inQuote: '"' | "'" | null = null;
+  for (let i = 0; i < raw.length; i++) {
+    const c = raw[i]!;
+    if (inQuote) {
+      if (c === inQuote && raw[i - 1] !== "\\") { inQuote = null; continue; }
+      current += c;
+      continue;
+    }
+    if (c === '"' || c === "'") { inQuote = c; continue; }
+    if (c === ",") {
+      const trimmed = current.trim();
+      if (trimmed.length > 0) out.push(trimmed);
+      current = "";
+      continue;
+    }
+    current += c;
+  }
+  const trimmed = current.trim();
+  if (trimmed.length > 0) out.push(trimmed);
+  return out;
+}
+
+/**
  * Find the leftmost comparison operator in an expression. Longer operators
  * (>=, <=) are preferred at the same position over shorter (>, <, =).
  */
@@ -99,7 +129,7 @@ export function parseSimpleFilter(expr: string, schema: Record<string, PropertyS
       return { property: key, status: { equals: value } };
     case "multi_select": {
       if (op !== "=") throw new NotionCliError(ErrorCode.USAGE, `multi_select filter only supports =`);
-      const values = value.split(",").map((v) => v.trim()).filter(Boolean);
+      const values = splitQuotedCsv(value);
       if (values.length === 0) {
         throw new NotionCliError(ErrorCode.USAGE, `multi_select filter needs at least one value`);
       }

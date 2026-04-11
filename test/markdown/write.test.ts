@@ -1,6 +1,6 @@
-import { describe, it } from "node:test";
+import { describe, it, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { markdownToBlocks } from "../../src/markdown/write.js";
+import { markdownToBlocks, setMarkdownWarnHandler } from "../../src/markdown/write.js";
 
 describe("markdownToBlocks basic blocks", () => {
   it("single paragraph", () => {
@@ -622,6 +622,46 @@ describe("markdownToBlocks — H4/H5/H6 headings downgraded to H3 (BH2-5)", () =
     assert.equal(blocks.length, 2);
     assert.equal(blocks[0]!.type, "heading_3");
     assert.equal(blocks[1]!.type, "heading_3");
+  });
+});
+
+describe("bug hunt round 4 regressions — write", () => {
+  afterEach(() => setMarkdownWarnHandler(null));
+
+  it("emits a warning via the registered handler when lists are flattened", () => {
+    const warnings: string[] = [];
+    setMarkdownWarnHandler((msg) => warnings.push(msg));
+    const md = "- a\n  - b\n    - c\n      - d\n        - e";
+    markdownToBlocks(md);
+    assert.equal(warnings.length, 1);
+    assert.match(warnings[0]!, /list item/i);
+    assert.match(warnings[0]!, /2 levels/i);
+  });
+
+  it("does not warn when list nesting stays within 2 levels", () => {
+    const warnings: string[] = [];
+    setMarkdownWarnHandler((msg) => warnings.push(msg));
+    markdownToBlocks("- a\n  - b\n- c");
+    assert.equal(warnings.length, 0);
+  });
+
+  it("image URL containing parens still parses as image block", () => {
+    const md = "![wiki](https://en.wikipedia.org/wiki/Foo_(bar).png)";
+    const blocks = markdownToBlocks(md);
+    assert.equal(blocks.length, 1);
+    assert.equal(blocks[0]!.type, "image");
+    const img = (blocks[0] as any).image;
+    assert.equal(img.type, "external");
+    assert.equal(img.external.url, "https://en.wikipedia.org/wiki/Foo_(bar).png");
+    assert.equal(img.caption[0]?.text?.content, "wiki");
+  });
+
+  it("image with empty alt and parens URL still parses", () => {
+    const md = "![](https://example.com/a(b)c.jpg)";
+    const blocks = markdownToBlocks(md);
+    assert.equal(blocks.length, 1);
+    assert.equal(blocks[0]!.type, "image");
+    assert.equal((blocks[0] as any).image.external.url, "https://example.com/a(b)c.jpg");
   });
 });
 
