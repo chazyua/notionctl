@@ -4,6 +4,7 @@
  * option handling across commands.
  */
 
+import { readFile as nodeReadFile } from "node:fs/promises";
 import { NotionCliError, ErrorCode } from "../errors.js";
 
 const MAX_STDIN_BYTES = 10 * 1024 * 1024; // 10 MB
@@ -151,6 +152,29 @@ export function parseJsonObject(raw: string, flagName: string): Record<string, u
   return Object.fromEntries(
     Object.entries(parsed as Record<string, unknown>).filter(([k]) => k !== "__proto__" && k !== "constructor"),
   );
+}
+
+/**
+ * Read a file as utf-8, translating filesystem errors into typed
+ * NotionCliErrors so the CLI surfaces a clean message instead of leaking a
+ * bare ENOENT through the unhandled-error path.
+ */
+export async function readFileText(path: string, label = "file"): Promise<string> {
+  try {
+    return await nodeReadFile(path, "utf8");
+  } catch (err) {
+    const e = err as NodeJS.ErrnoException;
+    if (e.code === "ENOENT") {
+      throw new NotionCliError(ErrorCode.USAGE, `${label} not found: ${path}`);
+    }
+    if (e.code === "EACCES" || e.code === "EPERM") {
+      throw new NotionCliError(ErrorCode.USAGE, `Permission denied reading ${label}: ${path}`);
+    }
+    if (e.code === "EISDIR") {
+      throw new NotionCliError(ErrorCode.USAGE, `Expected a file but got a directory: ${path}`);
+    }
+    throw new NotionCliError(ErrorCode.GENERIC, `Failed to read ${label} ${path}: ${e.message}`);
+  }
 }
 
 /**

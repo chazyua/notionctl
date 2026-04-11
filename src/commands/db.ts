@@ -7,11 +7,10 @@
  * invocation and used to type-check property flags.
  */
 
-import { readFile } from "node:fs/promises";
 import { notionRequest } from "../http.js";
 import { parseProperty, parsePropertyFlag, type PropertySchema } from "../properties/parse.js";
 import { renderProperty } from "../properties/render.js";
-import { resolvePageId, parseFlags, getBooleanFlag, fetchWith404Hint, parseJsonObject, readStdinBounded } from "./shared.js";
+import { resolvePageId, parseFlags, getBooleanFlag, fetchWith404Hint, parseJsonObject, readStdinBounded, readFileText } from "./shared.js";
 import { markdownToBlocks, blocksToMarkdown } from "../markdown/index.js";
 import type { Block } from "../markdown/index.js";
 import { fetchBlockTree } from "../blocks.js";
@@ -189,10 +188,23 @@ export function parseSimpleFilter(expr: string, schema: Record<string, PropertyS
   }
 }
 
-function parseSimpleSort(expr: string, schema: Record<string, PropertySchema>): unknown {
+// Exported for unit testing.
+export function parseSimpleSort(expr: string, schema: Record<string, PropertySchema>): unknown {
   const [prop, dir] = expr.split(":");
-  if (prop && !schema[prop]) {
+  if (!prop) {
+    throw new NotionCliError(
+      ErrorCode.USAGE,
+      `Invalid sort: '${expr}' (expected Name or Name:asc / Name:desc)`,
+    );
+  }
+  if (!schema[prop]) {
     throw new NotionCliError(ErrorCode.INVALID_PROPERTY, `Unknown sort property: ${prop}`);
+  }
+  if (dir !== undefined && dir !== "asc" && dir !== "desc") {
+    throw new NotionCliError(
+      ErrorCode.USAGE,
+      `Invalid sort direction: '${dir}' (use asc or desc)`,
+    );
   }
   return {
     property: prop,
@@ -213,7 +225,7 @@ export async function dbQueryCommand(ctx: { args: string[] }): Promise<string> {
   const filterJsonFlag = flags.get("filter-json");
   if (filterJsonFlag) {
     const raw = filterJsonFlag.startsWith("@")
-      ? await readFile(filterJsonFlag.slice(1), "utf8")
+      ? await readFileText(filterJsonFlag.slice(1), "filter JSON")
       : filterJsonFlag;
     body.filter = parseJsonObject(raw, "--filter-json");
   } else if (filterFlags.length === 1) {
@@ -270,6 +282,8 @@ export function parseColumnSpec(spec: string): { name: string; schema: Record<st
   const options = colonIdx === -1 ? "" : rest.slice(colonIdx + 1);
 
   switch (type) {
+    case "title":
+      return { name, schema: { title: {} } };
     case "text":
     case "rich_text":
       return { name, schema: { rich_text: {} } };
@@ -318,7 +332,9 @@ export async function dbCreateCommand(ctx: { args: string[] }): Promise<string> 
   }
   const parentId = resolvePageId(parent);
 
-  // Build properties schema: title is always the first column
+  // Default title column is "Name". If a --prop X=title spec is supplied,
+  // it overrides the default so users can rename the title column at create
+  // time (e.g. --prop Task=title).
   const properties: Record<string, unknown> = {
     Name: { title: {} },
   };
@@ -327,15 +343,22 @@ export async function dbCreateCommand(ctx: { args: string[] }): Promise<string> 
   const schemaJson = flags.get("schema-json");
   if (schemaJson) {
     const raw = schemaJson.startsWith("@")
-      ? await readFile(schemaJson.slice(1), "utf8")
+      ? await readFileText(schemaJson.slice(1), "schema JSON")
       : schemaJson;
     Object.assign(properties, parseJsonObject(raw, "--schema-json"));
   }
 
   // --prop Name=type[:options]: individual columns added on top
+  let titleOverride: string | null = null;
   for (const raw of repeated.get("prop") ?? []) {
     const { name, schema } = parseColumnSpec(raw);
+    if ((schema as { title?: unknown }).title !== undefined) {
+      titleOverride = name;
+    }
     properties[name] = schema;
+  }
+  if (titleOverride && titleOverride !== "Name") {
+    delete properties.Name;
   }
 
   const payload = {
@@ -395,7 +418,7 @@ export async function dbUpdateCommand(ctx: { args: string[] }): Promise<string> 
   const schemaJson = flags.get("schema-json");
   if (schemaJson) {
     const raw = schemaJson.startsWith("@")
-      ? await readFile(schemaJson.slice(1), "utf8")
+      ? await readFileText(schemaJson.slice(1), "schema JSON")
       : schemaJson;
     Object.assign(properties, parseJsonObject(raw, "--schema-json"));
   }
@@ -472,7 +495,7 @@ export async function dbRowCreateCommand(ctx: { args: string[] }): Promise<strin
     if (fromFile === "-") {
       raw = await readStdinBounded();
     } else {
-      raw = await readFile(fromFile, "utf8");
+      raw = await readFileText(fromFile, "row body markdown");
     }
     const { body } = extractFrontmatter(raw);
     children = markdownToBlocks(body);
@@ -537,6 +560,9 @@ export async function dbRowDeleteCommand(ctx: { args: string[] }): Promise<strin
     throw new NotionCliError(ErrorCode.USAGE, "Refusing to archive without --yes");
   }
   const id = resolvePageId(positional[0]!);
-  const res = await notionRequest("PATCH", `/pages/${id}`, { archived: true });
+  const res = await fetchWith404Hint(
+    () => notionRequest("PATCH", `/pages/${id}`, { archived: true }),
+    `Database row ${id}`,
+  );
   return renderJson(res);
 }

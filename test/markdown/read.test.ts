@@ -433,3 +433,32 @@ describe("blocksToMarkdown — blockquote multi-line (BUG-1 regression)", () => 
     }
   });
 });
+
+describe("bug hunt round 6 — code block fence widening", () => {
+  it("emits a longer fence when code body contains triple backticks", () => {
+    const blocks: Block[] = [
+      mkBlock("code", {
+        rich_text: [rt("outer\n```\nnested fence\n```\nclose")],
+        caption: [],
+        language: "plain text",
+      }),
+    ];
+    const out = blocksToMarkdown(blocks);
+    // The opening and closing fences must be at least 4 backticks so the
+    // 3-backtick lines inside the body don't terminate the block early.
+    assert.match(out, /^`{4,}/m);
+    assert.match(out, /`{4,}$/m);
+  });
+
+  it("uses the standard 3-backtick fence when no inner backticks", () => {
+    const blocks: Block[] = [
+      mkBlock("code", {
+        rich_text: [rt("plain content")],
+        caption: [],
+        language: "plain text",
+      }),
+    ];
+    const out = blocksToMarkdown(blocks);
+    assert.ok(out.startsWith("```\n"), `expected 3-backtick fence, got: ${out}`);
+  });
+});

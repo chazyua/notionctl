@@ -9,9 +9,8 @@
 
 import { notionRequest } from "../http.js";
 import { renderJson, renderTable, renderCsv, chooseFormat, isStdoutTty, type Format } from "../output.js";
-import { resolvePageId, parseFlags } from "./shared.js";
+import { resolvePageId, parseFlags, readFileText } from "./shared.js";
 import { NotionCliError, ErrorCode } from "../errors.js";
-import { readFile } from "node:fs/promises";
 
 export interface CommandContext {
   args: string[];
@@ -98,13 +97,14 @@ export async function apiCommand(ctx: CommandContext): Promise<string> {
   let body: unknown;
   const bodyFlag = flags.get("body");
   if (bodyFlag) {
+    let content: string;
+    if (bodyFlag.startsWith("@")) {
+      content = await readFileText(bodyFlag.slice(1), "request body");
+    } else {
+      content = bodyFlag;
+    }
     try {
-      if (bodyFlag.startsWith("@")) {
-        const content = await readFile(bodyFlag.slice(1), "utf8");
-        body = JSON.parse(content);
-      } else {
-        body = JSON.parse(bodyFlag);
-      }
+      body = JSON.parse(content);
     } catch {
       throw new NotionCliError(ErrorCode.USAGE, `--body is not valid JSON`);
     }

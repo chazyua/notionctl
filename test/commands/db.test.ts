@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { parseSimpleFilter, parseColumnSpec } from "../../src/commands/db.js";
+import { parseSimpleFilter, parseColumnSpec, parseSimpleSort } from "../../src/commands/db.js";
 import type { PropertySchema } from "../../src/properties/parse.js";
 
 function schema(overrides: Record<string, Partial<PropertySchema>>): Record<string, PropertySchema> {
@@ -333,5 +333,36 @@ describe("bug hunt round 4 regressions — db filter", () => {
       parseSimpleFilter('Tags="a, b, c"', s),
       { property: "Tags", multi_select: { contains: "a, b, c" } },
     );
+  });
+});
+
+describe("bug hunt round 6 — db sort + column", () => {
+  const s = schema({ Name: { type: "title" }, Date: { type: "date" } });
+
+  it("rejects empty sort property like ':desc'", () => {
+    assert.throws(() => parseSimpleSort(":desc", s), /Invalid sort/);
+  });
+
+  it("rejects unknown sort property", () => {
+    assert.throws(() => parseSimpleSort("Bogus:asc", s), /Unknown sort property/);
+  });
+
+  it("rejects invalid sort direction (uppercase DESC, etc.)", () => {
+    assert.throws(() => parseSimpleSort("Name:DESC", s), /Invalid sort direction/);
+    assert.throws(() => parseSimpleSort("Name:descending", s), /Invalid sort direction/);
+    assert.throws(() => parseSimpleSort("Name:ASCENDING", s), /Invalid sort direction/);
+  });
+
+  it("accepts valid sort directions", () => {
+    assert.deepEqual(parseSimpleSort("Name:asc", s), { property: "Name", direction: "ascending" });
+    assert.deepEqual(parseSimpleSort("Name:desc", s), { property: "Name", direction: "descending" });
+    assert.deepEqual(parseSimpleSort("Name", s), { property: "Name", direction: "ascending" });
+  });
+
+  it("parses --prop X=title to allow custom title column", () => {
+    assert.deepEqual(parseColumnSpec("Task=title"), {
+      name: "Task",
+      schema: { title: {} },
+    });
   });
 });

@@ -115,7 +115,13 @@ function renderBlock(block: Block, depth: number, numberedIndex: number): string
     case "code": {
       const lang = block.code.language === "plain text" ? "" : block.code.language;
       const content = block.code.rich_text.map((r) => r.plain_text).join("");
-      return `\`\`\`${lang}\n${content}\n\`\`\``;
+      // Pick a fence longer than any backtick run inside the content so the
+      // round-trip survives code blocks that themselves contain ``` markers.
+      let longest = 0;
+      const matches = content.match(/`+/g);
+      if (matches) for (const m of matches) if (m.length > longest) longest = m.length;
+      const fence = "`".repeat(Math.max(3, longest + 1));
+      return `${fence}${lang}\n${content}\n${fence}`;
     }
     case "divider":
       return "---";

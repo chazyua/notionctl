@@ -1,6 +1,10 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { parseFlags, resolvePageId, getBooleanFlag } from "../../src/commands/shared.js";
+import { writeFile, mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { parseFlags, resolvePageId, getBooleanFlag, readFileText } from "../../src/commands/shared.js";
+import { NotionCliError, ErrorCode } from "../../src/errors.js";
 
 describe("parseFlags", () => {
   it("parses --flag value pairs", () => {
@@ -125,5 +129,31 @@ describe("bug hunt round 4 regressions — parseFlags", () => {
   it("--flag= (empty string) remains allowed", () => {
     const { flags } = parseFlags(["--title="]);
     assert.equal(flags.get("title"), "");
+  });
+});
+
+describe("bug hunt round 6 — readFileText error translation", () => {
+  it("translates ENOENT into a typed USAGE error", async () => {
+    let caught: NotionCliError | undefined;
+    try {
+      await readFileText("/tmp/notionctl-bh6-no-such-file.md", "input markdown");
+    } catch (e) {
+      if (e instanceof NotionCliError) caught = e;
+    }
+    assert.ok(caught, "expected NotionCliError");
+    assert.equal(caught!.code, ErrorCode.USAGE);
+    assert.match(caught!.message, /input markdown not found/);
+  });
+
+  it("returns file contents on success", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "notionctl-bh6-"));
+    try {
+      const path = join(dir, "data.md");
+      await writeFile(path, "hello", "utf8");
+      const content = await readFileText(path, "test");
+      assert.equal(content, "hello");
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 });

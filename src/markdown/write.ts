@@ -141,7 +141,47 @@ export function markdownToBlocks(md: string): Block[] {
         quoteLines.push(raw);
         i++;
       }
-      blocks.push(makeQuoteBlock(quoteLines.join("\n")));
+      // Recurse into the quote body so block-level constructs (lists, nested
+      // code, headings) become structured children of the quote instead of
+      // being collapsed into a flat rich_text run.
+      //
+      // Plain prose: when every inner block is a paragraph we keep the
+      // legacy behavior of joining them into a single rich_text run with
+      // double-newline separators — that matches how the read path renders
+      // multi-paragraph blockquotes and round-trips cleanly.
+      //
+      // Mixed content (lists, code, etc.): emit non-paragraph blocks as
+      // children. Any leading paragraph still becomes the quote's
+      // rich_text body so the visual ordering is preserved.
+      const innerMd = quoteLines.join("\n");
+      const innerBlocks = innerMd.length > 0 ? markdownToBlocks(innerMd) : [];
+      const allParagraphs = innerBlocks.length > 0
+        && innerBlocks.every((b) => b.type === "paragraph");
+      let quoteRichText: RichText[] = [];
+      let quoteChildren: Block[] = [];
+      if (allParagraphs) {
+        // Join all paragraphs with `\n\n` separators in a single rich_text run.
+        const joined = innerBlocks.map((b) =>
+          ((b as { paragraph: { rich_text: RichText[] } }).paragraph.rich_text)
+            .map((r: any) => (r.text?.content ?? r.plain_text ?? ""))
+            .join(""),
+        ).join("\n\n");
+        quoteRichText = markdownToRichText(joined);
+      } else if (innerBlocks.length > 0 && innerBlocks[0]!.type === "paragraph") {
+        quoteRichText = (innerBlocks[0]!.paragraph as { rich_text: RichText[] }).rich_text;
+        quoteChildren = innerBlocks.slice(1);
+      } else {
+        quoteChildren = innerBlocks;
+      }
+      const quoteData: any = { rich_text: quoteRichText, color: "default" };
+      if (quoteChildren.length > 0) quoteData.children = quoteChildren;
+      blocks.push({
+        object: "block",
+        id: "",
+        type: "quote",
+        has_children: quoteChildren.length > 0,
+        quote: quoteData,
+      } as unknown as Block);
       continue;
     }
 
@@ -487,9 +527,12 @@ function parseListSection(lines: string[], startIdx: number): { blocks: Block[];
 function classifyListLine(line: string): Omit<ListItem, "children"> | null {
   const indent = (line.match(/^(\s*)/) ?? ["", ""])[1]!.length;
   const trimmed = line.trim();
-  const todoMatch = /^-\s+\[([ xX])\]\s+(.*)$/.exec(trimmed);
+  // Allow empty to-do bodies (`- [ ]` with no trailing text). The previous
+  // regex required at least one whitespace + content, which silently
+  // demoted bare checkboxes to bulleted list items containing "[x]".
+  const todoMatch = /^-\s+\[([ xX])\](?:\s+(.*))?$/.exec(trimmed);
   if (todoMatch) {
-    return { indent, type: "todo", text: todoMatch[2]!, checked: todoMatch[1]!.toLowerCase() === "x" };
+    return { indent, type: "todo", text: todoMatch[2] ?? "", checked: todoMatch[1]!.toLowerCase() === "x" };
   }
   const bulletMatch = /^[-*+]\s+(.*)$/.exec(trimmed);
   if (bulletMatch) {
@@ -606,16 +649,6 @@ function listItemToBlock(item: ListItem): Block {
     has_children: childBlocks.length > 0,
     numbered_list_item: body,
   } as unknown as Block;
-}
-
-function makeQuoteBlock(text: string): Block {
-  return {
-    object: "block",
-    id: "",
-    type: "quote",
-    has_children: false,
-    quote: { rich_text: markdownToRichText(text), color: "default" },
-  } as Block;
 }
 
 const VALID_LANGUAGES = new Set([

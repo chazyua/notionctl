@@ -216,26 +216,41 @@ async function main(): Promise<void> {
     process.exit(0);
   }
 
-  // Extract --profile before command parsing (it's a global flag)
-  const profileIdx = argv.indexOf("--profile");
-  if (profileIdx !== -1 && argv[profileIdx + 1]) {
-    setActiveProfile(argv[profileIdx + 1]!);
-    argv.splice(profileIdx, 2);
+  // Extract --profile before command parsing (global flag). Accept both
+  // `--profile name` and `--profile=name` forms.
+  const profileSpaceIdx = argv.indexOf("--profile");
+  if (profileSpaceIdx !== -1 && argv[profileSpaceIdx + 1]) {
+    setActiveProfile(argv[profileSpaceIdx + 1]!);
+    argv.splice(profileSpaceIdx, 2);
+  } else {
+    const profileEqIdx = argv.findIndex((a) => a.startsWith("--profile="));
+    if (profileEqIdx !== -1) {
+      setActiveProfile(argv[profileEqIdx]!.slice("--profile=".length));
+      argv.splice(profileEqIdx, 1);
+    }
   }
 
-  const noun = argv[0]!;
-
-  // Handle --help and --version after a noun (e.g. "notionctl page --help")
-  if (argv[1] === "--help" || argv[1] === "-h") {
+  // Help/version may appear anywhere after the noun (e.g. `notionctl page get --help`).
+  // Treat them as terminal flags before dispatching, otherwise the per-command flag
+  // parser tries to consume `--help` as a value-bearing option.
+  if (argv.includes("--help") || argv.includes("-h")) {
     process.stdout.write(printHelp());
     process.exit(0);
   }
-  if (argv[1] === "--version" || argv[1] === "-v") {
+  if (argv.includes("--version") || argv.includes("-v")) {
     process.stdout.write(`notionctl ${VERSION}\n`);
     process.exit(0);
   }
 
+  const noun = argv[0]!;
   const verb = ["whoami", "resolve", "search", "api"].includes(noun) ? undefined : argv[1];
+  // For grouped nouns (page, db, …), surface help when no verb is given so users
+  // discover the available subcommands instead of seeing "Unknown verb: undefined".
+  const NOUNS_WITH_VERBS = new Set(["page", "db", "block", "file", "comment", "user", "auth"]);
+  if (NOUNS_WITH_VERBS.has(noun) && verb === undefined) {
+    process.stdout.write(printHelp());
+    process.exit(0);
+  }
   const rest = verb !== undefined ? argv.slice(2) : argv.slice(1);
 
   try {

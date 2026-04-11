@@ -665,3 +665,53 @@ describe("bug hunt round 4 regressions — write", () => {
   });
 });
 
+describe("bug hunt round 6 — markdown write fixes", () => {
+  it("empty todo - [ ] is parsed as an unchecked to_do, not a bulleted list", () => {
+    const blocks = markdownToBlocks("- [ ]");
+    assert.equal(blocks.length, 1);
+    assert.equal(blocks[0]!.type, "to_do");
+    const td = (blocks[0] as any).to_do;
+    assert.equal(td.checked, false);
+    assert.equal(td.rich_text.length, 0);
+  });
+
+  it("empty todo - [x] is parsed as a checked to_do", () => {
+    const blocks = markdownToBlocks("- [x]");
+    assert.equal(blocks.length, 1);
+    assert.equal(blocks[0]!.type, "to_do");
+    const td = (blocks[0] as any).to_do;
+    assert.equal(td.checked, true);
+    assert.equal(td.rich_text.length, 0);
+  });
+
+  it("blockquote containing a list creates structured children", () => {
+    const md = "> Quote intro\n> - item 1\n> - item 2\n> outro";
+    const blocks = markdownToBlocks(md);
+    assert.equal(blocks.length, 1);
+    assert.equal(blocks[0]!.type, "quote");
+    const q = (blocks[0] as any).quote;
+    // First paragraph stays in rich_text…
+    assert.ok(
+      q.rich_text.some((r: any) => (r.text?.content ?? r.plain_text ?? "").includes("Quote intro")),
+      "leading paragraph in rich_text",
+    );
+    // …and the rest become children, including the bullets.
+    assert.ok(Array.isArray(q.children) && q.children.length > 0, "structured children present");
+    const types = q.children.map((c: any) => c.type);
+    assert.ok(types.includes("bulleted_list_item"), "bullet survives as a child block");
+  });
+
+  it("plain multi-paragraph blockquote still flattens to a single rich_text run", () => {
+    const md = "> First paragraph.\n>\n> Second paragraph.";
+    const blocks = markdownToBlocks(md);
+    assert.equal(blocks.length, 1);
+    assert.equal(blocks[0]!.type, "quote");
+    const q = (blocks[0] as any).quote;
+    const text = q.rich_text.map((r: any) => r.plain_text ?? r.text?.content ?? "").join("");
+    assert.ok(text.includes("First paragraph."));
+    assert.ok(text.includes("Second paragraph."));
+    assert.ok(text.includes("\n\n"), "paragraph break preserved");
+    assert.ok(!q.children, "no structured children for paragraph-only quote");
+  });
+});
+

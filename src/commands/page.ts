@@ -7,7 +7,7 @@
  * (from --from file or stdin) and convert to blocks.
  */
 
-import { readFile, writeFile, rename } from "node:fs/promises";
+import { writeFile, rename } from "node:fs/promises";
 import { resolve, sep } from "node:path";
 import { execFile } from "node:child_process";
 import { extractFrontmatter, reinsertFrontmatter } from "../sync/frontmatter.js";
@@ -17,7 +17,7 @@ import { blocksToMarkdown, markdownToBlocks } from "../markdown/index.js";
 import type { Block } from "../markdown/index.js";
 import { renderProperty } from "../properties/render.js";
 import { stringifyYaml, type YamlObject } from "../utils/yaml.js";
-import { resolvePageId, parseFlags, getBooleanFlag, fetchWith404Hint, readStdinBounded } from "./shared.js";
+import { resolvePageId, parseFlags, getBooleanFlag, fetchWith404Hint, readStdinBounded, readFileText } from "./shared.js";
 import { fetchBlockTree } from "../blocks.js";
 import { NotionCliError, ErrorCode } from "../errors.js";
 import { renderJson, chooseFormat, isStdoutTty, type Format } from "../output.js";
@@ -104,7 +104,7 @@ async function detectParentKey(parentId: string): Promise<"page_id" | "database_
 async function readInputMarkdown(flags: Map<string, string>): Promise<string> {
   const fromFile = flags.get("from");
   // Support --from - as explicit stdin alias (BUG-3 fix)
-  if (fromFile && fromFile !== "-") return readFile(fromFile, "utf8");
+  if (fromFile && fromFile !== "-") return readFileText(fromFile, "input markdown");
   if (fromFile === "-" || !process.stdin.isTTY) return readStdinBounded();
   return "";
 }
@@ -154,8 +154,13 @@ export async function pageCreateCommand(ctx: { args: string[] }): Promise<string
   const firstChunk = blocks.slice(0, 100);
   const overflow = blocks.slice(100);
 
+  // For both regular pages and DB rows, the title property id is always
+  // `title`, so keying the PATCH by that id works even when the user
+  // renamed their title column to something other than the default. For
+  // non-DB pages we use the bare `title:` shorthand the API accepts at
+  // the page level.
   const titleProp = parentKey === "database_id"
-    ? { Name: { title: [{ type: "text", text: { content: title, link: null } }] } }
+    ? { title: { title: [{ type: "text", text: { content: title, link: null } }] } }
     : { title: [{ type: "text", text: { content: title, link: null } }] };
 
   const payload = {
@@ -230,7 +235,7 @@ export async function pageUpdateCommand(ctx: { args: string[] }): Promise<string
 
   if (resolvedTitle) {
     await notionRequest("PATCH", `/pages/${id}`, {
-      properties: { title: [{ type: "text", text: { content: resolvedTitle, link: null } }] },
+      properties: { title: { title: [{ type: "text", text: { content: resolvedTitle, link: null } }] } },
     });
     result["title"] = resolvedTitle;
   }
@@ -535,22 +540,33 @@ export async function pageFindReplaceCommand(ctx: { args: string[] }): Promise<s
   let matchCount = 0;
   let blockCount = 0;
 
-  // Also check/update the page title
+  // Also check/update the page title. For database rows, the title is stored
+  // on whichever property has `type: "title"` (the user may have renamed it);
+  // for regular pages the runs live under the `title` property key directly.
+  // Find the right one before scanning.
   let titleUpdated = false;
   const page = await fetchWith404Hint(
     () => notionRequest<{ properties: Record<string, unknown> }>("GET", `/pages/${id}`),
     `Page ${id}`,
   );
-  const titleProp = page.properties.title as { title?: RichRun[] } | undefined;
-  const titleRuns = titleProp?.title;
-  if (titleRuns && titleRuns.length > 0) {
+  let titleKey: string | null = null;
+  let titleRuns: RichRun[] | undefined;
+  for (const [name, value] of Object.entries(page.properties)) {
+    const prop = value as { type?: string; title?: RichRun[] };
+    if (prop.type === "title" && Array.isArray(prop.title)) {
+      titleKey = name;
+      titleRuns = prop.title;
+      break;
+    }
+  }
+  if (titleRuns && titleRuns.length > 0 && titleKey) {
     const { newRuns, count } = replaceInRichText(titleRuns, findStr, replaceStr);
     if (count > 0) {
       matchCount += count;
       titleUpdated = true;
       if (!getBooleanFlag(flags, "dry-run")) {
         await notionRequest("PATCH", `/pages/${id}`, {
-          properties: { title: newRuns },
+          properties: { [titleKey]: { title: newRuns } },
         });
       }
     }
@@ -669,7 +685,7 @@ export async function pageSyncCommand(ctx: { args: string[] }): Promise<string> 
   if (file !== cwd && !file.startsWith(cwdPrefix)) {
     throw new NotionCliError(ErrorCode.USAGE, `Refusing to sync file outside working directory: ${file}`);
   }
-  const source = await readFile(file, "utf8");
+  const source = await readFileText(file, "sync file");
   const { data: frontmatter, body } = extractFrontmatter(source);
 
   // Fetch remote page metadata for drift detection when notion_id exists
@@ -728,8 +744,10 @@ export async function pageSyncCommand(ctx: { args: string[] }): Promise<string> 
     const { title, syncBody } = extractSyncTitle(frontmatter, body);
     const parentId = resolvePageId(parent);
     const parentKey = await detectParentKey(parentId);
+    // The title property id is always `title`, so the PATCH works for DB rows
+    // whose title column has been renamed, as well as for regular pages.
     const titleProp = parentKey === "database_id"
-      ? { Name: { title: [{ type: "text", text: { content: title, link: null } }] } }
+      ? { title: { title: [{ type: "text", text: { content: title, link: null } }] } }
       : { title: [{ type: "text", text: { content: title, link: null } }] };
     const blocks = markdownToBlocks(syncBody);
     const firstChunk = blocks.slice(0, 100);
@@ -772,7 +790,7 @@ export async function pageSyncCommand(ctx: { args: string[] }): Promise<string> 
     // title source silently clobber the row with "Untitled".
     if (titleExplicit) {
       await notionRequest("PATCH", `/pages/${pageId}`, {
-        properties: { title: [{ type: "text", text: { content: title, link: null } }] },
+        properties: { title: { title: [{ type: "text", text: { content: title, link: null } }] } },
       });
     }
     for (const b of existing.results) {

@@ -7,8 +7,7 @@ import { notionRequest, appendBlocksChunked } from "../http.js";
 import { blocksToMarkdown, markdownToBlocks } from "../markdown/index.js";
 import type { Block } from "../markdown/index.js";
 import { fetchBlockTree } from "../blocks.js";
-import { readFile } from "node:fs/promises";
-import { resolvePageId, parseFlags, getBooleanFlag, fetchWith404Hint, parseJsonObject, readStdinBounded } from "./shared.js";
+import { resolvePageId, parseFlags, getBooleanFlag, fetchWith404Hint, parseJsonObject, readStdinBounded, readFileText } from "./shared.js";
 import { NotionCliError, ErrorCode } from "../errors.js";
 import { renderJson, chooseFormat, isStdoutTty, type Format } from "../output.js";
 
@@ -69,7 +68,7 @@ export async function blockAppendCommand(ctx: { args: string[] }): Promise<strin
   const fromFile = flags.get("from");
   let md = "";
   if (fromFile && fromFile !== "-") {
-    md = await readFile(fromFile, "utf8");
+    md = await readFileText(fromFile, "input markdown");
   } else if (fromFile === "-" || !process.stdin.isTTY) {
     md = await readStdinBounded();
   }
