@@ -60,6 +60,21 @@ export function blocksToMarkdown(blocks: Block[], opts: RenderOptions = {}): str
   return lines.join("\n");
 }
 
+/**
+ * Append a heading/paragraph's `_children` as nested block content after the
+ * block's own line. Notion lets paragraphs and toggleable headings carry
+ * children; leaving them out silently drops content from `page get`. Child
+ * blocks render at the same top-level indent (not as list indentation),
+ * separated by a blank line so downstream block detection still works.
+ */
+function appendChildBlocks(headLine: string, block: Block): string {
+  const children = (block as { _children?: Block[] })._children;
+  if (!children || children.length === 0) return headLine;
+  const rendered = blocksToMarkdown(children);
+  if (rendered.length === 0) return headLine;
+  return `${headLine}\n\n${rendered}`;
+}
+
 function renderNestedList(blocks: Block[], depth: number): string {
   const lines: string[] = [];
   let numIdx = 0;
@@ -77,14 +92,15 @@ function renderBlock(block: Block, depth: number, numberedIndex: number): string
   switch (block.type) {
     case "paragraph": {
       const body = block.paragraph;
-      return richTextToMarkdown(body.rich_text);
+      const text = richTextToMarkdown(body.rich_text);
+      return appendChildBlocks(text, block);
     }
     case "heading_1":
-      return `# ${richTextToMarkdown(block.heading_1?.rich_text ?? [])}`;
+      return appendChildBlocks(`# ${richTextToMarkdown(block.heading_1?.rich_text ?? [])}`, block);
     case "heading_2":
-      return `## ${richTextToMarkdown(block.heading_2?.rich_text ?? [])}`;
+      return appendChildBlocks(`## ${richTextToMarkdown(block.heading_2?.rich_text ?? [])}`, block);
     case "heading_3":
-      return `### ${richTextToMarkdown(block.heading_3?.rich_text ?? [])}`;
+      return appendChildBlocks(`### ${richTextToMarkdown(block.heading_3?.rich_text ?? [])}`, block);
     case "bulleted_list_item": {
       const text = `${indent}- ${richTextToMarkdown(block.bulleted_list_item?.rich_text ?? [])}`;
       const nested = (block as any)._children as Block[] | undefined;
@@ -106,9 +122,14 @@ function renderBlock(block: Block, depth: number, numberedIndex: number): string
       const quoteChildren = (block as any)._children as Block[] | undefined;
       const quotePrefixed = quoteText.split("\n").map((l) => `> ${l}`).join("\n");
       if (quoteChildren && quoteChildren.length > 0) {
+        // Emit a blank `>` line between the quote's own rich_text and its
+        // child blocks so the write path sees an explicit paragraph break
+        // on round-trip. Without this, a second paragraph stored as a child
+        // collapses into the main rich_text on the next sync.
         const childMd = blocksToMarkdown(quoteChildren);
         const childLines = childMd.split("\n").map((l) => `> ${l}`).join("\n");
-        return `${quotePrefixed}\n${childLines}`;
+        const separator = quoteText.length > 0 ? "\n>\n" : "\n";
+        return `${quotePrefixed}${separator}${childLines}`;
       }
       return quotePrefixed;
     }
@@ -139,9 +160,13 @@ function renderBlock(block: Block, depth: number, numberedIndex: number): string
       if (block.callout.color && block.callout.color !== "default" && !colorToAlertType(block.callout.color)) {
         lines.splice(1, 0, `<!-- color: ${block.callout.color} -->`);
       }
-      // Render nested children as continuation lines
+      // Render nested children as continuation lines. Insert a blank `>`
+      // line between the main text and the first child so a child paragraph
+      // stays a separate paragraph on round-trip rather than collapsing
+      // into the callout's rich_text on the next write pass.
       const calloutChildren = (block as any)._children as Block[] | undefined;
       if (calloutChildren && calloutChildren.length > 0) {
+        if (text.length > 0) lines.push(">");
         const childMd = blocksToMarkdown(calloutChildren);
         for (const cl of childMd.split("\n")) {
           lines.push(`> ${cl}`);

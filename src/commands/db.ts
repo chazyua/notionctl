@@ -265,6 +265,31 @@ export async function dbQueryCommand(ctx: { args: string[] }): Promise<string> {
 }
 
 /**
+ * Split a select / multi_select option list while dropping empty segments
+ * (from trailing commas like `Todo,Doing,`) and rejecting duplicates. The
+ * Notion API rejects schemas with duplicate option names, so catching them
+ * client-side gives a clean error instead of a cryptic API failure.
+ */
+function parseOptionList(raw: string, propName: string): Array<{ name: string }> {
+  if (!raw) return [];
+  const seen = new Set<string>();
+  const out: Array<{ name: string }> = [];
+  for (const part of raw.split(",")) {
+    const name = part.trim();
+    if (name.length === 0) continue;
+    if (seen.has(name)) {
+      throw new NotionCliError(
+        ErrorCode.USAGE,
+        `Duplicate option '${name}' in property '${propName}' — select and multi_select option names must be unique.`,
+      );
+    }
+    seen.add(name);
+    out.push({ name });
+  }
+  return out;
+}
+
+/**
  * Parse a column spec like "Status=select:Todo,Doing,Done" into a Notion
  * property schema object. Supports the common types; unusual ones should
  * use --schema-json for the full escape hatch.
@@ -305,11 +330,11 @@ export function parseColumnSpec(spec: string): { name: string; schema: Record<st
     case "files":
       return { name, schema: { files: {} } };
     case "select": {
-      const opts = options ? options.split(",").map((o) => ({ name: o.trim() })) : [];
+      const opts = parseOptionList(options, name);
       return { name, schema: { select: { options: opts } } };
     }
     case "multi_select": {
-      const opts = options ? options.split(",").map((o) => ({ name: o.trim() })) : [];
+      const opts = parseOptionList(options, name);
       return { name, schema: { multi_select: { options: opts } } };
     }
     default:

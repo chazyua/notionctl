@@ -229,6 +229,33 @@ describe("bug hunt round 4 regressions — properties", () => {
     );
   });
 
+  it("empty select value becomes null to clear the property", () => {
+    // Regression: sending `{select: {name: ""}}` made Notion reject the
+    // request. Users who type `--prop Status=` expect the property to be
+    // cleared — send `{select: null}` which is the Notion "clear" shape.
+    assert.deepEqual(parseProperty(schema, "Status", ""), { select: null });
+  });
+
+  it("empty date value becomes null to clear the property", () => {
+    assert.deepEqual(parseProperty(schema, "Due", ""), { date: null });
+  });
+
+  it("date range with missing start is rejected", () => {
+    // Regression: "..2026-04-20" used to send `{date: {start: "", end: "..."}}`
+    // which Notion rejects with a validation error. Reject client-side.
+    assert.throws(
+      () => parseProperty(schema, "Due", "..2026-04-20"),
+      /needs both start and end/i,
+    );
+  });
+
+  it("date range with missing end is rejected", () => {
+    assert.throws(
+      () => parseProperty(schema, "Due", "2026-04-10.."),
+      /needs both start and end/i,
+    );
+  });
+
   it("parsePropertyFlag strips quotes from the key", () => {
     assert.deepEqual(parsePropertyFlag('"Title"=Hello'), { key: "Title", value: "Hello" });
     assert.deepEqual(parsePropertyFlag("'Title'=Hello"), { key: "Title", value: "Hello" });

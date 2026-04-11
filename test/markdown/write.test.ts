@@ -788,3 +788,29 @@ describe("markdownToBlocks — CRLF normalization", () => {
   });
 });
 
+describe("markdownToBlocks — empty-body list items", () => {
+  it("whitespace-only bullet does not infinite-loop", () => {
+    // Regression: `isListLine` matched on trailing whitespace after the
+    // bullet char but `classifyListLine` rejected the line after trim, so
+    // the main loop kept re-entering parseListSection at the same index.
+    // A 5-second hard timer via test runner would catch the hang, but
+    // just finishing at all is enough for this regression.
+    const blocks = markdownToBlocks("- \n- real");
+    assert.equal(blocks.length, 2);
+    assert.equal(blocks[0]!.type, "bulleted_list_item");
+    assert.equal(blocks[1]!.type, "bulleted_list_item");
+  });
+
+  it("single whitespace-only bullet parses as one empty item", () => {
+    const blocks = markdownToBlocks("- ");
+    assert.equal(blocks.length, 1);
+    assert.equal(blocks[0]!.type, "bulleted_list_item");
+  });
+
+  it("whitespace-only numbered item does not infinite-loop", () => {
+    const blocks = markdownToBlocks("1. \n2. real");
+    assert.equal(blocks.length, 2);
+    blocks.forEach((b) => assert.equal(b.type, "numbered_list_item"));
+  });
+});
+

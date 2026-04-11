@@ -111,14 +111,20 @@ export function parseProperty(
       return { number: n };
     }
     case "select":
+      // Empty value clears the property. Sending `{name: ""}` makes Notion's
+      // API reject the request with "Invalid property value" instead of
+      // clearing the select the way users expect.
+      if (value.length === 0) return { select: null };
       return { select: { name: value } };
     case "status":
+      if (value.length === 0) return { status: null };
       return { status: { name: value } };
     case "multi_select": {
       const items = parseList(value);
       return { multi_select: items.map((name) => ({ name })) };
     }
     case "date": {
+      if (value.length === 0) return { date: null };
       const parts = value.split("..");
       if (parts.length > 2) {
         throw new NotionCliError(
@@ -127,7 +133,14 @@ export function parseProperty(
         );
       }
       if (parts.length === 2) {
-        return { date: { start: parts[0]!, end: parts[1]! } };
+        const [start, end] = parts;
+        if (!start || !end) {
+          throw new NotionCliError(
+            ErrorCode.INVALID_PROPERTY,
+            `Property '${key}' date range needs both start and end dates, got: ${value}`,
+          );
+        }
+        return { date: { start, end } };
       }
       return { date: { start: value, end: null } };
     }

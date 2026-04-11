@@ -223,6 +223,42 @@ describe("parseColumnSpec", () => {
   it("rejects spec without =", () => {
     assert.throws(() => parseColumnSpec("JustName"), /Invalid column spec/);
   });
+
+  it("drops trailing-comma empty option from select", () => {
+    // Regression: `Todo,Doing,Done,` used to split into four entries with
+    // an empty-name option at the end, which Notion's API rejects with
+    // "select option name cannot be empty".
+    const result = parseColumnSpec("Status=select:Todo,Doing,Done,");
+    assert.deepEqual((result.schema as any).select.options, [
+      { name: "Todo" },
+      { name: "Doing" },
+      { name: "Done" },
+    ]);
+  });
+
+  it("rejects duplicate select options client-side", () => {
+    // Regression: duplicate options sailed through to the API which
+    // returned a cryptic "Invalid schema" error. Catch it locally.
+    assert.throws(
+      () => parseColumnSpec("Status=select:Todo,Todo,Done"),
+      /Duplicate option 'Todo'/,
+    );
+  });
+
+  it("rejects duplicate multi_select options client-side", () => {
+    assert.throws(
+      () => parseColumnSpec("Tags=multi_select:a,b,a"),
+      /Duplicate option 'a'/,
+    );
+  });
+
+  it("drops whitespace-only entries from multi_select options", () => {
+    const result = parseColumnSpec("Tags=multi_select:one,   ,two");
+    assert.deepEqual((result.schema as any).multi_select.options, [
+      { name: "one" },
+      { name: "two" },
+    ]);
+  });
 });
 
 describe("parseSimpleFilter — additional types", () => {

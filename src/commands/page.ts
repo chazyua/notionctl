@@ -214,14 +214,29 @@ export async function pageUpdateCommand(ctx: { args: string[] }): Promise<string
     throw new NotionCliError(ErrorCode.USAGE, "Usage: notionctl page update <id> [--title <text>] [--from file.md]\nProvide at least --title or --from.");
   }
 
-  // Strip frontmatter and extract title from H1 when --from is used without --title
+  // Strip frontmatter and extract title from H1 when --from is used without
+  // --title. We use the same semantics as `page create`: only strip the
+  // leading H1 if it matches the explicit title; otherwise leave the body
+  // alone so an unrelated H1 isn't silently dropped from the user's content.
   let resolvedTitle = title;
   let newBlocks: ReturnType<typeof markdownToBlocks> | null = null;
   if (hasFrom) {
     const raw = stripFrontmatter(await readInputMarkdown(flags));
-    const { title: h1Title, syncBody } = extractSyncTitle({}, raw);
-    newBlocks = markdownToBlocks(syncBody);
-    if (!resolvedTitle && h1Title !== "Untitled") resolvedTitle = h1Title;
+    let bodyForBlocks = raw;
+    if (!resolvedTitle) {
+      // No explicit --title: use the leading H1 as the new title and strip
+      // it from the body so it isn't duplicated.
+      const { title: h1Title, syncBody } = extractSyncTitle({}, raw);
+      if (h1Title !== "Untitled") {
+        resolvedTitle = h1Title;
+        bodyForBlocks = syncBody;
+      }
+    } else {
+      // --title is explicit: only strip a leading H1 if it matches the
+      // chosen title (same rule as `page create`).
+      bodyForBlocks = stripLeadingTitleHeading(raw, resolvedTitle);
+    }
+    newBlocks = markdownToBlocks(bodyForBlocks);
   }
 
   if (getBooleanFlag(flags, "dry-run")) {

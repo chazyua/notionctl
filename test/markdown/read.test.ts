@@ -43,6 +43,35 @@ describe("blocksToMarkdown basic blocks", () => {
     assert.match(out, /^### Subsubtitle$/m);
   });
 
+  it("heading with nested children renders children after the heading line", () => {
+    // Regression: renderBlock used to emit only the heading line, dropping
+    // any children. For toggleable headings and paragraphs-with-children,
+    // that meant `page get` silently lost content from the markdown output.
+    const child = mkBlock("paragraph", { rich_text: [rt("under the heading")], color: "default" });
+    const parent = mkBlock(
+      "heading_1",
+      { rich_text: [rt("Section")], color: "default", is_toggleable: true },
+      { has_children: true },
+    );
+    (parent as any)._children = [child];
+    const out = blocksToMarkdown([parent]);
+    assert.match(out, /# Section/);
+    assert.match(out, /under the heading/);
+  });
+
+  it("paragraph with nested children renders children after the paragraph", () => {
+    const child = mkBlock("paragraph", { rich_text: [rt("nested body")], color: "default" });
+    const parent = mkBlock(
+      "paragraph",
+      { rich_text: [rt("top level")], color: "default" },
+      { has_children: true },
+    );
+    (parent as any)._children = [child];
+    const out = blocksToMarkdown([parent]);
+    assert.match(out, /top level/);
+    assert.match(out, /nested body/);
+  });
+
   it("bulleted and numbered list items", () => {
     const blocks: Block[] = [
       mkBlock("bulleted_list_item", { rich_text: [rt("bullet one")], color: "default" }),
@@ -429,8 +458,26 @@ describe("blocksToMarkdown — blockquote multi-line (BUG-1 regression)", () => 
     const out = blocksToMarkdown([block as unknown as Block]);
     const lines = out.split("\n");
     for (const line of lines) {
-      assert.ok(line.startsWith("> "), `all lines must start with "> " but got: "${line}"`);
+      // Either `> text` or a bare `>` paragraph-break continuation line.
+      assert.ok(
+        line.startsWith("> ") || line === ">",
+        `all lines must be in the quote (> text or bare >) but got: "${line}"`,
+      );
     }
+  });
+
+  it("quote with child paragraph preserves paragraph break on round-trip", () => {
+    // Regression: the read path used to emit `> main\n> child` back-to-back,
+    // which a subsequent write pass collapses into a single main paragraph
+    // run, losing the second paragraph.
+    const child = mkBlock("paragraph", { rich_text: [rt("Second paragraph")], color: "default" });
+    const block = {
+      ...mkBlock("quote", { rich_text: [rt("First paragraph")], color: "default" }),
+      _children: [child],
+    };
+    const out = blocksToMarkdown([block as unknown as Block]);
+    // Expect an empty `>` line (bare) between the two paragraphs.
+    assert.match(out, /> First paragraph\n>\n> Second paragraph/);
   });
 });
 

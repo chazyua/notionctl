@@ -18,25 +18,35 @@
 import { notionRequest } from "./http.js";
 import type { Block } from "./markdown/types.js";
 
-const LIST_BLOCK_TYPES = new Set([
+/**
+ * Block types we recurse into in "content" mode. This is every block type
+ * that can legitimately carry nested children in Notion AND that our
+ * renderer / find-replace walkers know how to unfold. Headings and
+ * paragraphs are included because `is_toggleable` headings and deeply
+ * appended paragraphs both carry children, and leaving them out silently
+ * drops content from `page get` and misses matches in find-replace.
+ */
+const CONTENT_BLOCK_TYPES = new Set([
   "bulleted_list_item", "numbered_list_item", "to_do", "table",
   "toggle", "callout", "quote",
+  "heading_1", "heading_2", "heading_3",
+  "paragraph",
 ]);
 
-export type FetchBlockTreeMode = "lists-only" | "all";
+export type FetchBlockTreeMode = "content" | "all";
 
 const MAX_RECURSION_DEPTH = 20;
 
 export async function fetchBlockTree(
   blockId: string,
-  mode: FetchBlockTreeMode = "lists-only",
+  mode: FetchBlockTreeMode = "content",
   depth: number = 0,
 ): Promise<Block[]> {
   const res = await notionRequest<{ results: Block[] }>("GET", `/blocks/${blockId}/children`);
   if (depth >= MAX_RECURSION_DEPTH) return res.results;
   for (const block of res.results) {
     if (!block.has_children) continue;
-    const shouldRecurse = mode === "all" || LIST_BLOCK_TYPES.has(block.type);
+    const shouldRecurse = mode === "all" || CONTENT_BLOCK_TYPES.has(block.type);
     if (shouldRecurse) {
       (block as unknown as { _children: Block[] })._children = await fetchBlockTree(block.id, mode, depth + 1);
     }

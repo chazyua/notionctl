@@ -213,7 +213,11 @@ export function markdownToBlocks(md: string): Block[] {
     if (isListLine(line)) {
       const { blocks: listBlocks, nextIdx } = parseListSection(lines, i);
       blocks.push(...listBlocks);
-      i = nextIdx;
+      // Defense in depth: if parseListSection made no progress, force-advance
+      // to avoid an infinite loop on a line that isListLine recognizes but
+      // classifyListLine rejects. The main parser must always consume at
+      // least one line per iteration or hang.
+      i = nextIdx > i ? nextIdx : i + 1;
       continue;
     }
 
@@ -639,9 +643,24 @@ function classifyListLine(line: string): Omit<ListItem, "children"> | null {
   if (todoMatch) {
     return { indent, type: "todo", text: todoMatch[2] ?? "", checked: todoMatch[1]!.toLowerCase() === "x" };
   }
+  // Empty-body bullet (`- `, `*\t`, `+  `) — isListLine() on the untrimmed
+  // line already confirmed it looks like a bullet, so accept it as an empty
+  // item instead of returning null. Returning null used to leave the main
+  // loop stuck at the same index because isListLine kept matching, producing
+  // an infinite loop on innocuous input like "- \n- real".
+  const emptyBulletMatch = /^[-*+]$/.exec(trimmed);
+  if (emptyBulletMatch) {
+    return { indent, type: "bulleted", text: "", checked: false };
+  }
   const bulletMatch = /^[-*+]\s+(.*)$/.exec(trimmed);
   if (bulletMatch) {
     return { indent, type: "bulleted", text: bulletMatch[1]!, checked: false };
+  }
+  // Same guard for numbered lists: `1.` with no body needs to be accepted as
+  // an empty item rather than dropped to null.
+  const emptyNumMatch = /^\d+\.$/.exec(trimmed);
+  if (emptyNumMatch) {
+    return { indent, type: "numbered", text: "", checked: false };
   }
   const numMatch = /^\d+\.\s+(.*)$/.exec(trimmed);
   if (numMatch) {
