@@ -484,7 +484,21 @@ function isAsteriskEmphasis(md: string, idx: number, state: ScannerState): boole
   if (state.bold) return true;
   const prev = idx > 0 ? md[idx - 1]! : "";
   const next = idx < md.length - 1 ? md[idx + 1]! : "";
-  return !/[A-Za-z0-9]/.test(prev) && /[A-Za-z0-9]/.test(next);
+  if (!/[A-Za-z0-9]/.test(prev) && /[A-Za-z0-9]/.test(next)) {
+    // Verify a matching closer exists — without this, "int *ptr = NULL;"
+    // would open italic with no closer, mangling the output.
+    for (let j = idx + 1; j < md.length; j++) {
+      if (md[j] === "\\") { j++; continue; }
+      if (md[j] === "`") {
+        const codeEnd = md.indexOf("`", j + 1);
+        if (codeEnd === -1) break;
+        j = codeEnd;
+        continue;
+      }
+      if (md[j] === "*" && /\S/.test(md[j - 1] ?? "")) return true;
+    }
+  }
+  return false;
 }
 
 /**

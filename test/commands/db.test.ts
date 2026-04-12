@@ -126,8 +126,8 @@ describe("parseSimpleFilter — multi_select", () => {
     assert.throws(() => parseSimpleFilter("Tags>urgent", s), /only supports =/);
   });
 
-  it("backslash-escaped comma is part of the value (BUG-L)", () => {
-    assert.deepEqual(parseSimpleFilter("Tags=tech\\,AI", s), {
+  it("quoted comma is part of the value (BUG-L)", () => {
+    assert.deepEqual(parseSimpleFilter('Tags="tech,AI"', s), {
       property: "Tags",
       multi_select: { contains: "tech,AI" },
     });
@@ -150,7 +150,7 @@ describe("parseSimpleSort (BUG-G)", () => {
   });
 
   it("throws on empty property (e.g. ':desc')", () => {
-    assert.throws(() => parseSimpleSort(":desc", s), /requires a property name/);
+    assert.throws(() => parseSimpleSort(":desc", s), /Invalid sort/);
   });
 });
 
