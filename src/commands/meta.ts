@@ -55,7 +55,7 @@ export async function searchCommand(ctx: CommandContext): Promise<string> {
   }
   const body: Record<string, unknown> = { query };
   if (typeFilter === "page" || typeFilter === "db") {
-    body.filter = { value: typeFilter === "page" ? "page" : "database", property: "object" };
+    body.filter = { value: typeFilter === "page" ? "page" : "data_source", property: "object" };
   }
   const res = await notionRequest<{ results: Array<{ id: string; object: string; url?: string; properties?: Record<string, unknown> }> }>(
     "POST",

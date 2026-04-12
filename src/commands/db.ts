@@ -589,13 +589,16 @@ export async function dbRowUpdateCommand(ctx: { args: string[] }): Promise<strin
   }
   const pageId = resolvePageId(positional[0]!);
   const page = await fetchWith404Hint(
-    () => notionRequest<{ parent: { type: string; database_id?: string } }>("GET", `/pages/${pageId}`),
+    () => notionRequest<{ parent: { type: string; database_id?: string; data_source_id?: string } }>("GET", `/pages/${pageId}`),
     `Database row ${pageId}`,
   );
-  if (page.parent.type !== "database_id" || !page.parent.database_id) {
+  // API 2025-09-03+ returns parent.type = "data_source_id" with both database_id and data_source_id.
+  // Earlier versions use parent.type = "database_id".
+  const parentDbId = page.parent.database_id;
+  if (!parentDbId) {
     throw new NotionCliError(ErrorCode.USAGE, `Page ${pageId} is not a database row. Use 'page update' for non-database pages.`);
   }
-  const { schema } = await fetchSchema(page.parent.database_id);
+  const { schema } = await fetchSchema(parentDbId);
 
   const properties: Record<string, unknown> = {};
   const propJson = flags.get("prop-json");
