@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { extractSyncTitle, stripLeadingTitleHeading, replaceInRichText } from "../../src/commands/page.js";
+import { extractSyncTitle, stripLeadingTitleHeading, stripLeadingTitleH1, replaceInRichText } from "../../src/commands/page.js";
 import { fetchWith404Hint } from "../../src/commands/shared.js";
 import { NotionCliError, ErrorCode } from "../../src/errors.js";
 
@@ -64,6 +64,37 @@ describe("extractSyncTitle", () => {
     ].join("\n");
     const { title } = extractSyncTitle({}, body);
     assert.equal(title, "Real title");
+  });
+});
+
+describe("stripLeadingTitleH1 (BUG-07)", () => {
+  it("strips top-level H1 that matches the title", () => {
+    const body = "# My Title\n\nContent";
+    assert.equal(stripLeadingTitleH1(body, "My Title"), "Content");
+  });
+
+  it("leaves body alone when H1 text differs", () => {
+    const body = "# Different\n\nContent";
+    assert.equal(stripLeadingTitleH1(body, "Expected"), body);
+  });
+
+  it("does not strip H1 inside a fenced code block", () => {
+    const body = "```markdown\n# BUG-07\n```\n\nReal body.";
+    const out = stripLeadingTitleH1(body, "BUG-07");
+    assert.ok(out.includes("# BUG-07"), "H1 inside fence must be preserved");
+  });
+
+  it("does not strip H1 inside a tilde-fenced code block", () => {
+    const body = "~~~\n# BUG-07\n~~~\n\nReal body.";
+    const out = stripLeadingTitleH1(body, "BUG-07");
+    assert.ok(out.includes("# BUG-07"));
+  });
+
+  it("strips real top-level H1 even when a fence follows later", () => {
+    const body = "# Real Title\n\n```\n# not touched\n```\n";
+    const out = stripLeadingTitleH1(body, "Real Title");
+    assert.ok(!out.match(/^# Real Title$/m), "leading H1 removed");
+    assert.ok(out.includes("# not touched"), "fence content untouched");
   });
 });
 

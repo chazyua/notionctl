@@ -84,7 +84,16 @@ export function markdownToBlocks(md: string): Block[] {
   // Normalize CRLF and stray CR to LF so paragraph runs don't carry trailing
   // carriage returns that would bleed into Notion rich_text content.
   const normalized = md.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
-  const lines = normalized.split("\n");
+  const ctx: ParseContext = { warnedHeadingDowngrade: false };
+  return markdownToBlocksInternal(normalized, ctx);
+}
+
+interface ParseContext {
+  warnedHeadingDowngrade: boolean;
+}
+
+function markdownToBlocksInternal(md: string, ctx: ParseContext): Block[] {
+  const lines = md.split("\n");
   const blocks: Block[] = [];
   let i = 0;
 
@@ -204,6 +213,12 @@ export function markdownToBlocks(md: string): Block[] {
     }
     if (/^#{4,6}\s+/.test(trimmed)) {
       const text = trimmed.replace(/^#{4,6}\s+/, "");
+      if (!ctx.warnedHeadingDowngrade) {
+        process.stderr.write(
+          "warning: Notion only supports H1-H3; H4/H5/H6 headings will be written as H3.\n",
+        );
+        ctx.warnedHeadingDowngrade = true;
+      }
       blocks.push(makeHeadingBlock(3, text));
       i++;
       continue;
@@ -323,7 +338,7 @@ export function markdownToBlocks(md: string): Block[] {
       }
       // Parse continuation as markdown to detect child block structure
       const innerMd = continuationLines.join("\n").trim();
-      const childBlocks = innerMd.length > 0 ? markdownToBlocks(innerMd) : [];
+      const childBlocks = innerMd.length > 0 ? markdownToBlocksInternal(innerMd, ctx) : [];
       // First child paragraph becomes the callout's rich_text; rest become children
       let calloutRichText: RichText[] = [];
       let calloutChildren: Block[] = [];
@@ -359,7 +374,7 @@ export function markdownToBlocks(md: string): Block[] {
       if (inlineCloseMatch) {
         const summary = inlineCloseMatch[1] ?? "";
         const bodyText = (inlineCloseMatch[2] ?? "").trim();
-        const childBlocks = bodyText.length > 0 ? markdownToBlocks(bodyText) : [];
+        const childBlocks = bodyText.length > 0 ? markdownToBlocksInternal(bodyText, ctx) : [];
         i++;
         const toggleData: any = { rich_text: markdownToRichText(summary), color: "default" };
         if (childBlocks.length > 0) toggleData.children = childBlocks;
@@ -404,7 +419,7 @@ export function markdownToBlocks(md: string): Block[] {
       i++; // consume </details>
 
       const bodyMd = bodyLines.join("\n").trim();
-      const childBlocks = bodyMd.length > 0 ? markdownToBlocks(bodyMd) : [];
+      const childBlocks = bodyMd.length > 0 ? markdownToBlocksInternal(bodyMd, ctx) : [];
 
       const toggleData: any = {
         rich_text: markdownToRichText(summary),
@@ -540,28 +555,43 @@ export function markdownToBlocks(md: string): Block[] {
 
 /**
  * Parse a standalone image line `![alt](url)` where the URL may contain
- * balanced parentheses (Wikipedia-style links). Returns null if the line
- * does not match the full `![...](...)` shape end-to-end.
+ * balanced parentheses (Wikipedia-style links) and optional title text.
+ * Returns null if the line does not match the full `![...](...)` shape end-to-end.
  */
 function parseImageLine(line: string): { alt: string; url: string } | null {
   if (!line.startsWith("![")) return null;
-  const labelClose = line.indexOf("]", 2);
-  if (labelClose === -1) return null;
-  if (line[labelClose + 1] !== "(") return null;
-  const alt = line.slice(2, labelClose);
-  let depth = 1;
-  let i = labelClose + 2;
-  while (i < line.length && depth > 0) {
-    const ch = line[i]!;
-    if (ch === "\\") { i += 2; continue; }
-    if (ch === "(") depth++;
-    else if (ch === ")") { depth--; if (depth === 0) break; }
+  let i = 2;
+  let bracketDepth = 1;
+  while (i < line.length) {
+    if (line[i] === "\\") { i += 2; continue; }
+    if (line[i] === "[") bracketDepth++;
+    else if (line[i] === "]") {
+      bracketDepth--;
+      if (bracketDepth === 0) break;
+    }
     i++;
   }
-  if (depth !== 0) return null;
-  if (i !== line.length - 1) return null;
-  const url = line.slice(labelClose + 2, i);
-  if (url.length === 0) return null;
+  if (bracketDepth !== 0) return null;
+  const alt = line.slice(2, i);
+  if (line[i + 1] !== "(") return null;
+  let j = i + 2;
+  const urlStart = j;
+  let parenDepth = 1;
+  while (j < line.length) {
+    if (line[j] === "\\") { j += 2; continue; }
+    if (line[j] === "(") parenDepth++;
+    else if (line[j] === ")") {
+      parenDepth--;
+      if (parenDepth === 0) break;
+    }
+    j++;
+  }
+  if (parenDepth !== 0) return null;
+  if (j !== line.length - 1) return null;
+  const inner = line.slice(urlStart, j);
+  // Strip optional title: "<url> \"title\"" or "<url> 'title'"
+  const titleMatch = /^(\S+)\s+(["']).*\2$/.exec(inner);
+  const url = titleMatch ? titleMatch[1]! : inner.trim();
   return { alt, url };
 }
 

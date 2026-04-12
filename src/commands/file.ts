@@ -34,16 +34,28 @@ const NOTION_SUPPORTED_EXTENSIONS = new Set([
 ]);
 
 const MIME_MAP: Record<string, string> = {
+  // Images
   ".png": "image/png",
   ".jpg": "image/jpeg",
   ".jpeg": "image/jpeg",
   ".gif": "image/gif",
   ".webp": "image/webp",
   ".svg": "image/svg+xml",
+  ".bmp": "image/bmp",
+  ".avif": "image/avif",
+  ".tif": "image/tiff",
+  ".tiff": "image/tiff",
+  ".heic": "image/heic",
+  ".apng": "image/apng",
+  ".ico": "image/vnd.microsoft.icon",
+  // Docs
   ".pdf": "application/pdf",
-  ".mp4": "video/mp4",
-  ".mp3": "audio/mpeg",
-  ".wav": "audio/wav",
+  ".doc": "application/msword",
+  ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  ".xls": "application/vnd.ms-excel",
+  ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  ".ppt": "application/vnd.ms-powerpoint",
+  ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
   ".csv": "text/csv",
   ".txt": "text/plain",
   ".json": "application/json",
@@ -54,6 +66,14 @@ const MIME_MAP: Record<string, string> = {
   ".xml": "application/xml",
   ".yaml": "text/yaml",
   ".yml": "text/yaml",
+  // Media
+  ".mp4": "video/mp4",
+  ".webm": "video/webm",
+  ".mov": "video/quicktime",
+  ".mp3": "audio/mpeg",
+  ".wav": "audio/wav",
+  ".m4a": "audio/mp4",
+  ".ogg": "audio/ogg",
 };
 
 export function guessMimeType(filename: string): string {
@@ -106,7 +126,20 @@ export function resolveUploadName(
   return { uploadName: `${base}${ext}.zip`, fallback: true, contentType: "application/zip" };
 }
 
-const IMAGE_TYPES = new Set(["image/png", "image/jpeg", "image/gif", "image/webp", "image/svg+xml"]);
+const IMAGE_TYPES = new Set([
+  "image/png",
+  "image/jpeg",
+  "image/gif",
+  "image/webp",
+  "image/svg+xml",
+  "image/bmp",
+  "image/avif",
+  "image/tiff",
+  "image/heic",
+  "image/apng",
+  "image/vnd.microsoft.icon",
+  "image/x-icon",
+]);
 
 export async function fileUploadCommand(ctx: { args: string[] }): Promise<string> {
   const { flags, positional } = parseFlags(ctx.args);
@@ -147,9 +180,28 @@ export async function fileUploadCommand(ctx: { args: string[] }): Promise<string
   if (fileSize === 0) {
     throw new NotionCliError(ErrorCode.USAGE, `File is empty: ${filePath}`);
   }
-  const MAX_UPLOAD_BYTES = 20 * 1024 * 1024;
-  if (fileSize > MAX_UPLOAD_BYTES) {
-    throw new NotionCliError(ErrorCode.USAGE, `File too large: ${fileSize} bytes (max ${MAX_UPLOAD_BYTES} bytes)`);
+  // BUG-12: the per-workspace limit is authoritative — the CLI hard cap is
+  // just a safety net. Fetch the real limit from /users/me so a user on a
+  // 5 MiB workspace gets a clean pre-flight error instead of a mid-upload failure.
+  const CLI_MAX_UPLOAD_BYTES = 20 * 1024 * 1024;
+  let workspaceLimit = CLI_MAX_UPLOAD_BYTES;
+  try {
+    const me = await notionRequest<{ bot?: { workspace_limits?: { max_file_upload_size_in_bytes?: number } } }>(
+      "GET",
+      "/users/me",
+    );
+    const wsCap = me.bot?.workspace_limits?.max_file_upload_size_in_bytes;
+    if (typeof wsCap === "number" && wsCap > 0) workspaceLimit = wsCap;
+  } catch {
+    // Network failure here is non-fatal — fall back to the CLI cap.
+  }
+  const effectiveLimit = Math.min(CLI_MAX_UPLOAD_BYTES, workspaceLimit);
+  if (fileSize > effectiveLimit) {
+    const mib = (n: number): string => `${(n / (1024 * 1024)).toFixed(1)} MiB`;
+    throw new NotionCliError(
+      ErrorCode.USAGE,
+      `File too large: ${mib(fileSize)} exceeds the workspace limit of ${mib(effectiveLimit)}`,
+    );
   }
 
   if (fallback) {

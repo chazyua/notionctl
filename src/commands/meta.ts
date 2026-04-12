@@ -93,19 +93,12 @@ export async function apiCommand(ctx: CommandContext): Promise<string> {
   if (!VALID_METHODS.has(method)) {
     throw new NotionCliError(ErrorCode.USAGE, `Invalid HTTP method: ${method}. Use GET, POST, PATCH, or DELETE.`);
   }
-  const path = positional[1]!;
+  let path = positional[1]!;
+  // Strip a user-supplied /v1/ prefix — it's baked into the base URL.
+  if (/^\/?v1\//.test(path)) {
+    path = path.replace(/^\/?v1\//, "/");
+  }
 
-  // `api` is the raw escape hatch: it bypasses the schema-aware command
-  // surface and talks to Notion directly. `DELETE` therefore needs the
-  // same confirmation gate as the typed delete commands (page delete,
-  // db row delete, block delete) — a fat-fingered `api DELETE /blocks/X`
-  // should not silently tombstone a block.
-  //
-  // We don't gate PATCH here even though PATCH can trash a page
-  // (`{"in_trash": true}`), because PATCH is also the normal update
-  // verb and the user explicitly supplies the body — they already know
-  // what they're sending. Gating DELETE alone is the minimum viable
-  // guard that matches the rest of the CLI's --yes convention.
   if (method === "DELETE" && !getBooleanFlag(flags, "yes")) {
     throw new NotionCliError(
       ErrorCode.USAGE,

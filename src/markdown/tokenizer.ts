@@ -166,6 +166,87 @@ function linkUrl(run: RichText): string {
   return run.text.link.url;
 }
 
+/**
+ * Find-and-replace across a rich-text array, treating the runs as a single
+ * flat string. A match that spans multiple text runs is replaced with the
+ * annotations of the match's first character. Non-text runs (equation,
+ * mention) are opaque — any match that would cross them is skipped.
+ *
+ * Regression fix: BUG-09 (find-replace could not span run boundaries).
+ */
+export function findReplaceRichText(
+  runs: RichText[],
+  find: string,
+  replace: string,
+): { runs: RichText[]; count: number } {
+  if (find.length === 0) return { runs, count: 0 };
+
+  interface FlatChar {
+    c: string;
+    ref: RichText;
+  }
+  const flat: FlatChar[] = [];
+  for (const run of runs) {
+    const content = run.type === "text" ? run.text.content : run.plain_text;
+    for (const c of content) flat.push({ c, ref: run });
+  }
+
+  let full = flat.map((f) => f.c).join("");
+  let count = 0;
+  let searchStart = 0;
+
+  while (searchStart <= full.length) {
+    const idx = full.indexOf(find, searchStart);
+    if (idx === -1) break;
+
+    let crossesNonText = false;
+    for (let k = idx; k < idx + find.length; k++) {
+      if (flat[k]!.ref.type !== "text") {
+        crossesNonText = true;
+        break;
+      }
+    }
+    if (crossesNonText) {
+      searchStart = idx + 1;
+      continue;
+    }
+
+    const firstRef = flat[idx]!.ref;
+    const replacementChars: FlatChar[] = [];
+    for (const c of replace) replacementChars.push({ c, ref: firstRef });
+    flat.splice(idx, find.length, ...replacementChars);
+    full = flat.map((f) => f.c).join("");
+    searchStart = idx + replace.length;
+    count++;
+  }
+
+  if (count === 0) return { runs, count: 0 };
+
+  const result: RichText[] = [];
+  let i = 0;
+  while (i < flat.length) {
+    const currentRef = flat[i]!.ref;
+    const start = i;
+    while (i < flat.length && flat[i]!.ref === currentRef) i++;
+    if (currentRef.type === "text") {
+      const content = flat.slice(start, i).map((f) => f.c).join("");
+      const linked = (currentRef as TextRichText).text.link;
+      result.push({
+        type: "text",
+        text: { content, link: linked },
+        annotations: { ...currentRef.annotations },
+        plain_text: content,
+        href: currentRef.href,
+      } as RichText);
+    } else {
+      // Non-text runs are never split by find (we skip matches that cross them)
+      result.push(currentRef);
+    }
+  }
+
+  return { runs: result, count };
+}
+
 function runContent(run: RichText): string {
   if (run.type === "text") return run.text.content;
   if (run.type === "equation") return `$${run.equation.expression}$`;
@@ -455,6 +536,9 @@ const MAX_RICH_TEXT_LENGTH = 2000;
 /**
  * Split any rich-text runs whose content exceeds Notion's 2000-character
  * limit into multiple runs with identical annotations.
+ *
+ * Splits at UTF-16 code-unit boundaries but never in the middle of a
+ * surrogate pair (BUG-B), so emoji and astral-plane characters stay intact.
  */
 function splitLongRuns(runs: RichText[]): RichText[] {
   const result: RichText[] = [];
@@ -465,8 +549,16 @@ function splitLongRuns(runs: RichText[]): RichText[] {
     }
     const content = run.text.content;
     const textRun = run as TextRichText;
-    for (let offset = 0; offset < content.length; offset += MAX_RICH_TEXT_LENGTH) {
-      const chunk = content.slice(offset, offset + MAX_RICH_TEXT_LENGTH);
+    let offset = 0;
+    while (offset < content.length) {
+      let end = Math.min(offset + MAX_RICH_TEXT_LENGTH, content.length);
+      if (end < content.length) {
+        const code = content.charCodeAt(end - 1);
+        if (code >= 0xD800 && code <= 0xDBFF) {
+          end -= 1;  // don't split a surrogate pair
+        }
+      }
+      const chunk = content.slice(offset, end);
       result.push({
         type: "text",
         text: {
@@ -477,6 +569,7 @@ function splitLongRuns(runs: RichText[]): RichText[] {
         plain_text: chunk,
         href: textRun.href,
       });
+      offset = end;
     }
   }
   return result;

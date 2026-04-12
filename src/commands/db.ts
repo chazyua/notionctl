@@ -395,10 +395,17 @@ export async function dbCreateCommand(ctx: { args: string[] }): Promise<string> 
     Object.assign(properties, parseJsonObject(raw, "--schema-json"));
   }
 
-  // --prop Name=type[:options]: individual columns added on top
+  // --prop Name=type[:options]: individual columns added on top.
+  // Block --prop Name=<anything-but-title> so the title column is never wiped.
   let titleOverride: string | null = null;
   for (const raw of repeated.get("prop") ?? []) {
     const { name, schema } = parseColumnSpec(raw);
+    if (name === "Name" && !("title" in schema)) {
+      throw new NotionCliError(
+        ErrorCode.USAGE,
+        "Cannot override the 'Name' column with a non-title type — every database needs a title column. Pick a different column name.",
+      );
+    }
     if ((schema as { title?: unknown }).title !== undefined) {
       titleOverride = name;
     }

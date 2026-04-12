@@ -47,24 +47,78 @@ export interface TableInput {
   rows: string[][];
 }
 
+/**
+ * Approximate visual width of a string, ignoring ANSI but counting CJK,
+ * full-width, and emoji code points as 2 cells. Zero-width combining marks
+ * and joiners count as 0. Good enough for human-readable terminal tables.
+ */
+function visualWidth(s: string): number {
+  let w = 0;
+  for (const ch of s) {
+    const code = ch.codePointAt(0)!;
+    if (code === 0) continue;
+    if (
+      (code >= 0x0300 && code <= 0x036F) ||  // combining diacritics
+      (code >= 0x200B && code <= 0x200F) ||  // zero-width spaces / direction
+      code === 0x202A || code === 0x202B || code === 0x202C || code === 0x202D || code === 0x202E ||
+      code === 0xFEFF ||                     // BOM
+      (code >= 0xFE00 && code <= 0xFE0F)     // variation selectors
+    ) {
+      continue;
+    }
+    if (
+      (code >= 0x1100 && code <= 0x115F) ||  // Hangul Jamo
+      (code >= 0x2E80 && code <= 0x9FFF) ||  // CJK (incl. ext A)
+      (code >= 0xA000 && code <= 0xA4CF) ||  // Yi
+      (code >= 0xAC00 && code <= 0xD7A3) ||  // Hangul Syllables
+      (code >= 0xF900 && code <= 0xFAFF) ||  // CJK Compat
+      (code >= 0xFE30 && code <= 0xFE4F) ||  // CJK Compat Forms
+      (code >= 0xFF00 && code <= 0xFF60) ||  // Fullwidth Latin
+      (code >= 0xFFE0 && code <= 0xFFE6) ||  // Fullwidth signs
+      (code >= 0x1F300 && code <= 0x1FAFF) || // Emoji
+      (code >= 0x20000 && code <= 0x3FFFD)   // CJK Ext B-G
+    ) {
+      w += 2;
+    } else {
+      w += 1;
+    }
+  }
+  return w;
+}
+
+function padVisual(s: string, width: number): string {
+  const w = visualWidth(s);
+  if (w >= width) return s;
+  return s + " ".repeat(width - w);
+}
+
+/** Collapse embedded newlines so a cell never spans multiple rows. */
+function sanitizeCell(cell: string | undefined): string {
+  if (!cell) return "";
+  return cell.replace(/\r?\n/g, " ");
+}
+
 export function renderTable(input: TableInput): string {
-  const coerce = (v: unknown): string => v == null ? "" : String(v);
-  const widths = input.columns.map((col, i) => {
-    let w = coerce(col).length;
-    for (const row of input.rows) {
-      const cell = coerce(row[i]);
-      if (cell.length > w) w = cell.length;
+  const sanitizedRows = input.rows.map((row) => row.map(sanitizeCell));
+  const sanitizedColumns = input.columns.map(sanitizeCell);
+
+  const widths = sanitizedColumns.map((col, i) => {
+    let w = visualWidth(col);
+    for (const row of sanitizedRows) {
+      const cell = row[i] ?? "";
+      const cw = visualWidth(cell);
+      if (cw > w) w = cw;
     }
     return w;
   });
 
-  const renderRow = (cells: unknown[]): string =>
-    cells.map((c, i) => coerce(c).padEnd(widths[i] ?? 0)).join("  ").trimEnd();
+  const renderRow = (cells: string[]): string =>
+    cells.map((c, i) => padVisual(c ?? "", widths[i] ?? 0)).join("  ").trimEnd();
 
   const lines: string[] = [];
-  lines.push(renderRow(input.columns));
+  lines.push(renderRow(sanitizedColumns));
   lines.push(widths.map((w) => "─".repeat(w)).join("  "));
-  for (const row of input.rows) {
+  for (const row of sanitizedRows) {
     lines.push(renderRow(row));
   }
   return lines.join("\n");

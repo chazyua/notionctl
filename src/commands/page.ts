@@ -646,7 +646,6 @@ export async function pageFindReplaceCommand(ctx: { args: string[] }): Promise<s
   // Also check/update the page title. For database rows, the title is stored
   // on whichever property has `type: "title"` (the user may have renamed it);
   // for regular pages the runs live under the `title` property key directly.
-  // Find the right one before scanning.
   let titleUpdated = false;
   const page = await fetchWith404Hint(
     () => notionRequest<{ properties: Record<string, unknown> }>("GET", `/pages/${id}`),
@@ -748,6 +747,34 @@ export async function pageDeleteCommand(ctx: { args: string[] }): Promise<string
   return renderJson(res);
 }
 
+/**
+ * Remove the first top-level `# Title` line from `body` when it matches
+ * `title`, skipping any lines inside fenced code blocks. Used by page create
+ * so the explicit `--title` doesn't duplicate an H1 in the body.
+ */
+export function stripLeadingTitleH1(body: string, title: string): string {
+  const lines = body.split("\n");
+  let inFence = false;
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]!;
+    if (/^(`{3,}|~{3,})/.test(line.trim())) {
+      inFence = !inFence;
+      continue;
+    }
+    if (inFence) continue;
+    const match = /^# (.+?)\s*$/.exec(line);
+    if (!match) continue;
+    if (match[1]!.trim() === title) {
+      lines.splice(i, 1);
+      return lines.join("\n").replace(/^\n+/, "");
+    }
+    // First non-matching top-level H1 stops the scan — the title can only
+    // shadow the *first* heading, not one further down.
+    return body;
+  }
+  return body;
+}
+
 export function extractSyncTitle(
   frontmatter: Record<string, unknown>,
   body: string,
@@ -808,10 +835,7 @@ export async function pageSyncCommand(ctx: { args: string[] }): Promise<string> 
     throw new NotionCliError(ErrorCode.USAGE, `Refusing to sync file outside working directory: ${file}`);
   }
   // Resolve symlinks so a symlink inside the working directory cannot be used
-  // to redirect sync state into a file outside the working directory. If the
-  // file does not yet exist, skip the check and let the read/write calls
-  // surface a filesystem error — we only need to block the symlink-redirect
-  // path when the target already exists.
+  // to redirect sync state into a file outside the working directory.
   try {
     const realCwd = await realpath(cwd);
     const realFile = await realpath(file);

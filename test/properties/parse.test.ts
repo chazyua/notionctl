@@ -89,6 +89,18 @@ describe("parseProperty — writable types", () => {
     assert.deepEqual(parseProperty(schema, "Done", "false"), { checkbox: false });
   });
 
+  it("checkbox accepts lenient truthy values", () => {
+    for (const v of ["true", "TRUE", "True", "yes", "YES", "y", "1", "on"]) {
+      assert.deepEqual(parseProperty(schema, "Done", v), { checkbox: true }, `value=${v}`);
+    }
+  });
+
+  it("checkbox accepts lenient falsy values", () => {
+    for (const v of ["false", "FALSE", "False", "no", "NO", "n", "0", "off"]) {
+      assert.deepEqual(parseProperty(schema, "Done", v), { checkbox: false }, `value=${v}`);
+    }
+  });
+
   it("url, email, phone_number", () => {
     assert.deepEqual(parseProperty(schema, "Website", "https://x.com"), { url: "https://x.com" });
     assert.deepEqual(parseProperty(schema, "Email", "a@b.com"), { email: "a@b.com" });
@@ -207,6 +219,13 @@ describe("parseProperty — error cases", () => {
       /checkbox/,
     );
   });
+
+  it("checkbox with unrecognized string throws", () => {
+    assert.throws(
+      () => parseProperty(schema, "Done", "banana"),
+      /must be true\/false/,
+    );
+  });
 });
 
 describe("bug hunt round 4 regressions — properties", () => {
@@ -230,9 +249,6 @@ describe("bug hunt round 4 regressions — properties", () => {
   });
 
   it("empty select value becomes null to clear the property", () => {
-    // Regression: sending `{select: {name: ""}}` made Notion reject the
-    // request. Users who type `--prop Status=` expect the property to be
-    // cleared — send `{select: null}` which is the Notion "clear" shape.
     assert.deepEqual(parseProperty(schema, "Status", ""), { select: null });
   });
 
@@ -241,8 +257,6 @@ describe("bug hunt round 4 regressions — properties", () => {
   });
 
   it("date range with missing start is rejected", () => {
-    // Regression: "..2026-04-20" used to send `{date: {start: "", end: "..."}}`
-    // which Notion rejects with a validation error. Reject client-side.
     assert.throws(
       () => parseProperty(schema, "Due", "..2026-04-20"),
       /needs both start and end/i,

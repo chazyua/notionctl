@@ -353,6 +353,20 @@ describe("image parsing", () => {
     assert.equal(blocks[1]!.type, "image");
     assert.equal(blocks[2]!.type, "paragraph");
   });
+
+  it("image with parens in URL query still parses (BUG-10)", () => {
+    const blocks = markdownToBlocks("![alt](https://example.com/img.png?size=(large))");
+    assert.equal(blocks.length, 1);
+    assert.equal(blocks[0]!.type, "image");
+    assert.equal((blocks[0] as any).image.external.url, "https://example.com/img.png?size=(large)");
+  });
+
+  it("image with optional title text strips the title from URL", () => {
+    const blocks = markdownToBlocks('![alt](https://example.com/pic.jpg "some title")');
+    assert.equal(blocks.length, 1);
+    assert.equal(blocks[0]!.type, "image");
+    assert.equal((blocks[0] as any).image.external.url, "https://example.com/pic.jpg");
+  });
 });
 
 describe("markdownToBlocks — special characters and Unicode", () => {
@@ -612,6 +626,33 @@ describe("markdownToBlocks — callout sidecar color and icon (BH2-4)", () => {
 });
 
 describe("markdownToBlocks — H4/H5/H6 headings downgraded to H3 (BH2-5)", () => {
+  it("writes a stderr warning on downgrade (BUG-08)", () => {
+    const captured: string[] = [];
+    const origWrite = process.stderr.write.bind(process.stderr);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (process.stderr as any).write = (chunk: any) => { captured.push(String(chunk)); return true; };
+    try {
+      markdownToBlocks("#### H4 heading\n\n##### H5\n\n###### H6");
+    } finally {
+      process.stderr.write = origWrite;
+    }
+    assert.ok(captured.some(c => /H[1-3]/.test(c) && /H4|H5|H6|heading/i.test(c)), "warning emitted on stderr");
+  });
+
+  it("does not re-warn within a single call for multiple downgrades", () => {
+    const captured: string[] = [];
+    const origWrite = process.stderr.write.bind(process.stderr);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (process.stderr as any).write = (chunk: any) => { captured.push(String(chunk)); return true; };
+    try {
+      markdownToBlocks("#### a\n\n#### b\n\n##### c");
+    } finally {
+      process.stderr.write = origWrite;
+    }
+    const warnings = captured.filter(c => /H[1-3]/.test(c));
+    assert.equal(warnings.length, 1, "single consolidated warning");
+  });
+
   it("H4 is downgraded to H3", () => {
     const blocks = markdownToBlocks("#### H4 heading");
     assert.equal(blocks.length, 1);

@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { richTextToMarkdown, markdownToRichText } from "../../src/markdown/tokenizer.js";
+import { richTextToMarkdown, markdownToRichText, findReplaceRichText } from "../../src/markdown/tokenizer.js";
 import type { RichText } from "../../src/markdown/types.js";
 import { DEFAULT_ANNOTATIONS } from "../../src/markdown/types.js";
 
@@ -295,6 +295,147 @@ describe("markdownToRichText", () => {
     const runs = markdownToRichText("** **");
     // ** opens bold, space, ** closes bold — produces a bold space
     assert.ok(runs.length >= 1);
+  });
+
+  it("single * surrounded by spaces is literal (math)", () => {
+    // Regression: BUG-02. `1 * 2 = 2` used to toggle italic on every `*`.
+    const runs = markdownToRichText("1 * 2 = 2 and 3 * 4 = 12");
+    assert.ok(runs.every(r => !r.annotations.italic), "no runs should be italic");
+    assert.equal(runs.map(r => r.plain_text).join(""), "1 * 2 = 2 and 3 * 4 = 12");
+  });
+
+  it("unclosed single * is literal (C pointer)", () => {
+    const runs = markdownToRichText("int *ptr = NULL;");
+    assert.ok(runs.every(r => !r.annotations.italic));
+    assert.equal(runs.map(r => r.plain_text).join(""), "int *ptr = NULL;");
+  });
+
+  it("intraword single * is literal (foo*bar with no close)", () => {
+    const runs = markdownToRichText("foo*bar literal");
+    assert.ok(runs.every(r => !r.annotations.italic));
+    assert.equal(runs.map(r => r.plain_text).join(""), "foo*bar literal");
+  });
+
+  it("paired single * still works for italic (foo *italic* bar)", () => {
+    const runs = markdownToRichText("foo *italic* bar");
+    const italic = runs.find(r => r.plain_text === "italic");
+    assert.ok(italic, "italic run exists");
+    assert.equal(italic!.annotations.italic, true);
+  });
+
+  it("dollar sign followed by digit stays literal (currency)", () => {
+    // Regression: BUG-03. $100 or $200 used to be parsed as equation.
+    const runs = markdownToRichText("The cost is $100 or $200.");
+    assert.ok(runs.every(r => r.type === "text"), "no equation runs");
+    assert.equal(runs.map(r => r.plain_text).join(""), "The cost is $100 or $200.");
+  });
+
+  it("dollar sign with whitespace after is literal", () => {
+    const runs = markdownToRichText("$ 5 is still literal");
+    assert.ok(runs.every(r => r.type === "text"));
+  });
+
+  it("tight $x$ is still recognized as equation", () => {
+    const runs = markdownToRichText("When $x > 0$ holds");
+    assert.ok(runs.some(r => r.type === "equation"), "equation must still parse");
+  });
+
+  it("mailto: link is preserved", () => {
+    // Regression: BUG-05. mailto links used to be silently dropped.
+    const runs = markdownToRichText("Email [us](mailto:hi@example.com) please");
+    const linkRun = runs.find(r => r.plain_text === "us");
+    assert.ok(linkRun);
+    if (linkRun!.type === "text") {
+      assert.deepEqual(linkRun!.text.link, { url: "mailto:hi@example.com" });
+    }
+  });
+
+  it("tel: link is preserved", () => {
+    const runs = markdownToRichText("[call](tel:+15551234)");
+    if (runs[0]!.type === "text") {
+      assert.deepEqual(runs[0]!.text.link, { url: "tel:+15551234" });
+    }
+  });
+});
+
+describe("findReplaceRichText (BUG-09)", () => {
+  it("returns 0 matches when find is not present", () => {
+    const runs = [text("Hello world")];
+    const { runs: out, count } = findReplaceRichText(runs, "xyz", "abc");
+    assert.equal(count, 0);
+    assert.equal(out, runs);
+  });
+
+  it("replaces within a single run", () => {
+    const runs = [text("Hello world")];
+    const { runs: out, count } = findReplaceRichText(runs, "world", "everyone");
+    assert.equal(count, 1);
+    assert.equal(out.length, 1);
+    assert.equal((out[0] as any).text.content, "Hello everyone");
+  });
+
+  it("replaces across run boundaries", () => {
+    // "Hel" + "bo"(bold) + "lo rest" → find "bolo" spans runs
+    const runs = [text("Hel"), text("bo", { bold: true }), text("lo rest")];
+    const { runs: out, count } = findReplaceRichText(runs, "bolo", "XXXXXX");
+    assert.equal(count, 1);
+    const joined = out.map(r => r.plain_text).join("");
+    assert.equal(joined, "HelXXXXXX rest");
+  });
+
+  it("replacement inherits the annotation of the first matched char", () => {
+    const runs = [text("Hel"), text("bo", { bold: true }), text("lo rest")];
+    const { runs: out } = findReplaceRichText(runs, "lbo", "Q");
+    // "l" is plain (not bold), so "Q" should be plain
+    const qRun = out.find(r => r.plain_text.includes("Q"));
+    assert.ok(qRun);
+    assert.equal(qRun!.annotations.bold, false);
+  });
+
+  it("replaces multiple occurrences", () => {
+    const runs = [text("foo bar foo baz")];
+    const { count } = findReplaceRichText(runs, "foo", "QUX");
+    assert.equal(count, 2);
+  });
+
+  it("skips matches that cross a non-text run", () => {
+    // Non-text runs (equation) are opaque
+    const equation: RichText = {
+      type: "equation",
+      equation: { expression: "x" },
+      annotations: { ...DEFAULT_ANNOTATIONS },
+      plain_text: "x",
+      href: null,
+    } as unknown as RichText;
+    const runs = [text("ab"), equation, text("cd")];
+    const { count } = findReplaceRichText(runs, "bxc", "ZZZ");
+    assert.equal(count, 0, "match crossing equation must be skipped");
+  });
+});
+
+describe("splitLongRuns (BUG-B)", () => {
+  it("does not split surrogate pairs", () => {
+    // Build a string ending with a surrogate pair exactly at the 2000 boundary.
+    // 1999 ASCII chars + 1 emoji (2 UTF-16 units) = 2001 UTF-16 units, which crosses
+    // the 2000 chunk boundary inside the emoji.
+    const content = "a".repeat(1999) + "🌟" + "b".repeat(500);
+    const runs = markdownToRichText(content);
+    // Verify no chunk ends mid-surrogate by re-joining and checking the emoji survived
+    const rejoined = runs.map(r => r.plain_text).join("");
+    assert.equal(rejoined, content, "content round-trips without corruption");
+    // Each chunk must be valid UTF-16 (no lone surrogates)
+    for (const r of runs) {
+      if (r.type === "text") {
+        for (let i = 0; i < r.text.content.length; i++) {
+          const code = r.text.content.charCodeAt(i);
+          if (code >= 0xD800 && code <= 0xDBFF) {
+            const next = r.text.content.charCodeAt(i + 1);
+            assert.ok(next >= 0xDC00 && next <= 0xDFFF, "high surrogate must be followed by low surrogate in same chunk");
+            i++;
+          }
+        }
+      }
+    }
   });
 
   it("emoji in text passes through unchanged", () => {
