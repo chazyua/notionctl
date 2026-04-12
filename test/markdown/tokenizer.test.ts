@@ -647,4 +647,28 @@ describe("bug hunt round 4 regressions", () => {
     assert.ok(linkRun);
     assert.equal((linkRun as any).text.link.url, "tel:+15551234567");
   });
+
+  it("strips CommonMark link title from URL", () => {
+    // Regression: `[label](url "title")` passed the whole `url "title"` as
+    // the URL to Notion, which rejects it as invalid. CommonMark titles
+    // are metadata-only and Notion has no link-title field, so we strip them.
+    const runs = markdownToRichText('[docs](https://example.com "API Reference")');
+    const linkRun = runs.find(r => (r as any).text?.link?.url);
+    assert.ok(linkRun, "link run exists");
+    assert.equal((linkRun as any).text.link.url, "https://example.com");
+  });
+
+  it("strips single-quoted link title", () => {
+    const runs = markdownToRichText("[label](https://example.com 'Title')");
+    const linkRun = runs.find(r => (r as any).text?.link?.url);
+    assert.ok(linkRun);
+    assert.equal((linkRun as any).text.link.url, "https://example.com");
+  });
+
+  it("preserves URL that only looks like it has a title but doesn't", () => {
+    const runs = markdownToRichText("[label](https://example.com/path)");
+    const linkRun = runs.find(r => (r as any).text?.link?.url);
+    assert.ok(linkRun);
+    assert.equal((linkRun as any).text.link.url, "https://example.com/path");
+  });
 });

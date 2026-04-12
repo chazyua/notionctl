@@ -83,4 +83,23 @@ describe("renderProperty", () => {
       7,
     );
   });
+
+  it("unique_id with prefix includes hyphen separator", () => {
+    // Regression: rendered "TASK42" but Notion's UI shows "TASK-42".
+    assert.equal(
+      renderProperty({ type: "unique_id", unique_id: { prefix: "TASK", number: 42 } }),
+      "TASK-42",
+    );
+  });
+
+  it("unique_id without prefix renders just the number", () => {
+    assert.equal(
+      renderProperty({ type: "unique_id", unique_id: { number: 7 } }),
+      "7",
+    );
+  });
+
+  it("unique_id null returns null", () => {
+    assert.equal(renderProperty({ type: "unique_id", unique_id: null }), null);
+  });
 });

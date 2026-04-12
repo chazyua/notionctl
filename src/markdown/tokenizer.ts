@@ -319,7 +319,9 @@ export function markdownToRichText(md: string): RichText[] {
       continue;
     }
 
-    // Link [text](url)
+    // Link [text](url) — CommonMark also supports [text](url "title") where
+    // the title is surrounded by double-quotes, single-quotes, or parens.
+    // Notion's API doesn't have a title field on links, so we strip it.
     if (c === "[") {
       flush();
       const linkEnd = findLinkEnd(md, i);
@@ -329,7 +331,7 @@ export function markdownToRichText(md: string): RichText[] {
         const urlStart = linkEnd.urlStart;
         const urlEnd = linkEnd.urlEnd;
         const label = md.slice(labelStart, labelEnd);
-        const url = md.slice(urlStart, urlEnd);
+        const url = stripLinkTitle(md.slice(urlStart, urlEnd));
         if (url.length > 0 && !isAllowedLinkUrl(url) && warnHandler) {
           warnHandler(
             `notionctl: link URL '${url}' has an unsupported scheme — kept label '${label}' as plain text. Notion accepts: https, http, mailto, tel, notion, ftp, sms.`,
@@ -347,6 +349,31 @@ export function markdownToRichText(md: string): RichText[] {
 
   flush();
   return splitLongRuns(runs);
+}
+
+/**
+ * Strip an optional CommonMark link title from the raw URL portion of a
+ * `[text](url "title")` construct. The title can be wrapped in `"..."`,
+ * `'...'`, or `(...)`. We trim trailing whitespace + the title if present,
+ * returning just the URL.
+ */
+function stripLinkTitle(raw: string): string {
+  const trimmed = raw.trimEnd();
+  if (trimmed.length === 0) return raw;
+  const last = trimmed[trimmed.length - 1]!;
+  if (last === '"' || last === "'") {
+    const open = trimmed.lastIndexOf(last, trimmed.length - 2);
+    if (open > 0 && /\s/.test(trimmed[open - 1]!)) {
+      return trimmed.slice(0, open).trimEnd();
+    }
+  }
+  if (last === ")") {
+    const open = trimmed.lastIndexOf("(", trimmed.length - 2);
+    if (open > 0 && /\s/.test(trimmed[open - 1]!)) {
+      return trimmed.slice(0, open).trimEnd();
+    }
+  }
+  return raw;
 }
 
 function isMarkerChar(c: string): boolean {

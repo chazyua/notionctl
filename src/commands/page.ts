@@ -829,6 +829,7 @@ export async function pageSyncCommand(ctx: { args: string[] }): Promise<string> 
   // Fetch remote page metadata for drift detection when notion_id exists
   let remoteEditedAt: string | undefined;
   let validatedNotionId: string | undefined;
+  let remoteFetchFailed = false;
   if (typeof frontmatter.notion_id === "string" && frontmatter.notion_id) {
     validatedNotionId = resolvePageId(frontmatter.notion_id);
     try {
@@ -838,7 +839,7 @@ export async function pageSyncCommand(ctx: { args: string[] }): Promise<string> 
       );
       remoteEditedAt = remotePage.last_edited_time;
     } catch {
-      // If fetch fails (trashed page), proceed — the CHANGED path will give a better error
+      remoteFetchFailed = true;
     }
   }
 
@@ -854,6 +855,11 @@ export async function pageSyncCommand(ctx: { args: string[] }): Promise<string> 
   }
 
   if (state === SyncState.UNCHANGED) {
+    if (remoteFetchFailed && validatedNotionId) {
+      process.stderr.write(
+        `notionctl: notion_id ${validatedNotionId} could not be fetched — the page may have been trashed or the integration disconnected. Local file is unchanged so no action was taken, but the remote may no longer exist. Remove notion_id from frontmatter and sync again to recreate if needed.\n`,
+      );
+    }
     return renderJson({ file, state, message: "no changes to sync" });
   }
 

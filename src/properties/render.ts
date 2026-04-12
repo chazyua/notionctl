@@ -55,8 +55,12 @@ export function renderProperty(prop: any): YamlValue {
       return prop.created_by ? `user:${prop.created_by.id}` : null;
     case "last_edited_by":
       return prop.last_edited_by ? `user:${prop.last_edited_by.id}` : null;
-    case "unique_id":
-      return prop.unique_id ? `${prop.unique_id.prefix ?? ""}${prop.unique_id.number ?? ""}` : null;
+    case "unique_id": {
+      if (!prop.unique_id) return null;
+      const prefix = prop.unique_id.prefix ?? "";
+      const number = prop.unique_id.number ?? "";
+      return prefix ? `${prefix}-${number}` : String(number);
+    }
     default:
       return null;
   }
