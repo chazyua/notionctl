@@ -19,7 +19,7 @@ import { VERSION } from "./version.js";
 import { setActiveProfile } from "./auth.js";
 import { setMarkdownWarnHandler } from "./markdown/write.js";
 import { setTokenizerWarnHandler } from "./markdown/tokenizer.js";
-import { setDebugMode, setVerboseMode, getRequestCount } from "./http.js";
+import { setDebugMode, setVerboseMode, isVerboseMode, getRequestCount } from "./http.js";
 
 type CommandHandler = (ctx: { args: string[] }) => Promise<string>;
 
@@ -280,7 +280,7 @@ async function main(): Promise<void> {
     if (output && output.length > 0) {
       process.stdout.write(output + (output.endsWith("\n") ? "" : "\n"));
     }
-    if (getRequestCount() > 0 && rest.includes("--verbose")) {
+    if (getRequestCount() > 0 && isVerboseMode()) {
       process.stderr.write(`notionctl: ${getRequestCount()} API request(s)\n`);
     }
     process.exit(0);

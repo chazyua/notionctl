@@ -261,6 +261,8 @@ export async function pageUpdateCommand(ctx: { args: string[] }): Promise<string
     // cannot be recreated from the markdown representation. The user either
     // re-uploads the files themselves or uses `page append` for additive
     // changes that don't rewrite the page.
+    // Note: only top-level hosted media blocks are detected; nested blocks
+    // (inside toggles, callouts, columns) are deleted without this warning.
     const hostedMedia = existing.results.filter((b) => {
       const t = b.type;
       if (t !== "image" && t !== "video" && t !== "file" && t !== "pdf") return false;
@@ -529,6 +531,7 @@ export function replaceInRichText(
   findStr: string,
   replaceStr: string,
 ): { newRuns: RichRun[]; count: number } {
+  if (findStr.length === 0) return { newRuns: runs, count: 0 };
   const newRuns: RichRun[] = [];
   let totalCount = 0;
   let i = 0;

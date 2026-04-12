@@ -369,7 +369,7 @@ function stripLinkTitle(raw: string): string {
   }
   if (last === ")") {
     const open = trimmed.lastIndexOf("(", trimmed.length - 2);
-    if (open > 0 && /\s/.test(trimmed[open - 1]!)) {
+    if (open > 0 && /\s/.test(trimmed[open - 1]!) && !trimmed.slice(open + 1, -1).includes("(")) {
       return trimmed.slice(0, open).trimEnd();
     }
   }

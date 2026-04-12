@@ -230,10 +230,8 @@ function renderBlock(block: Block, depth: number, numberedIndex: number): string
       // that Notion's own API refuses to re-ingest, so round-tripping them
       // through page update creates an empty block. Emit only the sidecar
       // comment so the write path can silently drop them and warn.
-      const hasExternalUrl = !!media?.external?.url;
-      const isHosted = media?.type === "file" || media?.type === "file_upload"
-        || (!hasExternalUrl && !!media?.file?.url)
-        || (!hasExternalUrl && !media?.file?.url);
+      const isExternal = media?.type === "external" && !!media?.external?.url;
+      const isHosted = !isExternal;
       if (isHosted) {
         const name = media?.name ?? "";
         const nameLabel = name ? ` name=${JSON.stringify(name)}` : "";

@@ -5,8 +5,10 @@
  * tree manually. This module is the single place that does that.
  *
  * Two modes:
- *   - "lists-only" (default): recurses only into list blocks, which is
- *     what the markdown read path needs to render nested lists.
+ *   - "content" (default): recurses into list blocks, toggleable
+ *     headings, paragraphs with children, and other content-bearing
+ *     block types — everything the markdown read path and
+ *     find-replace walker need to see.
  *   - "all": recurses into every block with has_children, used by
  *     `block children --recursive` to dump a full subtree.
  *

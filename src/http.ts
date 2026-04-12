@@ -43,10 +43,12 @@ let tokenProvider: TokenProvider = loadToken;
 let cachedToken: string | undefined;
 
 let debugMode = false;
+let verboseMode = false;
 let requestCount = 0;
 
 export function setDebugMode(on: boolean): void { debugMode = on; }
-export function setVerboseMode(_on: boolean): void { /* request count is always tracked; verbose flag is checked in index.ts */ }
+export function setVerboseMode(on: boolean): void { verboseMode = on; }
+export function isVerboseMode(): boolean { return verboseMode; }
 export function getRequestCount(): number { return requestCount; }
 
 export function setTokenProvider(provider: TokenProvider): void {
@@ -58,6 +60,7 @@ export function resetForTesting(): void {
   tokenProvider = loadToken;
   cachedToken = undefined;
   debugMode = false;
+  verboseMode = false;
   requestCount = 0;
 }
 
