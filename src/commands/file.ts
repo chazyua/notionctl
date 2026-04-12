@@ -156,8 +156,12 @@ export async function fileUploadCommand(ctx: { args: string[] }): Promise<string
   let fileSize: number;
   try {
     const st = await stat(filePath);
+    if (!st.isFile()) {
+      throw new NotionCliError(ErrorCode.USAGE, `Not a regular file: ${filePath}`);
+    }
     fileSize = st.size;
-  } catch {
+  } catch (err) {
+    if (err instanceof NotionCliError) throw err;
     throw new NotionCliError(ErrorCode.USAGE, `File not found: ${filePath}`);
   }
 

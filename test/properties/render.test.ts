@@ -103,3 +103,47 @@ describe("renderProperty", () => {
     assert.equal(renderProperty({ type: "unique_id", unique_id: null }), null);
   });
 });
+
+describe("BUG-H regression: rollup array flattens nested values to strings", () => {
+  it("rollup array of numbers produces string array", () => {
+    const result = renderProperty({
+      type: "rollup",
+      rollup: {
+        type: "array",
+        array: [
+          { type: "number", number: 1 },
+          { type: "number", number: 2 },
+          { type: "number", number: 3 },
+        ],
+      },
+    });
+    assert.deepEqual(result, ["1", "2", "3"]);
+  });
+
+  it("rollup array of multi_select joins each item", () => {
+    const result = renderProperty({
+      type: "rollup",
+      rollup: {
+        type: "array",
+        array: [
+          { type: "multi_select", multi_select: [{ name: "a" }, { name: "b" }] },
+          { type: "multi_select", multi_select: [{ name: "c" }] },
+        ],
+      },
+    });
+    assert.deepEqual(result, ["a, b", "c"]);
+  });
+
+  it("rollup array with null items produces empty strings", () => {
+    const result = renderProperty({
+      type: "rollup",
+      rollup: {
+        type: "array",
+        array: [
+          { type: "number", number: null },
+        ],
+      },
+    });
+    assert.deepEqual(result, [""]);
+  });
+});

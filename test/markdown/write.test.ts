@@ -855,3 +855,66 @@ describe("markdownToBlocks — empty-body list items", () => {
   });
 });
 
+describe("BUG-C regression: notion-table has_column_header=false round-trip", () => {
+  it("consumes the sidecar comment and sets has_column_header to false", () => {
+    const md = [
+      "<!-- notion-table: has_column_header=false -->",
+      "|   |   |",
+      "| --- | --- |",
+      "| A1 | B1 |",
+      "| A2 | B2 |",
+    ].join("\n");
+    const blocks = markdownToBlocks(md);
+    assert.equal(blocks.length, 1);
+    const table = blocks[0] as unknown as { type: string; table: { has_column_header: boolean; children: unknown[] } };
+    assert.equal(table.type, "table");
+    assert.equal(table.table.has_column_header, false);
+    // The synthetic empty header row should be skipped — only data rows remain
+    assert.equal(table.table.children.length, 2);
+  });
+
+  it("table without the sidecar comment still gets has_column_header=true", () => {
+    const md = [
+      "| Col A | Col B |",
+      "| --- | --- |",
+      "| A1 | B1 |",
+    ].join("\n");
+    const blocks = markdownToBlocks(md);
+    const table = blocks[0] as unknown as { table: { has_column_header: boolean; children: unknown[] } };
+    assert.equal(table.table.has_column_header, true);
+    assert.equal(table.table.children.length, 2); // header + 1 data row
+  });
+});
+
+describe("BUG-K regression: code block closing fence respects CommonMark indentation", () => {
+  it("indented backticks (4+ spaces) inside a code block are treated as content, not a closing fence", () => {
+    const md = [
+      "```",
+      "some code",
+      "    ```",
+      "more code",
+      "```",
+    ].join("\n");
+    const blocks = markdownToBlocks(md);
+    assert.equal(blocks.length, 1);
+    assert.equal(blocks[0]!.type, "code");
+    const code = (blocks[0] as unknown as { code: { rich_text: Array<{ text: { content: string } }> } }).code;
+    const content = code.rich_text[0]!.text.content;
+    assert.ok(content.includes("    ```"), "indented backticks should be preserved as content");
+    assert.ok(content.includes("more code"), "content after indented backticks should be included");
+  });
+
+  it("closing fence with 0-3 spaces of indentation still closes the block", () => {
+    const md = [
+      "```",
+      "some code",
+      "   ```",
+      "after block",
+    ].join("\n");
+    const blocks = markdownToBlocks(md);
+    assert.equal(blocks.length, 2);
+    assert.equal(blocks[0]!.type, "code");
+    assert.equal(blocks[1]!.type, "paragraph");
+  });
+});
+

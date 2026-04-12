@@ -208,7 +208,7 @@ export async function pageUpdateCommand(ctx: { args: string[] }): Promise<string
   }
   const id = resolvePageId(positional[0]!);
   const title = flags.get("title");
-  const hasFrom = !!flags.get("from");
+  const hasFrom = !!flags.get("from") || !process.stdin.isTTY;
 
   if (!title && !hasFrom) {
     throw new NotionCliError(ErrorCode.USAGE, "Usage: notionctl page update <id> [--title <text>] [--from file.md]\nProvide at least --title or --from.");

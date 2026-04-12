@@ -114,6 +114,9 @@ export async function apiCommand(ctx: CommandContext): Promise<string> {
 
   let body: unknown;
   const bodyFlag = flags.get("body");
+  if (bodyFlag && method === "GET") {
+    throw new NotionCliError(ErrorCode.USAGE, `GET requests cannot have a --body. Did you mean POST?`);
+  }
   if (bodyFlag) {
     let content: string;
     if (bodyFlag.startsWith("@")) {

@@ -47,3 +47,29 @@ describe("bug hunt round 6 audit — api command DELETE gate", () => {
     assert.match(caught!.message, /Usage:/);
   });
 });
+
+describe("BUG-J regression: api GET with --body throws USAGE error", () => {
+  it("rejects --body on GET request", async () => {
+    let caught: NotionCliError | undefined;
+    try {
+      await apiCommand({ args: ["GET", "/users/me", "--body", '{"test":true}'] });
+    } catch (e) {
+      if (e instanceof NotionCliError) caught = e;
+    }
+    assert.ok(caught, "expected NotionCliError");
+    assert.equal(caught!.code, ErrorCode.USAGE);
+    assert.match(caught!.message, /GET requests cannot have a --body/);
+  });
+
+  it("rejects --body on get (lowercase) too — method is upcased before the guard", async () => {
+    let caught: NotionCliError | undefined;
+    try {
+      await apiCommand({ args: ["get", "/users/me", "--body", '{}'] });
+    } catch (e) {
+      if (e instanceof NotionCliError) caught = e;
+    }
+    assert.ok(caught, "expected NotionCliError");
+    assert.equal(caught!.code, ErrorCode.USAGE);
+    assert.match(caught!.message, /GET requests cannot have a --body/);
+  });
+});

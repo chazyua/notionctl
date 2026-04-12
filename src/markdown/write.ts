@@ -96,6 +96,7 @@ function markdownToBlocksInternal(md: string, ctx: ParseContext): Block[] {
   const lines = md.split("\n");
   const blocks: Block[] = [];
   let i = 0;
+  let tableNoHeader = false;
 
   while (i < lines.length) {
     const line = lines[i]!;
@@ -117,7 +118,7 @@ function markdownToBlocksInternal(md: string, ctx: ParseContext): Block[] {
         : new RegExp(`^~{${fenceLen},}\\s*$`);
       const codeLines: string[] = [];
       i++;
-      while (i < lines.length && !closePat.test(lines[i]!.trim())) {
+      while (i < lines.length && !closePat.test(lines[i]!.replace(/^ {0,3}/, ""))) {
         codeLines.push(lines[i]!);
         i++;
       }
@@ -495,19 +496,32 @@ function markdownToBlocksInternal(md: string, ctx: ParseContext): Block[] {
       continue;
     }
 
+    // Sidecar comment for tables without a column header (emitted by read path).
+    // Consume it and let the following table inherit has_column_header=false.
+    if (/^<!--\s*notion-table:\s*has_column_header=false\s*-->$/.test(trimmed)) {
+      tableNoHeader = true;
+      i++;
+      continue;
+    }
+
     // GFM table — separator row may have alignment colons: | :--- | ---: | :---: |
     if (/^\|.*\|$/.test(trimmed) && i + 1 < lines.length && /^\|\s*:?---/.test(lines[i + 1]!.trim())) {
+      const noHeader = tableNoHeader;
+      tableNoHeader = false;
       const headerCells = parseTableRow(trimmed);
       i += 2;  // skip header + separator
-      const rowBlocks: Block[] = [
-        {
+      const rowBlocks: Block[] = [];
+      // When has_column_header=false, the header row is a synthetic empty
+      // row emitted by the read path — skip it from the block list.
+      if (!noHeader) {
+        rowBlocks.push({
           object: "block",
           id: "",
           type: "table_row",
           has_children: false,
           table_row: { cells: headerCells.map((c) => markdownToRichText(c)) },
-        } as unknown as Block,
-      ];
+        } as unknown as Block);
+      }
       while (i < lines.length && /^\|.*\|$/.test(lines[i]!.trim())) {
         let rowCells = parseTableRow(lines[i]!.trim());
         // Normalize cell count to match header width (Notion API requires uniform width)
@@ -529,7 +543,7 @@ function markdownToBlocksInternal(md: string, ctx: ParseContext): Block[] {
         has_children: true,
         table: {
           table_width: headerCells.length,
-          has_column_header: true,
+          has_column_header: !noHeader,
           has_row_header: false,
           children: rowBlocks,
         },

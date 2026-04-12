@@ -101,7 +101,7 @@ function parseValue(raw: string): YamlValue {
     return unescapeDoubleQuoted(raw.slice(1, -1));
   }
   if (raw.length >= 2 && raw.startsWith("'") && raw.endsWith("'")) {
-    return raw.slice(1, -1).replace(/\\'/g, "'");
+    return raw.slice(1, -1).replace(/''/g, "'");
   }
 
   // Flow sequence

@@ -169,7 +169,7 @@ export function parseProperty(
       }
       if (prefix[1] === "url") {
         const url = stripQuotes(value.slice(4));
-        const name = url.split("/").pop() ?? "file";
+        const name = url.split("/").pop() || "file";
         return { files: [{ name, external: { url } }] };
       }
       throw new NotionCliError(

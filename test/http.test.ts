@@ -389,3 +389,31 @@ describe("appendBlocksChunked", () => {
     assert.deepEqual(capturedPositions[1], { type: "after_block", after_block: { id: "last-of-chunk-1" } });
   });
 });
+
+describe("BUG-L regression: exchangeOAuthCode respects timeout", () => {
+  let originalFetch: typeof globalThis.fetch;
+
+  before(() => {
+    originalFetch = globalThis.fetch;
+  });
+
+  after(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  it("passes an AbortSignal to the fetch call", async () => {
+    let capturedSignal: AbortSignal | undefined;
+    globalThis.fetch = mock.fn(async (_url: string | URL, init?: RequestInit) => {
+      capturedSignal = init?.signal as AbortSignal | undefined;
+      return new Response(
+        JSON.stringify({ access_token: "ntn_test_abc" }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }) as typeof globalThis.fetch;
+
+    const { exchangeOAuthCode } = await import("../src/http.js");
+    await exchangeOAuthCode("cid", "csecret", "code123", "http://localhost:9876/callback");
+    assert.ok(capturedSignal, "AbortSignal must be passed to fetch");
+    assert.equal(capturedSignal!.aborted, false, "signal should not be aborted on success");
+  });
+});

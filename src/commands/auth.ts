@@ -85,7 +85,7 @@ export async function authDoctorCommand(_ctx: { args: string[] }): Promise<strin
     try {
       const st = await stat(getConfigDir());
       const mode = st.mode & 0o777;
-      if (mode <= 0o700) {
+      if ((mode & 0o077) === 0) {
         checks.push({ check: "Config dir permissions", status: "pass", detail: `mode 0${mode.toString(8)}` });
       } else {
         checks.push({

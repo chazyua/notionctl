@@ -211,3 +211,21 @@ describe("stringifyYaml", () => {
     assert.equal((parsed as Record<string, unknown>).notion_token, undefined);
   });
 });
+
+describe("BUG-I regression: YAML single-quoted string escaping", () => {
+  it("unescapes doubled single quotes per YAML spec", () => {
+    // YAML spec: 'O''Brien' → O'Brien
+    const result = parseYaml("name: 'O''Brien'");
+    assert.deepEqual(result, { name: "O'Brien" });
+  });
+
+  it("single-quoted string without escapes", () => {
+    const result = parseYaml("name: 'simple'");
+    assert.deepEqual(result, { name: "simple" });
+  });
+
+  it("single-quoted string with multiple doubled quotes", () => {
+    const result = parseYaml("name: 'it''s a ''test'''");
+    assert.deepEqual(result, { name: "it's a 'test'" });
+  });
+});

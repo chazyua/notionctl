@@ -429,3 +429,26 @@ describe("bug hunt round 6 — db sort + column", () => {
     });
   });
 });
+
+describe("BUG-E regression: parseSimpleSort rejects extra colon segments", () => {
+  const s = schema({ Priority: { type: "number" } });
+
+  it("rejects sort with too many colons", () => {
+    assert.throws(
+      () => parseSimpleSort("Priority:desc:extra", s),
+      /too many colons/,
+    );
+  });
+
+  it("rejects three-segment sort", () => {
+    assert.throws(
+      () => parseSimpleSort("Priority:asc:reversed", s),
+      /too many colons/,
+    );
+  });
+
+  it("still accepts valid one and two-segment sorts", () => {
+    assert.deepEqual(parseSimpleSort("Priority", s), { property: "Priority", direction: "ascending" });
+    assert.deepEqual(parseSimpleSort("Priority:desc", s), { property: "Priority", direction: "descending" });
+  });
+});

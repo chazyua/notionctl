@@ -80,7 +80,12 @@ function renderRollup(r: any): YamlValue {
   if (r.type === "number") return r.number ?? null;
   if (r.type === "date") return r.date?.start ?? null;
   if (r.type === "array") {
-    return ((r.array ?? []).map((item: any) => renderProperty(item)) as unknown) as YamlValue;
+    return (r.array ?? []).map((item: any) => {
+      const v = renderProperty(item);
+      if (v === null || v === undefined) return "";
+      if (Array.isArray(v)) return v.join(", ");
+      return String(v);
+    });
   }
   return null;
 }

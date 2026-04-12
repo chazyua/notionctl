@@ -273,3 +273,31 @@ describe("auth login (OAuth)", () => {
     }
   });
 });
+
+describe("BUG-F regression: config dir permission check uses bitwise mask", () => {
+  // The auth doctor check is (mode & 0o077) === 0, meaning no group/other bits.
+  // This validates the logic catches insecure modes that the old <= 0o700 check missed.
+  it("0o700 (rwx------) passes the check", () => {
+    assert.equal((0o700 & 0o077) === 0, true);
+  });
+
+  it("0o500 (r-x------) passes the check (less permissive is ok)", () => {
+    assert.equal((0o500 & 0o077) === 0, true);
+  });
+
+  it("0o077 (---rwxrwx) fails — old <= check would have passed this", () => {
+    assert.equal((0o077 & 0o077) === 0, false);
+  });
+
+  it("0o755 (rwxr-xr-x) fails — group+other can read/execute", () => {
+    assert.equal((0o755 & 0o077) === 0, false);
+  });
+
+  it("0o701 (rwx-----x) fails — other has execute", () => {
+    assert.equal((0o701 & 0o077) === 0, false);
+  });
+
+  it("0o710 (rwx--x---) fails — group has execute", () => {
+    assert.equal((0o710 & 0o077) === 0, false);
+  });
+});

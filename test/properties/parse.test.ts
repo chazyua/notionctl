@@ -275,3 +275,19 @@ describe("bug hunt round 4 regressions — properties", () => {
     assert.deepEqual(parsePropertyFlag("'Title'=Hello"), { key: "Title", value: "Hello" });
   });
 });
+
+describe("BUG-G regression: files property url: with trailing slash", () => {
+  it("uses 'file' as name when URL ends with /", () => {
+    const result = parseProperty(schema, "Attachment", "url:https://example.com/");
+    assert.deepEqual(result, {
+      files: [{ name: "file", external: { url: "https://example.com/" } }],
+    });
+  });
+
+  it("extracts filename from URL path", () => {
+    const result = parseProperty(schema, "Attachment", "url:https://example.com/doc.pdf");
+    assert.deepEqual(result, {
+      files: [{ name: "doc.pdf", external: { url: "https://example.com/doc.pdf" } }],
+    });
+  });
+});

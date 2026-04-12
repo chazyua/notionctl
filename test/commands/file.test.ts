@@ -65,3 +65,8 @@ describe("looksLikeText", () => {
     assert.equal(looksLikeText(new TextEncoder().encode("héllo wörld — 👋")), true);
   });
 });
+
+// BUG-B regression: file upload with directory path now throws a clean
+// USAGE error ("Not a regular file: ...") instead of crashing with EISDIR.
+// The fix is an st.isFile() check in fileUploadCommand — tested via dogfood
+// since the command requires filesystem + network integration.

@@ -414,19 +414,33 @@ export async function exchangeOAuthCode(
   const url = `${API_BASE}/oauth/token`;
   const credentials = Buffer.from(`${clientId}:${clientSecret}`).toString("base64");
 
-  const response = await fetch(url, {
-    method: "POST",
-    headers: {
-      "Authorization": `Basic ${credentials}`,
-      "Content-Type": "application/json",
-      "User-Agent": USER_AGENT,
-    },
-    body: JSON.stringify({
-      grant_type: "authorization_code",
-      code,
-      redirect_uri: redirectUri,
-    }),
-  });
+  const timeoutMs = parseTimeoutEnv() ?? DEFAULT_TIMEOUT_MS;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      method: "POST",
+      headers: {
+        "Authorization": `Basic ${credentials}`,
+        "Content-Type": "application/json",
+        "User-Agent": USER_AGENT,
+      },
+      body: JSON.stringify({
+        grant_type: "authorization_code",
+        code,
+        redirect_uri: redirectUri,
+      }),
+      signal: controller.signal,
+    });
+  } catch (err: unknown) {
+    if (err instanceof Error && err.name === "AbortError") {
+      throw new NotionCliError(ErrorCode.NETWORK_ERROR, `OAuth token exchange timed out after ${timeoutMs}ms`);
+    }
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
 
   if (!response.ok) {
     let message = `HTTP ${response.status}`;

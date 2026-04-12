@@ -212,7 +212,11 @@ export function parseSimpleFilter(expr: string, schema: Record<string, PropertyS
 
 // Exported for unit testing.
 export function parseSimpleSort(expr: string, schema: Record<string, PropertySchema>): unknown {
-  const [prop, dir] = expr.split(":");
+  const parts = expr.split(":");
+  if (parts.length > 2) {
+    throw new NotionCliError(ErrorCode.USAGE, `Invalid sort: '${expr}' (too many colons — expected Name or Name:asc / Name:desc)`);
+  }
+  const [prop, dir] = parts;
   if (!prop) {
     throw new NotionCliError(
       ErrorCode.USAGE,
@@ -278,7 +282,7 @@ export async function dbQueryCommand(ctx: { args: string[] }): Promise<string> {
     const row: string[] = [r.id];
     for (const name of Object.keys(schema)) {
       const rendered = renderProperty(r.properties[name]);
-      row.push(rendered === null || rendered === undefined ? "" : typeof rendered === "string" ? rendered : JSON.stringify(rendered));
+      row.push(rendered === null || rendered === undefined ? "" : Array.isArray(rendered) ? rendered.join(", ") : typeof rendered === "string" ? rendered : String(rendered));
     }
     return row;
   });
