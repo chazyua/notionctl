@@ -19,15 +19,37 @@ import { renderJson, renderTable, renderCsv, chooseFormat, isStdoutTty, type For
 import { stringifyYaml, type YamlObject } from "../utils/yaml.js";
 import { extractFrontmatter } from "../sync/frontmatter.js";
 
-async function fetchSchema(dbId: string): Promise<Record<string, PropertySchema>> {
+/**
+ * Resolve a database ID to its primary data source ID. Since API version
+ * 2025-09-03, `GET /databases/{id}` returns a `data_sources` array instead
+ * of an inline `properties` schema. All schema operations (query, update
+ * properties, get schema) now go through `/data_sources/{dsId}`.
+ */
+async function resolveDataSourceId(dbId: string): Promise<string> {
   const db = await fetchWith404Hint(
-    () => notionRequest<{ properties: Record<string, PropertySchema> }>(
+    () => notionRequest<{ data_sources?: Array<{ id: string }> }>(
       "GET",
       `/databases/${dbId}`,
     ),
     `Database ${dbId}`,
   );
-  return db.properties;
+  const ds = db.data_sources?.[0];
+  if (!ds) {
+    throw new NotionCliError(
+      ErrorCode.API_ERROR,
+      `Database ${dbId} has no data sources — cannot resolve schema.`,
+    );
+  }
+  return ds.id;
+}
+
+async function fetchSchema(dbId: string): Promise<{ schema: Record<string, PropertySchema>; dataSourceId: string }> {
+  const dataSourceId = await resolveDataSourceId(dbId);
+  const ds = await notionRequest<{ properties: Record<string, PropertySchema> }>(
+    "GET",
+    `/data_sources/${dataSourceId}`,
+  );
+  return { schema: ds.properties, dataSourceId };
 }
 
 export async function dbSchemaCommand(ctx: { args: string[] }): Promise<string> {
@@ -36,7 +58,7 @@ export async function dbSchemaCommand(ctx: { args: string[] }): Promise<string> 
     throw new NotionCliError(ErrorCode.USAGE, "Usage: notionctl db schema <id>");
   }
   const id = resolvePageId(positional[0]!);
-  const schema = await fetchSchema(id);
+  const { schema } = await fetchSchema(id);
   const format = chooseFormat(flags.get("format") as Format | undefined, {
     isTty: isStdoutTty(),
     defaultFormat: "table",
@@ -218,7 +240,7 @@ export async function dbQueryCommand(ctx: { args: string[] }): Promise<string> {
     throw new NotionCliError(ErrorCode.USAGE, "Usage: notionctl db query <id> [--filter ...] [--sort ...]");
   }
   const id = resolvePageId(positional[0]!);
-  const schema = await fetchSchema(id);
+  const { schema, dataSourceId } = await fetchSchema(id);
 
   const body: Record<string, unknown> = {};
   const filterFlags = repeated.get("filter") ?? [];
@@ -241,7 +263,7 @@ export async function dbQueryCommand(ctx: { args: string[] }): Promise<string> {
 
   const res = await notionRequest<{ results: Array<{ id: string; properties: Record<string, unknown> }> }>(
     "POST",
-    `/databases/${id}/query`,
+    `/data_sources/${dataSourceId}/query`,
     body,
   );
 
@@ -389,7 +411,7 @@ export async function dbCreateCommand(ctx: { args: string[] }): Promise<string> 
   const payload = {
     parent: { type: "page_id", page_id: parentId },
     title: [{ type: "text", text: { content: title, link: null } }],
-    properties,
+    initial_data_source: { properties },
   };
 
   if (getBooleanFlag(flags, "dry-run")) {
@@ -448,11 +470,9 @@ export async function dbUpdateCommand(ctx: { args: string[] }): Promise<string> 
     Object.assign(properties, parseJsonObject(raw, "--schema-json"));
   }
 
-  if (Object.keys(properties).length > 0) {
-    payload.properties = properties;
-  }
+  const hasPropertyChanges = Object.keys(properties).length > 0;
 
-  if (Object.keys(payload).length === 0) {
+  if (!hasPropertyChanges && Object.keys(payload).length === 0) {
     throw new NotionCliError(
       ErrorCode.USAGE,
       "Nothing to update. Provide at least one of: --title, --add-prop, --remove-prop, --rename-prop, --schema-json",
@@ -460,11 +480,27 @@ export async function dbUpdateCommand(ctx: { args: string[] }): Promise<string> 
   }
 
   if (getBooleanFlag(flags, "dry-run")) {
-    return renderJson({ action: "db update", dbId: id, payload });
+    return renderJson({ action: "db update", dbId: id, payload: { ...payload, ...(hasPropertyChanges ? { properties } : {}) } });
   }
 
-  const res = await notionRequest<{ id: string; url?: string }>("PATCH", `/databases/${id}`, payload);
-  return renderJson({ id: res.id, url: res.url });
+  const result: Record<string, unknown> = {};
+
+  // Database-level changes (title, icon, etc.) go to /databases/{id}
+  if (Object.keys(payload).length > 0) {
+    const res = await notionRequest<{ id: string; url?: string }>("PATCH", `/databases/${id}`, payload);
+    result.id = res.id;
+    result.url = res.url;
+  }
+
+  // Schema changes (add/remove/rename properties) go to /data_sources/{dsId}
+  if (hasPropertyChanges) {
+    const dsId = await resolveDataSourceId(id);
+    const res = await notionRequest<{ id: string }>("PATCH", `/data_sources/${dsId}`, { properties });
+    result.dataSourceId = res.id;
+    if (!result.id) result.id = id;
+  }
+
+  return renderJson(result);
 }
 
 export async function dbRowGetCommand(ctx: { args: string[] }): Promise<string> {
@@ -501,7 +537,7 @@ export async function dbRowCreateCommand(ctx: { args: string[] }): Promise<strin
     throw new NotionCliError(ErrorCode.USAGE, "Usage: notionctl db row create <db-id> [--prop Key=value ...]");
   }
   const dbId = resolvePageId(positional[0]!);
-  const schema = await fetchSchema(dbId);
+  const { schema } = await fetchSchema(dbId);
 
   const properties: Record<string, unknown> = {};
   const propJson = flags.get("prop-json");
@@ -552,7 +588,7 @@ export async function dbRowUpdateCommand(ctx: { args: string[] }): Promise<strin
   if (page.parent.type !== "database_id" || !page.parent.database_id) {
     throw new NotionCliError(ErrorCode.USAGE, `Page ${pageId} is not a database row. Use 'page update' for non-database pages.`);
   }
-  const schema = await fetchSchema(page.parent.database_id);
+  const { schema } = await fetchSchema(page.parent.database_id);
 
   const properties: Record<string, unknown> = {};
   const propJson = flags.get("prop-json");
