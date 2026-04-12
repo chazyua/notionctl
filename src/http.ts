@@ -42,6 +42,13 @@ type TokenProvider = () => Promise<LoadedToken>;
 let tokenProvider: TokenProvider = loadToken;
 let cachedToken: string | undefined;
 
+let debugMode = false;
+let requestCount = 0;
+
+export function setDebugMode(on: boolean): void { debugMode = on; }
+export function setVerboseMode(_on: boolean): void { /* request count is always tracked; verbose flag is checked in index.ts */ }
+export function getRequestCount(): number { return requestCount; }
+
 export function setTokenProvider(provider: TokenProvider): void {
   tokenProvider = provider;
   cachedToken = undefined;
@@ -50,6 +57,8 @@ export function setTokenProvider(provider: TokenProvider): void {
 export function resetForTesting(): void {
   tokenProvider = loadToken;
   cachedToken = undefined;
+  debugMode = false;
+  requestCount = 0;
 }
 
 async function getToken(): Promise<string> {
@@ -110,6 +119,11 @@ async function notionRequestSingle<T = unknown>(
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     init.signal = controller.signal;
 
+    requestCount++;
+    if (debugMode) {
+      process.stderr.write(`[debug] ${method} ${path}${attempt > 0 ? ` (retry ${attempt})` : ""}\n`);
+    }
+
     try {
       response = await fetch(url, init);
     } catch (err) {
@@ -135,6 +149,10 @@ async function notionRequestSingle<T = unknown>(
       continue;
     } finally {
       clearTimeout(timer);
+    }
+
+    if (debugMode) {
+      process.stderr.write(`[debug] ${response.status} ${response.statusText}\n`);
     }
 
     if (response.ok) {

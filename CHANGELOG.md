@@ -5,6 +5,60 @@ All notable changes to `notionctl` will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.2] — 2026-04-11
+
+### Fixed
+- **Media block round-trip**: `page get → page update` no longer creates duplicate
+  stub blocks for image/video/file/pdf/bookmark/link_preview. The write path
+  absorbs the round-trip sidecar comment and preserves the original block type.
+- **Multi-paragraph blockquote/callout formatting**: bold, italic, and links inside
+  multi-paragraph blockquotes are no longer silently stripped on round-trip.
+  Paragraph breaks between quote/callout children also survive round-tripping.
+- **Infinite loop on whitespace-only list items**: `markdownToBlocks("- ")` no
+  longer hangs. Empty-body bullets and numbered items are accepted as valid.
+- **`page find-replace` now reaches all content**: previously missed text under
+  toggleable headings, paragraphs with nested children, and table cells (table
+  cells remain a documented limitation).
+- **`page get` renders heading and paragraph children**: content nested under
+  toggleable headings or deeply-appended paragraphs is no longer silently dropped.
+- **`page update` H1 handling matches `page create`**: a leading H1 is only
+  stripped from the body when it matches the explicit `--title` value, not
+  unconditionally.
+- **`page duplicate` skips Notion-hosted file blocks** with a clear warning instead
+  of silently creating empty media blocks from expired signed URLs.
+- **`page update` warns before deleting uploaded file attachments** that cannot be
+  recreated from markdown, recommending `page append` for additive edits.
+- **`page sync` warns on UNCHANGED when remote is inaccessible**: if `notion_id`
+  points to a trashed page, stderr now explains instead of silently succeeding.
+- **Symlink escape prevention in `page sync`**: resolves symlink targets via
+  `realpath` so a symlink inside the working directory cannot redirect writes
+  outside it.
+- **`extractSyncTitle` fence tracking**: mixed-length fences (e.g. ```` inside a
+  ````` block) no longer confuse the code-block state and promote an H1 inside
+  code to the page title.
+- **`replaceInRichText` skips equation and mention runs**: find-replace no longer
+  rewrites equation expressions or mention references into plain-text runs.
+- **CRLF normalization**: `markdownToBlocks` strips carriage returns so Windows
+  line endings don't leak `\r` into Notion rich-text content.
+- **Property parse for select/status/date**: empty values now send `null` (to clear
+  the property) instead of `{name: ""}` which Notion rejects. Open-ended date
+  ranges like `..2026-04-20` are rejected client-side with a clear message.
+- **`parseColumnSpec` for select/multi_select**: trailing commas no longer create
+  empty-name options; duplicate option names are rejected client-side.
+- **`unique_id` render** includes the hyphen separator between prefix and number
+  (TASK-42, not TASK42) matching Notion's UI.
+- **Link title attributes** (`[label](url "title")`) are stripped so Notion doesn't
+  reject the URL as invalid.
+- **Notion-hosted media in `page get`**: uploaded files/images/videos/pdfs are now
+  represented as sidecar-only markers instead of emitting ephemeral signed URLs
+  that break on round-trip.
+
+### Added
+- **`--verbose` flag**: shows request count on stderr after command completion.
+- **`--debug` flag**: logs HTTP method, path, and response status to stderr
+  (token-scrubbed).
+- 31 new regression tests (588 → 619).
+
 ## [0.1.1] — 2026-04-10
 
 ### Added

@@ -1,6 +1,6 @@
 {
   "name": "notionctl",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Security-auditable, zero-dependency command-line interface for Notion, designed to be driven by AI coding agents via shell invocations.",
   "keywords": [
     "notion",
@@ -28,7 +28,7 @@
   },
   "files": [
     "bin/",
-    "dist/",
+    "dist/src/",
     "README.md",
     "LICENSE",
     "SECURITY.md"

@@ -374,12 +374,12 @@ notionctl auth clear --yes
 |------|-------------|
 | `--format md\|json\|table\|csv` | Override output format |
 | `--dry-run` | Preview writes without sending |
-| `--verbose` | Show request counts (never bodies or tokens) |
+| `--verbose` | Show request count on stderr after completion |
 | `--quiet` | Suppress non-essential output |
 | `--no-color` | Disable colored output |
 | `--yes` | Confirm destructive operations |
 | `--profile <name>` | Use a named auth profile |
-| `--debug` | HTTP debug to stderr (token-scrubbed) |
+| `--debug` | Log HTTP method, path, and status to stderr (token-scrubbed) |
 
 ## Environment Variables
 

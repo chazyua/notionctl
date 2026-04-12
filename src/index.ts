@@ -19,6 +19,7 @@ import { VERSION } from "./version.js";
 import { setActiveProfile } from "./auth.js";
 import { setMarkdownWarnHandler } from "./markdown/write.js";
 import { setTokenizerWarnHandler } from "./markdown/tokenizer.js";
+import { setDebugMode, setVerboseMode, getRequestCount } from "./http.js";
 
 type CommandHandler = (ctx: { args: string[] }) => Promise<string>;
 
@@ -184,10 +185,10 @@ Usage:
 Global flags:
   --format md|json|table|csv   Output format (default depends on command + TTY)
   --dry-run                    Preview write operations without sending
-  --verbose                    Show request counts (not yet implemented)
+  --verbose                    Show request count on stderr after completion
   --quiet                      Suppress non-essential output
   --no-color                   Force plain output
-  --debug                      Full HTTP debug to stderr (not yet implemented)
+  --debug                      Log HTTP method, path, and status to stderr
   --yes                        Confirm destructive operations
   --profile <name>             Use a named auth profile
 
@@ -268,11 +269,19 @@ async function main(): Promise<void> {
   }
   const rest = restArgv;
 
+  // Activate --verbose / --debug before dispatch. They stay in rest so
+  // parseFlags inside each command can also see them (they're boolean flags).
+  if (rest.includes("--verbose")) setVerboseMode(true);
+  if (rest.includes("--debug")) setDebugMode(true);
+
   try {
     const handler = await loadCommand(noun, verb);
     const output = await handler({ args: rest });
     if (output && output.length > 0) {
       process.stdout.write(output + (output.endsWith("\n") ? "" : "\n"));
+    }
+    if (getRequestCount() > 0 && rest.includes("--verbose")) {
+      process.stderr.write(`notionctl: ${getRequestCount()} API request(s)\n`);
     }
     process.exit(0);
   } catch (err) {
