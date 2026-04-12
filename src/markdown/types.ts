@@ -100,7 +100,7 @@ export interface BaseBlock {
   created_time?: string;
   last_edited_time?: string;
   has_children: boolean;
-  archived?: boolean;
+  in_trash?: boolean;
 }
 
 export interface ParagraphBlock extends BaseBlock {

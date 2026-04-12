@@ -36,7 +36,7 @@ describe("http.ts base client", () => {
 
     assert.equal(capturedUrl, "https://api.notion.com/v1/users/me");
     assert.equal(capturedHeaders["authorization"], "Bearer ntn_test_token");
-    assert.equal(capturedHeaders["notion-version"], "2022-06-28");
+    assert.equal(capturedHeaders["notion-version"], "2026-03-11");
     assert.match(capturedHeaders["user-agent"] ?? "", /^notionctl\//);
     assert.deepEqual(result, { object: "user", id: "abc" });
   });
@@ -371,12 +371,12 @@ describe("appendBlocksChunked", () => {
     assert.equal(res.results.length, 250);
   });
 
-  it("passes after ID to first chunk and chains subsequent chunks", async () => {
-    const capturedAfters: Array<string | undefined> = [];
+  it("passes position to first chunk and chains subsequent chunks", async () => {
+    const capturedPositions: Array<unknown> = [];
     globalThis.fetch = mock.fn(async (_url: string | URL, init?: RequestInit) => {
-      const body = JSON.parse(init?.body as string) as { children: unknown[]; after?: string };
-      capturedAfters.push(body.after);
-      const lastId = `last-of-chunk-${capturedAfters.length}`;
+      const body = JSON.parse(init?.body as string) as { children: unknown[]; position?: unknown };
+      capturedPositions.push(body.position);
+      const lastId = `last-of-chunk-${capturedPositions.length}`;
       return new Response(
         JSON.stringify({ results: [{ id: lastId }] }),
         { status: 200, headers: { "content-type": "application/json" } },
@@ -385,7 +385,7 @@ describe("appendBlocksChunked", () => {
 
     const blocks = Array.from({ length: 150 }, (_, i) => ({ type: "paragraph", id: `${i}` }));
     await appendBlocksChunked("page-1", blocks, { after: "anchor-block" });
-    assert.equal(capturedAfters[0], "anchor-block");
-    assert.equal(capturedAfters[1], "last-of-chunk-1");
+    assert.deepEqual(capturedPositions[0], { type: "after_block", after_block: { id: "anchor-block" } });
+    assert.deepEqual(capturedPositions[1], { type: "after_block", after_block: { id: "last-of-chunk-1" } });
   });
 });

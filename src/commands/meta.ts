@@ -101,8 +101,8 @@ export async function apiCommand(ctx: CommandContext): Promise<string> {
   // db row delete, block delete) — a fat-fingered `api DELETE /blocks/X`
   // should not silently tombstone a block.
   //
-  // We don't gate PATCH here even though PATCH can archive a page
-  // (`{"archived": true}`), because PATCH is also the normal update
+  // We don't gate PATCH here even though PATCH can trash a page
+  // (`{"in_trash": true}`), because PATCH is also the normal update
   // verb and the user explicitly supplies the body — they already know
   // what they're sending. Gating DELETE alone is the minimum viable
   // guard that matches the rest of the CLI's --yes convention.

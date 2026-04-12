@@ -22,7 +22,7 @@ import { NotionCliError, ErrorCode } from "./errors.js";
 import { VERSION } from "./version.js";
 
 const API_BASE = "https://api.notion.com/v1";
-const NOTION_VERSION = "2022-06-28";
+const NOTION_VERSION = "2026-03-11";
 const DEFAULT_TIMEOUT_MS = 30_000;
 const USER_AGENT = `notionctl/${VERSION}`;
 
@@ -291,14 +291,15 @@ export async function appendBlocksChunked(
   for (let i = 0; i < blocks.length; i += BLOCK_CHUNK_SIZE) {
     const chunk = blocks.slice(i, i + BLOCK_CHUNK_SIZE);
     const body: Record<string, unknown> = { children: chunk };
-    if (afterId) body.after = afterId;
+    if (afterId) {
+      body.position = { type: "after_block", after_block: { id: afterId } };
+    }
     const res = await notionRequest<{ results: Array<{ id: string }> }>(
       "PATCH",
       `/blocks/${parentId}/children`,
       body,
     );
     allResults.push(...res.results);
-    // Subsequent chunks append after the last block of the previous chunk
     if (res.results.length > 0) {
       afterId = res.results[res.results.length - 1]!.id;
     }

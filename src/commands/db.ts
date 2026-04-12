@@ -586,7 +586,7 @@ export async function dbRowDeleteCommand(ctx: { args: string[] }): Promise<strin
   }
   const id = resolvePageId(positional[0]!);
   const res = await fetchWith404Hint(
-    () => notionRequest("PATCH", `/pages/${id}`, { archived: true }),
+    () => notionRequest("PATCH", `/pages/${id}`, { in_trash: true }),
     `Database row ${id}`,
   );
   return renderJson(res);

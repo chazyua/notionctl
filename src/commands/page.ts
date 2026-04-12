@@ -725,7 +725,7 @@ export async function pageRestoreCommand(ctx: { args: string[] }): Promise<strin
     throw new NotionCliError(ErrorCode.USAGE, "Usage: notionctl page restore <id>");
   }
   const id = resolvePageId(positional[0]!);
-  const res = await notionRequest<{ id: string; url: string }>("PATCH", `/pages/${id}`, { archived: false });
+  const res = await notionRequest<{ id: string; url: string }>("PATCH", `/pages/${id}`, { in_trash: false });
   return renderJson({ id: res.id, url: res.url, restored: true });
 }
 
@@ -736,7 +736,7 @@ export async function pageDeleteCommand(ctx: { args: string[] }): Promise<string
   }
   const id = resolvePageId(positional[0]!);
   if (getBooleanFlag(flags, "dry-run")) {
-    return renderJson({ action: "page delete", pageId: id, wouldArchive: true });
+    return renderJson({ action: "page delete", pageId: id, wouldTrash: true });
   }
   if (!getBooleanFlag(flags, "yes")) {
     throw new NotionCliError(
@@ -744,7 +744,7 @@ export async function pageDeleteCommand(ctx: { args: string[] }): Promise<string
       "Refusing to archive without --yes confirmation",
     );
   }
-  const res = await notionRequest("PATCH", `/pages/${id}`, { archived: true });
+  const res = await notionRequest("PATCH", `/pages/${id}`, { in_trash: true });
   return renderJson(res);
 }
 
