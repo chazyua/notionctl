@@ -38,6 +38,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - 7 new regression tests (706 → 713).
 
+## [0.1.3a] — 2026-04-12
+
+### Fixed
+- **Over-escaped markdown output**: `richTextToMarkdown` no longer backslash-
+  escapes intraword underscores (`multi_select` not `multi\_select`), asterisks
+  between alphanumerics (`2*3` not `2\*3`), or content inside inline code runs
+  (`` `**bold**` `` not `` `\*\*bold\*\*` ``). Uses all-or-nothing strategy per
+  character type to avoid context-shift bugs from selective escaping.
+- **`.m4b` MIME type**: audiobook uploads now send `audio/mp4` instead of
+  `application/octet-stream`.
+
+### Added
+- 9 new regression tests (722 → 731).
+
 ## [0.1.2] — 2026-04-11
 
 ### Fixed

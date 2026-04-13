@@ -35,6 +35,17 @@ AI coding agents (Claude Code, Copilot, Cursor) work best when they can read and
 
 notionctl is the alternative: **one shell command per operation**, shell-logged, `--dry-run`-able, and auditable line by line. Every action an agent takes is a visible terminal invocation.
 
+### notionctl vs MCP
+
+| | notionctl | Notion MCP server |
+|---|---|---|
+| **Token cost** | One shell command + one response per operation | Tool schemas, JSON-RPC framing, and capability negotiation all consume context tokens |
+| **Latency** | Single process: spawn → HTTP call → exit | Persistent server + JSON-RPC round-trip per call |
+| **Agent context** | Agent sees `notionctl page get <id>` — one line | Agent loads full tool schema list into context window on every session |
+| **Setup** | `npm i -g notionctl` + one token | Server process, config file, client wiring |
+| **Auditability** | Every call is a shell command in your terminal log | Operations happen inside an opaque server process |
+| **Security surface** | Zero deps, single network file, auditable in an afternoon | Server framework, transitive deps, persistent token in memory |
+
 ## Security Model
 
 notionctl was designed so that a security team can audit the entire tool in an afternoon.
@@ -140,7 +151,7 @@ All commands support `--format md|json|table|csv`.
 
 ## Testing
 
-713 automated tests. Zero test framework dependencies (uses Node.js built-in `node:test`).
+731 automated tests. Zero test framework dependencies (uses Node.js built-in `node:test`).
 
 ```sh
 npm test                    # Full suite
