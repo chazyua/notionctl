@@ -5,6 +5,39 @@ All notable changes to `notionctl` will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.3] — 2026-04-12
+
+### Fixed
+- **Column content silently dropped** (BUG-13): `page get`, `page update`,
+  `page sync`, and `page find-replace` now recurse into `column_list`/`column`
+  blocks. Column content is rendered as sequential paragraphs with a sidecar
+  comment preserving the column_list ID. Previously, all content inside columns
+  was silently lost.
+- **Embed block URLs lost** (BUG-14): embed blocks now preserve their URL as a
+  `[url](url)` link with a sidecar comment (same pattern as bookmarks and
+  link_previews). The write path round-trips embeds back to the correct block
+  type. Previously, only the block ID was kept in an HTML comment and the URL
+  was dropped entirely.
+- **`page get` output triggers unnecessary sync re-push** (BUG-15): `page get`
+  now includes `notion_hash` and `notion_synced_at` in YAML frontmatter so
+  `page get > f.md && page sync f.md` correctly detects UNCHANGED state instead
+  of re-pushing all blocks.
+- **`page get` DB row detection** adapted to 2025-09-03+ API: uses
+  `database_id` field presence instead of `parent.type` string comparison.
+- **`page update --title` in non-TTY** no longer auto-reads empty stdin,
+  preventing accidental content deletion in scripts.
+- **`page delete` guard ordering**: `--yes` check now runs before `--dry-run`
+  so dry-run without confirmation is rejected.
+- **`page sync` hosted-media warning**: CHANGED/DRIFT paths now warn before
+  deleting Notion-hosted media blocks (matching `page update` behavior).
+- **`page restore` / `page delete`** now show 404 hints about Connections
+  instead of bare "not found" errors.
+- **Indented code blocks in list items**: read path indents code fences for list
+  children; write path re-associates indented fences with the parent list item.
+
+### Added
+- 7 new regression tests (706 → 713).
+
 ## [0.1.2] — 2026-04-11
 
 ### Fixed

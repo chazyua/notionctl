@@ -140,7 +140,7 @@ All commands support `--format md|json|table|csv`.
 
 ## Testing
 
-619 automated tests. Zero test framework dependencies (uses Node.js built-in `node:test`).
+713 automated tests. Zero test framework dependencies (uses Node.js built-in `node:test`).
 
 ```sh
 npm test                    # Full suite
