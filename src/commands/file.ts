@@ -73,6 +73,7 @@ const MIME_MAP: Record<string, string> = {
   ".mp3": "audio/mpeg",
   ".wav": "audio/wav",
   ".m4a": "audio/mp4",
+  ".m4b": "audio/mp4",
   ".ogg": "audio/ogg",
 };
 

@@ -247,8 +247,61 @@ export function findReplaceRichText(
   return { runs: result, count };
 }
 
+/**
+ * Escape markdown marker characters in plain text so they survive round-trip
+ * through markdownToRichText without being reinterpreted as formatting.
+ *
+ * Context-aware: uses all-or-nothing per character type to avoid context-shift
+ * problems (where escaping one char changes a neighbor's parsing context).
+ *
+ * - `_` : skip ALL escaping when every underscore in the string is intraword
+ *         (surrounded by \w on both sides). Common win: `multi_select_value`.
+ * - `*` : skip ALL escaping when every asterisk is between alphanumerics AND
+ *         the run is not inside bold/italic context. Common win: `2*3 = 6`.
+ */
+function escapeMarkdownContent(s: string, inEmphasisCtx: boolean = false): string {
+  const escUnderscore = hasEmphasisUnderscore(s);
+  const escAsterisk = inEmphasisCtx || hasEmphasisAsterisk(s);
+  let out = "";
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i]!;
+    if (c === "_" && escUnderscore) { out += "\\_"; }
+    else if (c === "*" && escAsterisk) { out += "\\*"; }
+    else if (c === "\\" || c === "`" || c === "~" || c === "[") { out += "\\" + c; }
+    else { out += c; }
+  }
+  return out;
+}
+
+/** True when at least one underscore could trigger italic (not purely intraword). */
+function hasEmphasisUnderscore(s: string): boolean {
+  for (let i = 0; i < s.length; i++) {
+    if (s[i] !== "_") continue;
+    const prev = i > 0 ? s[i - 1]! : "";
+    const next = i < s.length - 1 ? s[i + 1]! : "";
+    if (!(/\w/.test(prev) && /\w/.test(next))) return true;
+  }
+  return false;
+}
+
+/** True when at least one asterisk could trigger emphasis (not purely between alphanums). */
+function hasEmphasisAsterisk(s: string): boolean {
+  for (let i = 0; i < s.length; i++) {
+    if (s[i] !== "*") continue;
+    const prev = i > 0 ? s[i - 1]! : "";
+    const next = i < s.length - 1 ? s[i + 1]! : "";
+    if (!(/[A-Za-z0-9]/.test(prev) && /[A-Za-z0-9]/.test(next))) return true;
+  }
+  return false;
+}
+
 function runContent(run: RichText): string {
-  if (run.type === "text") return run.text.content;
+  if (run.type === "text") {
+    // Code runs don't need escaping — backtick delimiters prevent reinterpretation
+    if (run.annotations.code) return run.text.content;
+    const inEmphasis = run.annotations.bold || run.annotations.italic;
+    return escapeMarkdownContent(run.text.content, inEmphasis);
+  }
   if (run.type === "equation") return `$${run.equation.expression}$`;
   if (run.type === "mention") {
     const m = run.mention;

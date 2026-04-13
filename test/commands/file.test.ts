@@ -44,6 +44,10 @@ describe("guessMimeType (bug hunt round 4)", () => {
     assert.equal(guessMimeType("a.png"), "image/png");
     assert.equal(guessMimeType("x.json"), "application/json");
   });
+
+  it("returns audio/mp4 for .m4b audiobook files", () => {
+    assert.equal(guessMimeType("audiobook.m4b"), "audio/mp4");
+  });
 });
 
 describe("looksLikeText", () => {
