@@ -258,6 +258,32 @@ describe("Markdown string round-trip (md → blocks → md)", () => {
     assert.match(result, /\$\$x\^2 \+ y\^2\$\$/);
   });
 
+  it("literal marker characters in plain text survive round-trip without corruption", () => {
+    // Blocks → md → blocks: literal asterisks, underscores, tildes, backticks
+    const rt = (content: string) => [{ type: "text", text: { content, link: null }, plain_text: content, annotations: { bold: false, italic: false, strikethrough: false, underline: false, code: false } }];
+    const blocks = [
+      { id: "1", type: "paragraph", has_children: false, paragraph: { rich_text: rt("Use *asterisks* carefully") } },
+      { id: "2", type: "paragraph", has_children: false, paragraph: { rich_text: rt("multi_select and _underscores_") } },
+      { id: "3", type: "paragraph", has_children: false, paragraph: { rich_text: rt("~~not strikethrough~~") } },
+      { id: "4", type: "paragraph", has_children: false, paragraph: { rich_text: rt("`not code`") } },
+    ];
+    const result = roundTrip(blocks);
+    assert.equal(result.length, 4);
+    // All text must remain plain (no annotations) after round-trip
+    for (let i = 0; i < result.length; i++) {
+      const runs = (result[i] as any).paragraph.rich_text;
+      const fullText = runs.map((r: any) => r.text.content).join("");
+      const origText = (blocks[i] as any).paragraph.rich_text[0].text.content;
+      assert.equal(fullText, origText, `block ${i} content corrupted in round-trip`);
+      for (const run of runs) {
+        assert.equal(run.annotations.bold, false, `block ${i} unexpectedly gained bold`);
+        assert.equal(run.annotations.italic, false, `block ${i} unexpectedly gained italic`);
+        assert.equal(run.annotations.strikethrough, false, `block ${i} unexpectedly gained strikethrough`);
+        assert.equal(run.annotations.code, false, `block ${i} unexpectedly gained code`);
+      }
+    }
+  });
+
   it("mixed content preserves block order", () => {
     const md = "# Title\n\nParagraph.\n\n- List item\n\n```\ncode\n```\n\n---\n\n> Quote";
     const result = mdRoundTrip(md);

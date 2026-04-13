@@ -39,3 +39,44 @@ describe("resolveUploadName", () => {
     assert.equal(result.fallback, true);
   });
 });
+
+describe("guessMimeType (bug hunt round 4)", () => {
+  it("returns application/octet-stream for unknown extensions", () => {
+    assert.equal(guessMimeType("thing.xyz"), "application/octet-stream");
+  });
+
+  it("returns the known MIME for common extensions", () => {
+    assert.equal(guessMimeType("notes.md"), "text/markdown");
+    assert.equal(guessMimeType("a.png"), "image/png");
+    assert.equal(guessMimeType("x.json"), "application/json");
+  });
+
+  it("returns audio/mp4 for .m4b audiobook files", () => {
+    assert.equal(guessMimeType("audiobook.m4b"), "audio/mp4");
+  });
+});
+
+describe("looksLikeText", () => {
+  it("returns true for ASCII text", () => {
+    assert.equal(looksLikeText(new TextEncoder().encode("hello\nworld\n")), true);
+  });
+
+  it("returns false for bytes containing NUL", () => {
+    assert.equal(looksLikeText(new Uint8Array([0x68, 0x00, 0x69])), false);
+  });
+
+  it("returns false for mostly non-printable bytes", () => {
+    const bytes = new Uint8Array(50);
+    for (let i = 0; i < bytes.length; i++) bytes[i] = 0x01;
+    assert.equal(looksLikeText(bytes), false);
+  });
+
+  it("returns true for UTF-8 text with high bytes", () => {
+    assert.equal(looksLikeText(new TextEncoder().encode("héllo wörld — 👋")), true);
+  });
+});
+
+// BUG-B regression: file upload with directory path now throws a clean
+// USAGE error ("Not a regular file: ...") instead of crashing with EISDIR.
+// The fix is an st.isFile() check in fileUploadCommand — tested via dogfood
+// since the command requires filesystem + network integration.

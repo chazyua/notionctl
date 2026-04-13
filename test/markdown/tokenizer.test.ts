@@ -729,3 +729,227 @@ describe("richTextToMarkdown — additional edge cases", () => {
     assert.equal(md, "Hello @user:abc, welcome!");
   });
 });
+
+describe("bug hunt round 4 regressions", () => {
+  it("does not parse currency as equation when closing $ is preceded by whitespace", () => {
+    const runs = markdownToRichText("I paid $5 for coffee and $10 for lunch.");
+    assert.equal(runs.length, 1);
+    assert.equal(runs[0]!.type, "text");
+    assert.equal((runs[0] as any).text.content, "I paid $5 for coffee and $10 for lunch.");
+  });
+
+  it("does not parse currency as equation across multiple amounts", () => {
+    const runs = markdownToRichText("Prices: $100 and $200.");
+    assert.equal(runs.length, 1);
+    assert.equal(runs[0]!.type, "text");
+  });
+
+  it("still parses genuine inline math with non-whitespace delimiters", () => {
+    const runs = markdownToRichText("before $x^2$ after");
+    assert.equal(runs.length, 3);
+    assert.equal(runs[1]!.type, "equation");
+    assert.equal((runs[1] as any).equation.expression, "x^2");
+  });
+
+  it("treats bare * between alphanumerics as literal (CommonMark intraword rule)", () => {
+    const runs = markdownToRichText("Compute 2*3 = 6.");
+    assert.equal(runs.length, 1);
+    assert.equal(runs[0]!.type, "text");
+    assert.equal((runs[0] as any).annotations.italic, false);
+    assert.equal((runs[0] as any).text.content, "Compute 2*3 = 6.");
+  });
+
+  it("treats glob pattern *.md as literal, not italic opener", () => {
+    const runs = markdownToRichText("Files matching *.md here.");
+    const joined = runs.map(r => (r as any).text?.content ?? "").join("");
+    assert.equal(joined, "Files matching *.md here.");
+    for (const r of runs) {
+      assert.equal(r.annotations.italic, false, "no run should be italic");
+    }
+  });
+
+  it("still parses proper *italic* with word-boundary asterisks", () => {
+    const runs = markdownToRichText("This is *important* here.");
+    const italicRun = runs.find(r => r.annotations.italic);
+    assert.ok(italicRun, "should have an italic run");
+    assert.equal((italicRun as any).text.content, "important");
+  });
+
+  it("preserves mailto: links", () => {
+    const runs = markdownToRichText("Email [us](mailto:hi@example.com).");
+    const linkRun = runs.find(r => (r as any).text?.link?.url);
+    assert.ok(linkRun, "link run should exist");
+    assert.equal((linkRun as any).text.link.url, "mailto:hi@example.com");
+  });
+
+  it("preserves tel: links", () => {
+    const runs = markdownToRichText("Call [now](tel:+15551234567).");
+    const linkRun = runs.find(r => (r as any).text?.link?.url);
+    assert.ok(linkRun);
+    assert.equal((linkRun as any).text.link.url, "tel:+15551234567");
+  });
+
+  it("strips CommonMark link title from URL", () => {
+    // Regression: `[label](url "title")` passed the whole `url "title"` as
+    // the URL to Notion, which rejects it as invalid. CommonMark titles
+    // are metadata-only and Notion has no link-title field, so we strip them.
+    const runs = markdownToRichText('[docs](https://example.com "API Reference")');
+    const linkRun = runs.find(r => (r as any).text?.link?.url);
+    assert.ok(linkRun, "link run exists");
+    assert.equal((linkRun as any).text.link.url, "https://example.com");
+  });
+
+  it("strips single-quoted link title", () => {
+    const runs = markdownToRichText("[label](https://example.com 'Title')");
+    const linkRun = runs.find(r => (r as any).text?.link?.url);
+    assert.ok(linkRun);
+    assert.equal((linkRun as any).text.link.url, "https://example.com");
+  });
+
+  it("preserves URL that only looks like it has a title but doesn't", () => {
+    const runs = markdownToRichText("[label](https://example.com/path)");
+    const linkRun = runs.find(r => (r as any).text?.link?.url);
+    assert.ok(linkRun);
+    assert.equal((linkRun as any).text.link.url, "https://example.com/path");
+  });
+});
+
+describe("round-trip marker escaping — richTextToMarkdown escapes literals", () => {
+  it("skips escaping asterisks between alphanums (e.g. 2*3)", () => {
+    const md = richTextToMarkdown([text("2*3 = 6")]);
+    assert.equal(md, "2*3 = 6");
+    // Round-trip: write path treats alphanum*alphanum as literal
+    const rt = markdownToRichText(md);
+    assert.equal(rt.length, 1);
+    assert.equal(rt[0]!.plain_text, "2*3 = 6");
+    assert.equal((rt[0] as any).annotations.italic, false);
+  });
+
+  it("escapes asterisks that could trigger emphasis", () => {
+    const md = richTextToMarkdown([text("use *star* marks")]);
+    assert.equal(md, "use \\*star\\* marks");
+    const rt = markdownToRichText(md);
+    assert.equal(rt[0]!.plain_text, "use *star* marks");
+  });
+
+  it("skips escaping intraword underscores (e.g. multi_select)", () => {
+    const md = richTextToMarkdown([text("multi_select_value")]);
+    assert.equal(md, "multi_select_value");
+    const rt = markdownToRichText(md);
+    assert.equal(rt[0]!.plain_text, "multi_select_value");
+  });
+
+  it("escapes underscores at word boundaries", () => {
+    const md = richTextToMarkdown([text("_italic_")]);
+    assert.equal(md, "\\_italic\\_");
+    const rt = markdownToRichText(md);
+    assert.equal(rt[0]!.plain_text, "_italic_");
+  });
+
+  it("escapes all underscores when any could trigger emphasis", () => {
+    const md = richTextToMarkdown([text("__init__")]);
+    assert.equal(md, "\\_\\_init\\_\\_");
+    const rt = markdownToRichText(md);
+    assert.equal(rt[0]!.plain_text, "__init__");
+  });
+
+  it("escapes literal tildes in plain text", () => {
+    const md = richTextToMarkdown([text("use ~~tilde~~ marks")]);
+    assert.equal(md, "use \\~\\~tilde\\~\\~ marks");
+    const rt = markdownToRichText(md);
+    const full = rt.map(r => r.plain_text).join("");
+    assert.equal(full, "use ~~tilde~~ marks");
+  });
+
+  it("escapes literal backticks in plain text", () => {
+    const md = richTextToMarkdown([text("use `code` syntax")]);
+    assert.equal(md, "use \\`code\\` syntax");
+    const rt = markdownToRichText(md);
+    assert.equal(rt[0]!.plain_text, "use `code` syntax");
+    assert.equal((rt[0] as any).annotations.code, false);
+  });
+
+  it("escapes literal brackets in plain text", () => {
+    const md = richTextToMarkdown([text("array[0] access")]);
+    assert.equal(md, "array\\[0] access");
+    const rt = markdownToRichText(md);
+    assert.equal(rt[0]!.plain_text, "array[0] access");
+  });
+
+  it("does not double-escape backslashes on round-trip", () => {
+    // Plain text with a literal backslash
+    const md = richTextToMarkdown([text("path\\to\\file")]);
+    assert.equal(md, "path\\\\to\\\\file");
+    const rt = markdownToRichText(md);
+    assert.equal(rt[0]!.plain_text, "path\\to\\file");
+  });
+
+  it("bold text with literal asterisks inside round-trips correctly", () => {
+    // Bold run containing a literal asterisk in its content
+    const md = richTextToMarkdown([text("a*b", { bold: true })]);
+    assert.match(md, /\*\*a\\\*b\*\*/);
+    const rt = markdownToRichText(md);
+    const full = rt.map(r => r.plain_text).join("");
+    assert.equal(full, "a*b");
+    const boldRun = rt.find(r => (r as any).annotations.bold);
+    assert.ok(boldRun, "bold annotation must survive round-trip");
+  });
+
+  it("preserves formatted text alongside escaped literals", () => {
+    // Mix of real bold and literal asterisks
+    const runs = [
+      text("Use "),
+      text("bold", { bold: true }),
+      text(" not *literal*"),
+    ];
+    const md = richTextToMarkdown(runs);
+    assert.match(md, /\*\*bold\*\*/); // real bold
+    assert.match(md, /\\[*]/); // escaped literal
+    // Round-trip
+    const rt = markdownToRichText(md);
+    const fullText = rt.map(r => r.plain_text).join("");
+    assert.equal(fullText, "Use bold not *literal*");
+  });
+
+  it("code run content is NOT escaped (backticks prevent reinterpretation)", () => {
+    const md = richTextToMarkdown([text("**not bold**", { code: true })]);
+    assert.equal(md, "`**not bold**`");
+    const rt = markdownToRichText(md);
+    assert.equal(rt[0]!.plain_text, "**not bold**");
+    assert.equal((rt[0] as any).annotations.code, true);
+  });
+
+  it("code run with underscores is NOT escaped", () => {
+    const md = richTextToMarkdown([text("my_func_name", { code: true })]);
+    assert.equal(md, "`my_func_name`");
+  });
+
+  it("bold run with asterisks still escapes (emphasis context)", () => {
+    const md = richTextToMarkdown([text("a*b", { bold: true })]);
+    assert.match(md, /\*\*a\\\*b\*\*/);
+    const rt = markdownToRichText(md);
+    const full = rt.map(r => r.plain_text).join("");
+    assert.equal(full, "a*b");
+    assert.ok(rt.find(r => (r as any).annotations.bold));
+  });
+
+  it("purely intraword underscores are clean (no escaping)", () => {
+    // Common in API field names, database property names
+    for (const s of ["multi_select", "rich_text", "has_children", "a_b_c"]) {
+      const md = richTextToMarkdown([text(s)]);
+      assert.equal(md, s, `"${s}" should not be escaped`);
+      const rt = markdownToRichText(md);
+      assert.equal(rt[0]!.plain_text, s, `"${s}" must round-trip`);
+    }
+  });
+
+  it("purely alphanum-surrounded asterisks are clean (no escaping)", () => {
+    // Common in math, wildcards
+    for (const s of ["2*3", "a*b", "5*x*2"]) {
+      const md = richTextToMarkdown([text(s)]);
+      assert.equal(md, s, `"${s}" should not be escaped`);
+      const rt = markdownToRichText(md);
+      assert.equal(rt[0]!.plain_text, s, `"${s}" must round-trip`);
+    }
+  });
+});
