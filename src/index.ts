@@ -273,6 +273,12 @@ async function main(): Promise<void> {
   // parseFlags inside each command can also see them (they're boolean flags).
   if (rest.includes("--verbose")) setVerboseMode(true);
   if (rest.includes("--debug")) setDebugMode(true);
+  const quiet = rest.includes("--quiet");
+  const noColor = rest.includes("--no-color");
+  if (quiet) {
+    setMarkdownWarnHandler(null);
+    setTokenizerWarnHandler(null);
+  }
 
   try {
     const handler = await loadCommand(noun, verb);
@@ -280,13 +286,13 @@ async function main(): Promise<void> {
     if (output && output.length > 0) {
       process.stdout.write(output + (output.endsWith("\n") ? "" : "\n"));
     }
-    if (getRequestCount() > 0 && isVerboseMode()) {
+    if (getRequestCount() > 0 && isVerboseMode() && !quiet) {
       process.stderr.write(`notionctl: ${getRequestCount()} API request(s)\n`);
     }
     process.exit(0);
   } catch (err) {
     if (err instanceof NotionCliError) {
-      const color = isStdoutTty();
+      const color = isStdoutTty() && !noColor;
       if (!process.stdout.isTTY) {
         process.stderr.write(formatErrorJson(err) + "\n");
       } else {

@@ -142,7 +142,10 @@ function renderBlock(block: Block, depth: number, numberedIndex: number): string
       const matches = content.match(/`+/g);
       if (matches) for (const m of matches) if (m.length > longest) longest = m.length;
       const fence = "`".repeat(Math.max(3, longest + 1));
-      return `${fence}${lang}\n${content}\n${fence}`;
+      // Indent code blocks that are children of list items so the write path
+      // can re-associate them with the parent list item on round-trip.
+      const codeLines = content.split("\n").map((l) => indent + l).join("\n");
+      return `${indent}${fence}${lang}\n${codeLines}\n${indent}${fence}`;
     }
     case "divider":
       return "---";
@@ -256,10 +259,31 @@ function renderBlock(block: Block, depth: number, numberedIndex: number): string
       const kind = block.type === "child_page" ? "page" : "database";
       return `[${title}](notion://${kind}/${block.id})`;
     }
-    case "synced_block":
-    case "column_list":
+    case "column_list": {
+      const columns = (block as { _children?: Block[] })._children;
+      if (!columns || columns.length === 0) {
+        return `<!-- notion-block: column_list id=${block.id} -->`;
+      }
+      const parts: string[] = [`<!-- notion-block: column_list id=${block.id} -->`];
+      for (let ci = 0; ci < columns.length; ci++) {
+        const col = columns[ci]!;
+        const colChildren = (col as { _children?: Block[] })._children;
+        if (colChildren && colChildren.length > 0) {
+          parts.push(blocksToMarkdown(colChildren));
+        }
+      }
+      return parts.join("\n\n");
+    }
     case "column":
-    case "embed":
+      // Columns are rendered by the column_list parent.
+      return null;
+    case "embed": {
+      const em = (block as unknown as { embed?: { url?: string; caption?: Array<{ plain_text: string }> } }).embed;
+      const emUrl = em?.url ?? "";
+      const emCaption = (em?.caption ?? []).map((r) => r.plain_text).join("");
+      return `[${emCaption || emUrl}](${emUrl})\n<!-- notion-block: embed id=${block.id} -->`;
+    }
+    case "synced_block":
     case "table_of_contents":
     case "breadcrumb":
     default:

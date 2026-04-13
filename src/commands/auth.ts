@@ -177,6 +177,9 @@ export async function authClearCommand(ctx: { args: string[] }): Promise<string>
   if (!getBooleanFlag(flags, "yes")) {
     throw new NotionCliError(ErrorCode.USAGE, "auth clear requires --yes");
   }
+  if (getBooleanFlag(flags, "dry-run")) {
+    return renderJson({ action: "auth clear", wouldClear: true });
+  }
   await clearToken();
   return renderJson({ cleared: true });
 }

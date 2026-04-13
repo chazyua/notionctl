@@ -429,6 +429,13 @@ export function markdownToRichText(md: string): RichText[] {
   }
 
   flush();
+
+  // If the entire input was consumed by unmatched markers with no actual text
+  // content, emit the raw input as literal text rather than returning empty.
+  if (runs.length === 0 && md.length > 0) {
+    runs.push(makeRun(md, { bold: false, italic: false, strikethrough: false, code: false }, null));
+  }
+
   return splitLongRuns(runs);
 }
 

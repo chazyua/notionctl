@@ -918,3 +918,54 @@ describe("BUG-K regression: code block closing fence respects CommonMark indenta
   });
 });
 
+describe("BUG-14 regression: embed sidecar round-trips back to embed block", () => {
+  it("link with embed sidecar becomes embed block", () => {
+    const md = [
+      "[https://www.youtube.com/watch?v=test123](https://www.youtube.com/watch?v=test123)",
+      "<!-- notion-block: embed id=embed-id -->",
+    ].join("\n");
+    const blocks = markdownToBlocks(md);
+    assert.equal(blocks.length, 1);
+    assert.equal(blocks[0]!.type, "embed");
+    const embed = (blocks[0] as any).embed;
+    assert.equal(embed.url, "https://www.youtube.com/watch?v=test123");
+  });
+
+  it("link with bookmark sidecar still becomes bookmark block", () => {
+    const md = [
+      "[Example](https://example.com)",
+      "<!-- notion-block: bookmark id=bm-id -->",
+    ].join("\n");
+    const blocks = markdownToBlocks(md);
+    assert.equal(blocks.length, 1);
+    assert.equal(blocks[0]!.type, "bookmark");
+  });
+});
+
+describe("BUG-N4 regression: markdownToBlocks does NOT strip YAML frontmatter", () => {
+  // markdownToBlocks is a pure markdown-to-blocks converter. Frontmatter
+  // stripping is the caller's responsibility (extractFrontmatter). This test
+  // confirms that block append must strip frontmatter before calling
+  // markdownToBlocks, otherwise YAML fences become divider/paragraph blocks.
+  it("frontmatter produces divider and paragraph blocks if not stripped", () => {
+    const md = "---\ntitle: test\n---\n\nReal content";
+    const blocks = markdownToBlocks(md);
+    assert.ok(blocks.length > 1, "frontmatter should produce multiple blocks");
+    const types = blocks.map((b) => b.type);
+    assert.ok(types.includes("divider"), "--- should become a divider block");
+    assert.ok(types.includes("paragraph"), "body should become a paragraph");
+  });
+
+  it("pre-stripped frontmatter produces only content blocks", async () => {
+    // Simulates what block append now does after the fix
+    const { extractFrontmatter } = await import("../../src/sync/frontmatter.js");
+    const md = "---\ntitle: test\n---\n\nReal content";
+    const { body } = extractFrontmatter(md);
+    const blocks = markdownToBlocks(body);
+    assert.equal(blocks.length, 1);
+    assert.equal(blocks[0]!.type, "paragraph");
+    const text = (blocks[0] as any).paragraph.rich_text[0]?.text?.content;
+    assert.equal(text, "Real content");
+  });
+});
+

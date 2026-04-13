@@ -34,7 +34,7 @@ export async function pageGetCommand(ctx: { args: string[] }): Promise<string> {
       id: string;
       object: string;
       properties: Record<string, unknown>;
-      parent: { type: string };
+      parent: { type: string; database_id?: string };
       url: string;
     }>("GET", `/pages/${id}`),
     `Page ${id}`,
@@ -53,10 +53,15 @@ export async function pageGetCommand(ctx: { args: string[] }): Promise<string> {
     throw new NotionCliError(ErrorCode.USAGE, `page get does not support --format ${format}. Use md or json.`);
   }
 
+  // API 2025-09-03+ returns parent.type = "data_source_id" for DB rows but
+  // still includes the database_id field. Use field presence (not type string)
+  // to detect database pages, matching the pattern in db.ts.
+  const isDbRow = !!page.parent.database_id;
+
   const frontmatter: YamlObject = {
     notion_id: page.id,
   };
-  if (page.parent.type === "database_id") {
+  if (isDbRow) {
     for (const [name, value] of Object.entries(page.properties)) {
       const rendered = renderProperty(value);
       if (rendered !== null && rendered !== undefined) {
@@ -65,17 +70,26 @@ export async function pageGetCommand(ctx: { args: string[] }): Promise<string> {
     }
   }
 
-  // Prepend # Title for non-database pages (BUG-1 fix)
+  // Prepend # Title for non-database pages
   let titleLine = "";
-  if (page.parent.type !== "database_id") {
+  if (!isDbRow) {
     const titleProp = page.properties.title as { title?: Array<{ plain_text?: string }> } | undefined;
     const title = titleProp?.title?.map((t) => t.plain_text ?? "").join("") ?? "";
     if (title) titleLine = `# ${title}\n\n`;
   }
 
   const body = blocksToMarkdown(childBlocks);
+  // Include sync metadata so `page get > f.md && page sync f.md` detects the
+  // file as UNCHANGED instead of re-pushing all blocks unnecessarily.
+  // The output ends with "\n" so index.ts doesn't append another; the hash
+  // must match what extractFrontmatter would return on read-back (body with
+  // trailing newline).
+  const fullBody = `${titleLine}${body}`;
+  const bodyForHash = fullBody.endsWith("\n") ? fullBody : fullBody + "\n";
+  frontmatter.notion_hash = computeContentHash(bodyForHash);
+  frontmatter.notion_synced_at = new Date().toISOString();
   const yaml = stringifyYaml(frontmatter);
-  return `---\n${yaml}\n---\n\n${titleLine}${body}`;
+  return `---\n${yaml}\n---\n\n${fullBody}\n`;
 }
 
 /**
@@ -208,7 +222,11 @@ export async function pageUpdateCommand(ctx: { args: string[] }): Promise<string
   }
   const id = resolvePageId(positional[0]!);
   const title = flags.get("title");
-  const hasFrom = !!flags.get("from") || !process.stdin.isTTY;
+  // page update requires explicit --from to read body content. Unlike
+  // page create/append where piped stdin is the primary input, page update
+  // replaces ALL blocks — auto-reading empty stdin in non-TTY contexts would
+  // silently destroy content (e.g. `page update <id> --title "X"` in a script).
+  const hasFrom = !!flags.get("from");
 
   if (!title && !hasFrom) {
     throw new NotionCliError(ErrorCode.USAGE, "Usage: notionctl page update <id> [--title <text>] [--from file.md]\nProvide at least --title or --from.");
@@ -724,7 +742,10 @@ export async function pageRestoreCommand(ctx: { args: string[] }): Promise<strin
     throw new NotionCliError(ErrorCode.USAGE, "Usage: notionctl page restore <id>");
   }
   const id = resolvePageId(positional[0]!);
-  const res = await notionRequest<{ id: string; url: string }>("PATCH", `/pages/${id}`, { in_trash: false });
+  const res = await fetchWith404Hint(
+    () => notionRequest<{ id: string; url: string }>("PATCH", `/pages/${id}`, { in_trash: false }),
+    `Page ${id}`,
+  );
   return renderJson({ id: res.id, url: res.url, restored: true });
 }
 
@@ -734,16 +755,19 @@ export async function pageDeleteCommand(ctx: { args: string[] }): Promise<string
     throw new NotionCliError(ErrorCode.USAGE, "Usage: notionctl page delete <id> --yes");
   }
   const id = resolvePageId(positional[0]!);
-  if (getBooleanFlag(flags, "dry-run")) {
-    return renderJson({ action: "page delete", pageId: id, wouldTrash: true });
-  }
   if (!getBooleanFlag(flags, "yes")) {
     throw new NotionCliError(
       ErrorCode.USAGE,
       "Refusing to archive without --yes confirmation",
     );
   }
-  const res = await notionRequest("PATCH", `/pages/${id}`, { in_trash: true });
+  if (getBooleanFlag(flags, "dry-run")) {
+    return renderJson({ action: "page delete", pageId: id, wouldTrash: true });
+  }
+  const res = await fetchWith404Hint(
+    () => notionRequest("PATCH", `/pages/${id}`, { in_trash: true }),
+    `Page ${id}`,
+  );
   return renderJson(res);
 }
 
@@ -955,6 +979,18 @@ export async function pageSyncCommand(ctx: { args: string[] }): Promise<string> 
       throw err;
     }
     const newBlocks = markdownToBlocks(syncBody);
+    const hostedMedia = existing.results.filter((b) => {
+      const t = b.type;
+      if (t !== "image" && t !== "video" && t !== "file" && t !== "pdf") return false;
+      const media = (b as any)[t];
+      if (!media) return false;
+      return media.type === "file" || media.type === "file_upload";
+    });
+    if (hostedMedia.length > 0) {
+      process.stderr.write(
+        `notionctl: page sync will DELETE ${hostedMedia.length} Notion-hosted media block(s) (uploaded files/images/videos/pdfs). These cannot be recreated from markdown and will need to be re-uploaded manually. Use 'notionctl file upload' after the sync.\n`,
+      );
+    }
     // Only PATCH the title when the file explicitly specifies one (via
     // frontmatter `title:` or a leading `# H1`). Otherwise, a DB row or
     // regular page keeps its existing name — otherwise files without a

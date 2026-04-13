@@ -529,3 +529,90 @@ describe("bug hunt round 6 — code block fence widening", () => {
     assert.ok(out.startsWith("```\n"), `expected 3-backtick fence, got: ${out}`);
   });
 });
+
+describe("BUG-13 regression: column content must not be silently dropped", () => {
+  it("renders column_list children as sequential content", () => {
+    const col1: Block = {
+      object: "block",
+      id: "col1-id",
+      type: "column" as Block["type"],
+      has_children: true,
+      column: {},
+      _children: [
+        mkBlock("paragraph", { rich_text: [rt("Left column text")], color: "default" }),
+      ],
+    } as unknown as Block;
+    const col2: Block = {
+      object: "block",
+      id: "col2-id",
+      type: "column" as Block["type"],
+      has_children: true,
+      column: {},
+      _children: [
+        mkBlock("paragraph", { rich_text: [rt("Right column text")], color: "default" }),
+      ],
+    } as unknown as Block;
+    const columnList: Block = {
+      object: "block",
+      id: "collist-id",
+      type: "column_list" as Block["type"],
+      has_children: true,
+      column_list: {},
+      _children: [col1, col2],
+    } as unknown as Block;
+
+    const out = blocksToMarkdown([columnList]);
+    assert.ok(out.includes("Left column text"), `expected left column text, got: ${out}`);
+    assert.ok(out.includes("Right column text"), `expected right column text, got: ${out}`);
+    assert.ok(out.includes("<!-- notion-block: column_list"), "expected sidecar comment");
+  });
+
+  it("renders column_list without children as plain comment", () => {
+    const columnList: Block = {
+      object: "block",
+      id: "empty-collist",
+      type: "column_list" as Block["type"],
+      has_children: false,
+      column_list: {},
+    } as unknown as Block;
+
+    const out = blocksToMarkdown([columnList]);
+    assert.ok(out.includes("<!-- notion-block: column_list id=empty-collist -->"));
+    assert.ok(!out.includes("undefined"));
+  });
+});
+
+describe("BUG-14 regression: embed block URLs must be preserved", () => {
+  it("renders embed as link with sidecar comment", () => {
+    const embed: Block = {
+      object: "block",
+      id: "embed-id",
+      type: "embed" as Block["type"],
+      has_children: false,
+      embed: {
+        url: "https://www.youtube.com/watch?v=test123",
+        caption: [],
+      },
+    } as unknown as Block;
+
+    const out = blocksToMarkdown([embed]);
+    assert.ok(out.includes("https://www.youtube.com/watch?v=test123"), `expected embed URL, got: ${out}`);
+    assert.ok(out.includes("<!-- notion-block: embed id=embed-id -->"), "expected sidecar");
+  });
+
+  it("uses caption as link label when available", () => {
+    const embed: Block = {
+      object: "block",
+      id: "embed-id",
+      type: "embed" as Block["type"],
+      has_children: false,
+      embed: {
+        url: "https://example.com/widget",
+        caption: [{ plain_text: "My Widget" }],
+      },
+    } as unknown as Block;
+
+    const out = blocksToMarkdown([embed]);
+    assert.ok(out.includes("[My Widget](https://example.com/widget)"), `expected captioned link, got: ${out}`);
+  });
+});

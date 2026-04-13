@@ -27,6 +27,7 @@ import { NotionCliError as _NotionCliError } from "../../src/errors.js";
 import type { RichText, Block } from "../../src/markdown/types.js";
 import { DEFAULT_ANNOTATIONS } from "../../src/markdown/types.js";
 import { extractSyncTitle } from "../../src/commands/page.js";
+import { chooseFormat } from "../../src/output.js";
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -1098,5 +1099,102 @@ describe("parseFlags — additional edge cases", () => {
     assert.equal(result.flags.size, 0);
     assert.equal(result.repeated.size, 0);
     assert.deepEqual(result.positional, []);
+  });
+});
+
+// ── BUG-21 regression: marker-only text produces non-empty rich_text ──
+describe("BUG-21 regression: marker-only text emits literal", () => {
+  it("*** returns literal *** as plain text", () => {
+    const runs = markdownToRichText("***");
+    assert.ok(runs.length > 0, "expected at least one run for marker-only text");
+    const text = runs.map((r) => r.plain_text).join("");
+    assert.equal(text, "***");
+  });
+
+  it("** returns literal **", () => {
+    const runs = markdownToRichText("**");
+    assert.ok(runs.length > 0);
+    assert.equal(runs.map((r) => r.plain_text).join(""), "**");
+  });
+
+  it("~~ returns literal ~~", () => {
+    const runs = markdownToRichText("~~");
+    assert.ok(runs.length > 0);
+    assert.equal(runs.map((r) => r.plain_text).join(""), "~~");
+  });
+});
+
+// ── BUG-22 regression: code blocks inside list items ──
+describe("BUG-22 regression: code blocks nest inside list items", () => {
+  it("indented code fence becomes child of preceding list item", () => {
+    const md = "- Item with code:\n  ```\n  let x = 1;\n  ```\n- Next item";
+    const blocks = markdownToBlocks(md);
+    assert.equal(blocks.length, 2, "expected two list items");
+    assert.equal(blocks[0]!.type, "bulleted_list_item");
+    const data = (blocks[0] as any).bulleted_list_item;
+    assert.ok(data.children, "first item should have children");
+    assert.equal(data.children.length, 1, "expected one child block");
+    assert.equal(data.children[0].type, "code", "child should be a code block");
+  });
+
+  it("code fence at same indent as bullet stays top-level", () => {
+    const md = "- Item\n```\ncode\n```";
+    const blocks = markdownToBlocks(md);
+    assert.equal(blocks.length, 2, "expected list item + code block");
+    assert.equal(blocks[0]!.type, "bulleted_list_item");
+    assert.equal(blocks[1]!.type, "code");
+  });
+
+  it("numbered list with indented code fence", () => {
+    const md = "1. Step one:\n  ```js\n  console.log('hi');\n  ```\n2. Step two";
+    const blocks = markdownToBlocks(md);
+    assert.equal(blocks.length, 2);
+    const data = (blocks[0] as any).numbered_list_item;
+    assert.ok(data.children, "numbered item should have children");
+    assert.equal(data.children[0].type, "code");
+  });
+});
+
+// ── BUG-18 regression: --format md rejected on table-centric commands ──
+describe("BUG-18 regression: md format rejection messages", () => {
+  it("chooseFormat allows md as a valid format string", () => {
+    // chooseFormat itself accepts md — the rejection is in the command layer
+    const format = chooseFormat("md" as any, { isTty: true, defaultFormat: "table" });
+    assert.equal(format, "md");
+  });
+});
+
+// ── BUG-22 read path: code blocks indented inside list children ──
+describe("BUG-22 read path: nested code blocks are indented", () => {
+  it("code block child of a list item renders with indent", () => {
+    const blocks: Block[] = [
+      {
+        object: "block",
+        id: "a",
+        type: "bulleted_list_item",
+        has_children: true,
+        bulleted_list_item: {
+          rich_text: [{ type: "text", text: { content: "Parent", link: null }, annotations: { ...DEFAULT_ANNOTATIONS }, plain_text: "Parent", href: null }],
+          color: "default",
+        },
+      } as unknown as Block,
+    ];
+    // Attach a code block child via _children
+    (blocks[0] as any)._children = [
+      {
+        object: "block",
+        id: "b",
+        type: "code",
+        has_children: false,
+        code: {
+          rich_text: [{ type: "text", text: { content: "x = 1", link: null }, annotations: { ...DEFAULT_ANNOTATIONS }, plain_text: "x = 1", href: null }],
+          caption: [],
+          language: "python",
+        },
+      },
+    ];
+    const md = blocksToMarkdown(blocks);
+    assert.ok(md.includes("  ```python"), "code fence should be indented");
+    assert.ok(md.includes("  x = 1"), "code content should be indented");
   });
 });

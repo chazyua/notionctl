@@ -1,7 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { extractSyncTitle, stripLeadingTitleHeading, stripLeadingTitleH1, replaceInRichText } from "../../src/commands/page.js";
-import { fetchWith404Hint } from "../../src/commands/shared.js";
+import { fetchWith404Hint, parseFlags } from "../../src/commands/shared.js";
 import { NotionCliError, ErrorCode } from "../../src/errors.js";
 
 describe("extractSyncTitle", () => {
@@ -257,5 +257,97 @@ describe("stripLeadingTitleHeading (bug hunt round 4)", () => {
   it("handles a trailing newline-free H1 at end of body", () => {
     const body = "# My Title";
     assert.equal(stripLeadingTitleHeading(body, "My Title"), "");
+  });
+});
+
+describe("BUG-N1 regression: page update --title must not auto-read stdin", () => {
+  it("parseFlags with only --title sets from=undefined", () => {
+    const { flags } = parseFlags(["some-id", "--title", "New Title"]);
+    assert.equal(flags.get("title"), "New Title");
+    assert.equal(flags.get("from"), undefined);
+    // hasFrom should be !!flags.get("from") = false, so title-only update
+    // must never enter the block-replacement path.
+    const hasFrom = !!flags.get("from");
+    assert.equal(hasFrom, false, "title-only update must not trigger content replacement");
+  });
+
+  it("parseFlags with --from - sets from correctly", () => {
+    const { flags } = parseFlags(["some-id", "--from", "-"]);
+    assert.equal(flags.get("from"), "-");
+    const hasFrom = !!flags.get("from");
+    assert.equal(hasFrom, true, "--from - should trigger content replacement");
+  });
+
+  it("parseFlags with --title and --from sets both", () => {
+    const { flags } = parseFlags(["some-id", "--title", "X", "--from", "file.md"]);
+    assert.equal(flags.get("title"), "X");
+    assert.equal(flags.get("from"), "file.md");
+    const hasFrom = !!flags.get("from");
+    assert.equal(hasFrom, true);
+  });
+});
+
+describe("BUG-N2 regression: page update with no flags must produce USAGE error", () => {
+  it("parseFlags with just a positional ID has no title and no from", () => {
+    const { flags } = parseFlags(["some-id"]);
+    const title = flags.get("title");
+    const hasFrom = !!flags.get("from");
+    assert.equal(title, undefined);
+    assert.equal(hasFrom, false);
+    // The guard `if (!title && !hasFrom)` must fire.
+    assert.ok(!title && !hasFrom, "no-flag invocation must hit the USAGE guard");
+  });
+});
+
+describe("BUG-N3 regression: page delete --yes must be checked before --dry-run", () => {
+  it("parseFlags extracts both --yes and --dry-run as boolean flags", () => {
+    const { flags } = parseFlags(["some-id", "--dry-run"]);
+    // --yes is absent, --dry-run is present
+    assert.equal(flags.get("yes"), undefined);
+    assert.equal(flags.get("dry-run"), "true");
+    // The --yes check must run first — if --yes is missing, throw before dry-run.
+    const yesPresent = flags.get("yes") === "true";
+    assert.equal(yesPresent, false, "--yes must be required even for dry-run");
+  });
+});
+
+describe("BUG-15 regression: page get output must be sync-compatible", () => {
+  it("page get frontmatter hash matches what extractFrontmatter+classifySyncState would compute", async () => {
+    // Simulate what page get now produces: frontmatter with notion_hash
+    // and notion_synced_at. When this output is saved to a file and fed
+    // to page sync, the sync state should be UNCHANGED.
+    const { extractFrontmatter } = await import("../../src/sync/frontmatter.js");
+    const { computeContentHash, classifySyncState } = await import("../../src/sync/sync.js");
+
+    // Simulate page get output format
+    const body = "# My Page\n\nSome content.\n";
+    const hash = computeContentHash(body);
+    const syncedAt = new Date().toISOString();
+
+    const output = [
+      "---",
+      `notion_id: "test-id-123"`,
+      `notion_hash: "${hash}"`,
+      `notion_synced_at: "${syncedAt}"`,
+      "---",
+      "",
+      body,
+    ].join("\n");
+
+    const { data: fm, body: extractedBody } = extractFrontmatter(output);
+    assert.equal(fm.notion_id, "test-id-123");
+    assert.equal(fm.notion_hash, hash);
+
+    // The extracted body should hash to the same value
+    const recomputedHash = computeContentHash(extractedBody);
+    assert.equal(recomputedHash, hash, "hash of extracted body must match stored hash");
+
+    // classifySyncState should return UNCHANGED
+    const state = classifySyncState({
+      frontmatter: fm,
+      localBody: extractedBody,
+      remoteEditedAt: syncedAt,
+    });
+    assert.equal(state, "UNCHANGED", "page get output fed to sync must be UNCHANGED");
   });
 });

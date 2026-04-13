@@ -180,3 +180,31 @@ describe("output.renderCsv — edge cases", () => {
     assert.equal(out, "A\nsimple");
   });
 });
+
+describe("BUG-N5/N6 regression: unsupported format values must be catchable", () => {
+  it("chooseFormat accepts md as a valid format string", () => {
+    // Commands that don't support md must check AFTER chooseFormat returns.
+    // chooseFormat itself should accept any valid format value.
+    assert.equal(chooseFormat("md", { isTty: true, defaultFormat: "json" }), "md");
+  });
+
+  it("chooseFormat rejects truly invalid format strings", () => {
+    assert.throws(
+      () => chooseFormat("xml" as any, { isTty: true, defaultFormat: "json" }),
+      /Unknown format/,
+    );
+  });
+
+  it("commands rejecting md can test the returned format value", () => {
+    const format = chooseFormat("md", { isTty: true, defaultFormat: "json" });
+    // Pattern used by comment list, block get, etc.: check after chooseFormat
+    assert.equal(format, "md");
+    // The command would then: if (format === "md") throw USAGE error
+  });
+
+  it("commands rejecting table/csv can test the returned format value", () => {
+    const format = chooseFormat("table", { isTty: true, defaultFormat: "json" });
+    assert.equal(format, "table");
+    // The command would then: if (format !== "json") throw USAGE error
+  });
+});

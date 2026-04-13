@@ -40,7 +40,7 @@ const ALERT_TYPE_TO_COLOR: Record<string, string> = {
 const PASS_THROUGH_RE = /^<!--\s*notion-block:\s*(\w+)\s+id=([\w-]+)(?:\s[^>]*)?\s*-->$/;
 
 const MEDIA_SIDECAR_TYPES = new Set(["image", "video", "file", "pdf"]);
-const LINK_SIDECAR_TYPES = new Set(["bookmark", "link_preview"]);
+const LINK_SIDECAR_TYPES = new Set(["bookmark", "link_preview", "embed"]);
 
 function peekSidecar(lines: string[], startIdx: number): { type: string; nextIdx: number } | null {
   let i = startIdx;
@@ -179,17 +179,27 @@ function markdownToBlocksInternal(md: string, ctx: ParseContext): Block[] {
       if (parsedLink) {
         const sidecar = peekSidecar(lines, i + 1);
         if (sidecar && LINK_SIDECAR_TYPES.has(sidecar.type)) {
-          const blockType = sidecar.type as "bookmark" | "link_preview";
-          const captionRuns = parsedLink.label && parsedLink.label !== parsedLink.url
-            ? [{ type: "text", text: { content: parsedLink.label, link: null }, annotations: { bold: false, italic: false, strikethrough: false, underline: false, code: false, color: "default" }, plain_text: parsedLink.label, href: null }]
-            : [];
-          blocks.push({
-            object: "block",
-            id: "",
-            type: blockType,
-            has_children: false,
-            [blockType]: { url: parsedLink.url, caption: captionRuns },
-          } as unknown as Block);
+          if (sidecar.type === "embed") {
+            blocks.push({
+              object: "block",
+              id: "",
+              type: "embed",
+              has_children: false,
+              embed: { url: parsedLink.url },
+            } as unknown as Block);
+          } else {
+            const blockType = sidecar.type as "bookmark" | "link_preview";
+            const captionRuns = parsedLink.label && parsedLink.label !== parsedLink.url
+              ? [{ type: "text", text: { content: parsedLink.label, link: null }, annotations: { bold: false, italic: false, strikethrough: false, underline: false, code: false, color: "default" }, plain_text: parsedLink.label, href: null }]
+              : [];
+            blocks.push({
+              object: "block",
+              id: "",
+              type: blockType,
+              has_children: false,
+              [blockType]: { url: parsedLink.url, caption: captionRuns },
+            } as unknown as Block);
+          }
           i = sidecar.nextIdx;
           continue;
         }
@@ -476,7 +486,7 @@ function markdownToBlocksInternal(md: string, ctx: ParseContext): Block[] {
 
     // Round-trip sidecar comment with no preceding media line. These are
     // emitted by the read path for block types we can't reconstruct from
-    // markdown — structural blocks (synced_block, column_list, embed, etc.)
+    // markdown — structural blocks (synced_block, column_list, etc.)
     // and Notion-hosted media (uploaded files/images/videos/pdfs whose URLs
     // are short-lived signed links Notion's own API can't re-ingest).
     // Creating a stub block here would fail Notion's API or silently store
@@ -489,7 +499,7 @@ function markdownToBlocksInternal(md: string, ctx: ParseContext): Block[] {
           || droppedType === "file" || droppedType === "pdf";
         const reason = isMedia
           ? `Notion-hosted media (uploaded files/images) cannot round-trip through markdown — the signed S3 URL is ephemeral. Re-upload with 'notionctl file upload' or use 'page append' for additive edits.`
-          : `structural blocks (synced_block, column_list, embed, etc.) cannot be expressed in markdown and are preserved only in the original Notion workspace.`;
+          : `structural blocks (synced_block, column_list, etc.) cannot be expressed in markdown and are preserved only in the original Notion workspace.`;
         warnHandler(`notionctl: dropped '${droppedType}' block on write — ${reason}`);
       }
       i++;
@@ -653,6 +663,7 @@ interface ListItem {
   checked: boolean;
   indent: number;
   children: ListItem[];
+  trailingBlocks: Block[];
 }
 
 function isListLine(line: string): boolean {
@@ -660,15 +671,55 @@ function isListLine(line: string): boolean {
 }
 
 function parseListSection(lines: string[], startIdx: number): { blocks: Block[]; nextIdx: number } {
-  const rawItems: Omit<ListItem, "children">[] = [];
+  const rawItems: Omit<ListItem, "children" | "trailingBlocks">[] = [];
+  const trailingBlocksMap = new Map<number, Block[]>();
   let i = startIdx;
   while (i < lines.length && isListLine(lines[i]!)) {
     const parsed = classifyListLine(lines[i]!);
     if (parsed === null) break;
     rawItems.push(parsed);
+    const itemIdx = rawItems.length - 1;
     i++;
+    // Peek for indented code fences belonging to this list item. A code fence
+    // is considered part of the list item when it is indented at least as far
+    // as the item's content start (indent + marker width, approximated as
+    // indent + 2 so "- " items pick up 2-space-indented fences).
+    const contentIndent = parsed.indent + 2;
+    while (i < lines.length) {
+      // Skip blank lines between the list item and a potential code fence
+      let peek = i;
+      while (peek < lines.length && lines[peek]!.trim().length === 0) peek++;
+      if (peek >= lines.length) break;
+      const peekLine = lines[peek]!;
+      const peekLineIndent = (peekLine.match(/^(\s*)/) ?? ["", ""])[1]!.length;
+      const peekTrimmed = peekLine.trim();
+      const fenceMatch = /^(`{3,}|~{3,})(.*)$/.exec(peekTrimmed);
+      if (!fenceMatch || peekLineIndent < contentIndent) break;
+      // Consume the indented code fence
+      const fenceChar = fenceMatch[1]![0]!;
+      const fenceLen = fenceMatch[1]!.length;
+      const lang = fenceMatch[2]!.trim();
+      const closePat = fenceChar === "`"
+        ? new RegExp(`^\`{${fenceLen},}\\s*$`)
+        : new RegExp(`^~{${fenceLen},}\\s*$`);
+      const codeLines: string[] = [];
+      i = peek + 1;
+      while (i < lines.length && !closePat.test(lines[i]!.trim())) {
+        // Strip up to contentIndent spaces of leading indentation from code body
+        const codeLine = lines[i]!;
+        const stripped = codeLine.length > contentIndent && /^\s+/.test(codeLine)
+          ? codeLine.slice(Math.min(contentIndent, (codeLine.match(/^(\s*)/)![1]!.length)))
+          : codeLine;
+        codeLines.push(stripped);
+        i++;
+      }
+      if (i < lines.length) i++; // consume closing fence
+      const blocks = trailingBlocksMap.get(itemIdx) ?? [];
+      blocks.push(makeCodeBlock(codeLines.join("\n"), lang));
+      trailingBlocksMap.set(itemIdx, blocks);
+    }
   }
-  const { items: tree, flattened } = capListDepth(buildListTree(rawItems));
+  const { items: tree, flattened } = capListDepth(buildListTree(rawItems, trailingBlocksMap));
   if (flattened > 0 && warnHandler) {
     warnHandler(
       `notionctl: ${flattened} list item${flattened === 1 ? "" : "s"} deeper than 2 levels were promoted to the maximum allowed depth. Notion's API supports at most 2 levels of nested children.`,
@@ -677,7 +728,7 @@ function parseListSection(lines: string[], startIdx: number): { blocks: Block[];
   return { blocks: tree.map(listItemToBlock), nextIdx: i };
 }
 
-function classifyListLine(line: string): Omit<ListItem, "children"> | null {
+function classifyListLine(line: string): Omit<ListItem, "children" | "trailingBlocks"> | null {
   const indent = (line.match(/^(\s*)/) ?? ["", ""])[1]!.length;
   const trimmed = line.trim();
   // Allow empty to-do bodies (`- [ ]` with no trailing text). The previous
@@ -713,11 +764,12 @@ function classifyListLine(line: string): Omit<ListItem, "children"> | null {
   return null;
 }
 
-function buildListTree(flat: Omit<ListItem, "children">[]): ListItem[] {
+function buildListTree(flat: Omit<ListItem, "children" | "trailingBlocks">[], trailingBlocksMap?: Map<number, Block[]>): ListItem[] {
   const roots: ListItem[] = [];
   const stack: ListItem[] = [];
-  for (const raw of flat) {
-    const item: ListItem = { ...raw, children: [] };
+  for (let idx = 0; idx < flat.length; idx++) {
+    const raw = flat[idx]!;
+    const item: ListItem = { ...raw, children: [], trailingBlocks: trailingBlocksMap?.get(idx) ?? [] };
     while (stack.length > 0 && stack[stack.length - 1]!.indent >= item.indent) {
       stack.pop();
     }
@@ -753,8 +805,6 @@ function capListDepth(items: ListItem[], depth: number = 0): { items: ListItem[]
   let flattened = 0;
   for (const item of items) {
     if (depth + 1 >= MAX_CHILD_DEPTH) {
-      // This item's children would exceed the limit. Promote all
-      // descendants to be siblings of this item (at the same level).
       result.push({ ...item, children: [] });
       const descendants = collectDescendants(item.children);
       if (descendants.length > 0) flattened += descendants.length;
@@ -778,7 +828,7 @@ function collectDescendants(items: ListItem[]): ListItem[] {
 }
 
 function listItemToBlock(item: ListItem): Block {
-  const childBlocks = item.children.map(listItemToBlock);
+  const childBlocks = [...item.children.map(listItemToBlock), ...item.trailingBlocks];
   if (item.type === "todo") {
     const body: any = {
       rich_text: markdownToRichText(item.text),

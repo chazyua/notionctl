@@ -23,6 +23,9 @@ export async function whoamiCommand(ctx: CommandContext): Promise<string> {
     isTty: isStdoutTty(),
     defaultFormat: "table",
   });
+  if (format === "md") {
+    throw new NotionCliError(ErrorCode.USAGE, "whoami does not support --format md. Use json, table, or csv.");
+  }
   if (format === "json") return renderJson(me);
   const tableData = {
     columns: ["Field", "Value"],
@@ -57,7 +60,7 @@ export async function searchCommand(ctx: CommandContext): Promise<string> {
   if (typeFilter === "page" || typeFilter === "db") {
     body.filter = { value: typeFilter === "page" ? "page" : "data_source", property: "object" };
   }
-  const res = await notionRequest<{ results: Array<{ id: string; object: string; url?: string; properties?: Record<string, unknown> }> }>(
+  const res = await notionRequest<{ results: Array<{ id: string; object: string; url?: string; title?: Array<{ plain_text?: string }>; properties?: Record<string, unknown>; parent?: { database_id?: string } }> }>(
     "POST",
     "/search",
     body,
@@ -66,18 +69,45 @@ export async function searchCommand(ctx: CommandContext): Promise<string> {
     isTty: isStdoutTty(),
     defaultFormat: "table",
   });
+  if (format === "md") {
+    throw new NotionCliError(ErrorCode.USAGE, "search does not support --format md. Use json, table, or csv.");
+  }
   if (format === "json") return renderJson(res);
+
+  // For data_source results (databases), show the database_id (usable with db
+  // commands) instead of the data_source id, and resolve a display title from
+  // the top-level title array. For pages, extract title from properties.
+  const resolveRow = (r: typeof res.results[0]): { object: string; id: string; title: string; url: string } => {
+    if (r.object === "data_source") {
+      const dbId = r.parent?.database_id ?? r.id;
+      const title = (r.title ?? []).map((t) => t.plain_text ?? "").join("") || "";
+      return { object: "database", id: dbId, title, url: r.url ?? "" };
+    }
+    let title = "";
+    if (r.properties) {
+      for (const value of Object.values(r.properties)) {
+        const prop = value as { type?: string; title?: Array<{ plain_text?: string }> };
+        if (prop.type === "title" && prop.title) {
+          title = prop.title.map((t) => t.plain_text ?? "").join("");
+          break;
+        }
+      }
+    }
+    return { object: r.object, id: r.id, title, url: r.url ?? "" };
+  };
+
   if (res.results.length === 0) {
-    const tableData = { columns: ["Object", "ID", "URL"], rows: [] as string[][] };
+    const tableData = { columns: ["Object", "ID", "Title", "URL"], rows: [] as string[][] };
     if (format === "csv") return renderCsv(tableData);
     if (format === "table") {
       return renderTable(tableData) + "\n\nNo results. If you expected results, ensure the integration is connected to the page via ··· → Connections in Notion.";
     }
     return "No results. If you expected results, ensure the integration is connected to the page via ··· → Connections in Notion.";
   }
+  const rows = res.results.map(resolveRow);
   const tableData = {
-    columns: ["Object", "ID", "URL"],
-    rows: res.results.map((r) => [r.object, r.id, r.url ?? ""]),
+    columns: ["Object", "ID", "Title", "URL"],
+    rows: rows.map((r) => [r.object, r.id, r.title, r.url]),
   };
   if (format === "csv") return renderCsv(tableData);
   return renderTable(tableData);

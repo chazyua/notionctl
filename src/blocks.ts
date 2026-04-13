@@ -33,6 +33,7 @@ const CONTENT_BLOCK_TYPES = new Set([
   "toggle", "callout", "quote",
   "heading_1", "heading_2", "heading_3",
   "paragraph",
+  "column_list", "column",
 ]);
 
 export type FetchBlockTreeMode = "content" | "all";

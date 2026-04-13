@@ -63,6 +63,9 @@ export async function dbSchemaCommand(ctx: { args: string[] }): Promise<string> 
     isTty: isStdoutTty(),
     defaultFormat: "table",
   });
+  if (format === "md") {
+    throw new NotionCliError(ErrorCode.USAGE, "db schema does not support --format md. Use json, table, or csv.");
+  }
   if (format === "json") return renderJson(schema);
   const tableData = {
     columns: ["Name", "Type"],
@@ -275,6 +278,9 @@ export async function dbQueryCommand(ctx: { args: string[] }): Promise<string> {
     isTty: isStdoutTty(),
     defaultFormat: "table",
   });
+  if (format === "md") {
+    throw new NotionCliError(ErrorCode.USAGE, "db query does not support --format md. Use json, table, or csv.");
+  }
   if (format === "json") return renderJson(res);
 
   const columns = ["ID", ...Object.keys(schema)];
@@ -396,7 +402,16 @@ export async function dbCreateCommand(ctx: { args: string[] }): Promise<string> 
     const raw = schemaJson.startsWith("@")
       ? await readFileText(schemaJson.slice(1), "schema JSON")
       : schemaJson;
-    Object.assign(properties, parseJsonObject(raw, "--schema-json"));
+    const parsed = parseJsonObject(raw, "--schema-json");
+    Object.assign(properties, parsed);
+    // If --schema-json provides a title column with a different name,
+    // remove the default "Name" to avoid "Multiple title properties" API error.
+    for (const [name, schema] of Object.entries(parsed)) {
+      if (name !== "Name" && typeof schema === "object" && schema !== null && "title" in (schema as Record<string, unknown>)) {
+        delete properties.Name;
+        break;
+      }
+    }
   }
 
   // --prop Name=type[:options]: individual columns added on top.
@@ -417,6 +432,18 @@ export async function dbCreateCommand(ctx: { args: string[] }): Promise<string> 
   }
   if (titleOverride && titleOverride !== "Name") {
     delete properties.Name;
+  }
+
+  // Validate exactly one title column — combined --schema-json + --prop
+  // can produce duplicates that the Notion API rejects with a cryptic error.
+  const titleCols = Object.entries(properties).filter(
+    ([, s]) => typeof s === "object" && s !== null && "title" in (s as Record<string, unknown>),
+  );
+  if (titleCols.length > 1) {
+    throw new NotionCliError(
+      ErrorCode.USAGE,
+      `Multiple title columns detected (${titleCols.map(([n]) => n).join(", ")}). A database can have exactly one title column.`,
+    );
   }
 
   const payload = {
@@ -635,6 +662,9 @@ export async function dbRowDeleteCommand(ctx: { args: string[] }): Promise<strin
     throw new NotionCliError(ErrorCode.USAGE, "Refusing to archive without --yes");
   }
   const id = resolvePageId(positional[0]!);
+  if (getBooleanFlag(flags, "dry-run")) {
+    return renderJson({ action: "db row delete", id });
+  }
   const res = await fetchWith404Hint(
     () => notionRequest("PATCH", `/pages/${id}`, { in_trash: true }),
     `Database row ${id}`,

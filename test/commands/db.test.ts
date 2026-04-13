@@ -452,3 +452,71 @@ describe("BUG-E regression: parseSimpleSort rejects extra colon segments", () =>
     assert.deepEqual(parseSimpleSort("Priority:desc", s), { property: "Priority", direction: "descending" });
   });
 });
+
+describe("BUG-N7 regression: --schema-json title column deduplication", () => {
+  it("parseColumnSpec recognizes title type for override detection", () => {
+    const { name, schema } = parseColumnSpec("Task=title");
+    assert.equal(name, "Task");
+    assert.ok("title" in schema, "title key must be present for override detection");
+  });
+
+  it("detects title property in a schema-json-style object", () => {
+    // Simulates the check added to dbCreateCommand
+    const parsed: Record<string, unknown> = {
+      Task: { title: {} },
+      Status: { select: { options: [{ name: "Open" }] } },
+    };
+    const properties: Record<string, unknown> = { Name: { title: {} }, ...parsed };
+
+    // The fix scans parsed entries for a non-Name title column and removes Name
+    for (const [name, schema] of Object.entries(parsed)) {
+      if (name !== "Name" && typeof schema === "object" && schema !== null && "title" in (schema as Record<string, unknown>)) {
+        delete properties.Name;
+        break;
+      }
+    }
+
+    assert.equal(properties.Name, undefined, "default Name should be removed when schema-json provides a different title column");
+    assert.ok("Task" in properties, "custom title column should remain");
+    assert.ok("Status" in properties, "non-title columns should remain");
+  });
+
+  it("does not remove Name when schema-json has no title column", () => {
+    const parsed: Record<string, unknown> = {
+      Status: { select: {} },
+    };
+    const properties: Record<string, unknown> = { Name: { title: {} }, ...parsed };
+
+    let removed = false;
+    for (const [name, schema] of Object.entries(parsed)) {
+      if (name !== "Name" && typeof schema === "object" && schema !== null && "title" in (schema as Record<string, unknown>)) {
+        delete properties.Name;
+        removed = true;
+        break;
+      }
+    }
+
+    assert.equal(removed, false, "Name should not be removed when no title override exists");
+    assert.ok("Name" in properties);
+  });
+
+  it("does not remove Name when schema-json overrides Name itself", () => {
+    const parsed: Record<string, unknown> = {
+      Name: { title: {} },
+    };
+    const properties: Record<string, unknown> = { Name: { title: {} } };
+    Object.assign(properties, parsed);
+
+    let removed = false;
+    for (const [name, schema] of Object.entries(parsed)) {
+      if (name !== "Name" && typeof schema === "object" && schema !== null && "title" in (schema as Record<string, unknown>)) {
+        delete properties.Name;
+        removed = true;
+        break;
+      }
+    }
+
+    assert.equal(removed, false, "Name should not be removed when schema-json just replaces Name");
+    assert.ok("Name" in properties);
+  });
+});
