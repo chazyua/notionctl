@@ -274,7 +274,7 @@ describe("auth login (OAuth)", () => {
   });
 });
 
-describe("BUG-F regression: config dir permission check uses bitwise mask", () => {
+describe("config dir permission check uses bitwise mask", () => {
   // The auth doctor check is (mode & 0o077) === 0, meaning no group/other bits.
   // This validates the logic catches insecure modes that the old <= 0o700 check missed.
   it("0o700 (rwx------) passes the check", () => {

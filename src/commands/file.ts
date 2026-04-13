@@ -185,7 +185,7 @@ export async function fileUploadCommand(ctx: { args: string[] }): Promise<string
   if (fileSize === 0) {
     throw new NotionCliError(ErrorCode.USAGE, `File is empty: ${filePath}`);
   }
-  // BUG-12: the per-workspace limit is authoritative — the CLI hard cap is
+  // The per-workspace limit is authoritative — the CLI hard cap is
   // just a safety net. Fetch the real limit from /users/me so a user on a
   // 5 MiB workspace gets a clean pre-flight error instead of a mid-upload failure.
   const CLI_MAX_UPLOAD_BYTES = 20 * 1024 * 1024;

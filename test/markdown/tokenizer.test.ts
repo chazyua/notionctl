@@ -298,7 +298,7 @@ describe("markdownToRichText", () => {
   });
 
   it("single * surrounded by spaces is literal (math)", () => {
-    // Regression: BUG-02. `1 * 2 = 2` used to toggle italic on every `*`.
+    // `1 * 2 = 2` used to toggle italic on every `*`.
     const runs = markdownToRichText("1 * 2 = 2 and 3 * 4 = 12");
     assert.ok(runs.every(r => !r.annotations.italic), "no runs should be italic");
     assert.equal(runs.map(r => r.plain_text).join(""), "1 * 2 = 2 and 3 * 4 = 12");
@@ -324,7 +324,7 @@ describe("markdownToRichText", () => {
   });
 
   it("dollar sign followed by digit stays literal (currency)", () => {
-    // Regression: BUG-03. $100 or $200 used to be parsed as equation.
+    // $100 or $200 used to be parsed as equation.
     const runs = markdownToRichText("The cost is $100 or $200.");
     assert.ok(runs.every(r => r.type === "text"), "no equation runs");
     assert.equal(runs.map(r => r.plain_text).join(""), "The cost is $100 or $200.");
@@ -341,7 +341,7 @@ describe("markdownToRichText", () => {
   });
 
   it("mailto: link is preserved", () => {
-    // Regression: BUG-05. mailto links used to be silently dropped.
+    // mailto links used to be silently dropped.
     const runs = markdownToRichText("Email [us](mailto:hi@example.com) please");
     const linkRun = runs.find(r => r.plain_text === "us");
     assert.ok(linkRun);
@@ -358,7 +358,7 @@ describe("markdownToRichText", () => {
   });
 });
 
-describe("findReplaceRichText (BUG-09)", () => {
+describe("findReplaceRichText", () => {
   it("returns 0 matches when find is not present", () => {
     const runs = [text("Hello world")];
     const { runs: out, count } = findReplaceRichText(runs, "xyz", "abc");
@@ -413,7 +413,7 @@ describe("findReplaceRichText (BUG-09)", () => {
   });
 });
 
-describe("splitLongRuns (BUG-B)", () => {
+describe("splitLongRuns", () => {
   it("does not split surrogate pairs", () => {
     // Build a string ending with a surrogate pair exactly at the 2000 boundary.
     // 1999 ASCII chars + 1 emoji (2 UTF-16 units) = 2001 UTF-16 units, which crosses
@@ -730,7 +730,7 @@ describe("richTextToMarkdown — additional edge cases", () => {
   });
 });
 
-describe("bug hunt round 4 regressions", () => {
+describe("inline equation and emphasis edge cases", () => {
   it("does not parse currency as equation when closing $ is preceded by whitespace", () => {
     const runs = markdownToRichText("I paid $5 for coffee and $10 for lunch.");
     assert.equal(runs.length, 1);

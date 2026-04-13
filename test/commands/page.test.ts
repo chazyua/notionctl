@@ -67,7 +67,7 @@ describe("extractSyncTitle", () => {
   });
 });
 
-describe("stripLeadingTitleH1 (BUG-07)", () => {
+describe("stripLeadingTitleH1", () => {
   it("strips top-level H1 that matches the title", () => {
     const body = "# My Title\n\nContent";
     assert.equal(stripLeadingTitleH1(body, "My Title"), "Content");
@@ -79,15 +79,15 @@ describe("stripLeadingTitleH1 (BUG-07)", () => {
   });
 
   it("does not strip H1 inside a fenced code block", () => {
-    const body = "```markdown\n# BUG-07\n```\n\nReal body.";
-    const out = stripLeadingTitleH1(body, "BUG-07");
-    assert.ok(out.includes("# BUG-07"), "H1 inside fence must be preserved");
+    const body = "```markdown\n# Code Title\n```\n\nReal body.";
+    const out = stripLeadingTitleH1(body, "Code Title");
+    assert.ok(out.includes("# Code Title"), "H1 inside fence must be preserved");
   });
 
   it("does not strip H1 inside a tilde-fenced code block", () => {
-    const body = "~~~\n# BUG-07\n~~~\n\nReal body.";
-    const out = stripLeadingTitleH1(body, "BUG-07");
-    assert.ok(out.includes("# BUG-07"));
+    const body = "~~~\n# Code Title\n~~~\n\nReal body.";
+    const out = stripLeadingTitleH1(body, "Code Title");
+    assert.ok(out.includes("# Code Title"));
   });
 
   it("strips real top-level H1 even when a fence follows later", () => {
@@ -134,7 +134,7 @@ describe("fetchWith404Hint", () => {
   });
 });
 
-describe("replaceInRichText (bug hunt round 5 — cross-run find-replace)", () => {
+describe("replaceInRichText — cross-run find-replace", () => {
   const plain = { bold: false, italic: false, strikethrough: false, underline: false, code: false, color: "default" };
   const bold = { ...plain, bold: true };
   const makeRun = (content: string, annotations: typeof plain) => ({
@@ -230,7 +230,7 @@ describe("replaceInRichText (bug hunt round 5 — cross-run find-replace)", () =
   });
 });
 
-describe("stripLeadingTitleHeading (bug hunt round 4)", () => {
+describe("stripLeadingTitleHeading", () => {
   it("strips a leading # Title matching the title argument", () => {
     const body = "# My Title\n\nBody content.";
     assert.equal(stripLeadingTitleHeading(body, "My Title"), "Body content.");
@@ -260,7 +260,7 @@ describe("stripLeadingTitleHeading (bug hunt round 4)", () => {
   });
 });
 
-describe("BUG-N1 regression: page update --title must not auto-read stdin", () => {
+describe("page update --title must not auto-read stdin", () => {
   it("parseFlags with only --title sets from=undefined", () => {
     const { flags } = parseFlags(["some-id", "--title", "New Title"]);
     assert.equal(flags.get("title"), "New Title");
@@ -287,7 +287,7 @@ describe("BUG-N1 regression: page update --title must not auto-read stdin", () =
   });
 });
 
-describe("BUG-N2 regression: page update with no flags must produce USAGE error", () => {
+describe("page update with no flags must produce USAGE error", () => {
   it("parseFlags with just a positional ID has no title and no from", () => {
     const { flags } = parseFlags(["some-id"]);
     const title = flags.get("title");
@@ -299,7 +299,7 @@ describe("BUG-N2 regression: page update with no flags must produce USAGE error"
   });
 });
 
-describe("BUG-N3 regression: page delete --yes must be checked before --dry-run", () => {
+describe("page delete --yes must be checked before --dry-run", () => {
   it("parseFlags extracts both --yes and --dry-run as boolean flags", () => {
     const { flags } = parseFlags(["some-id", "--dry-run"]);
     // --yes is absent, --dry-run is present
@@ -311,7 +311,7 @@ describe("BUG-N3 regression: page delete --yes must be checked before --dry-run"
   });
 });
 
-describe("BUG-15 regression: page get output must be sync-compatible", () => {
+describe("page get output must be sync-compatible", () => {
   it("page get frontmatter hash matches what extractFrontmatter+classifySyncState would compute", async () => {
     // Simulate what page get now produces: frontmatter with notion_hash
     // and notion_synced_at. When this output is saved to a file and fed

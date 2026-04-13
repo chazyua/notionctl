@@ -390,7 +390,7 @@ describe("appendBlocksChunked", () => {
   });
 });
 
-describe("BUG-L regression: exchangeOAuthCode respects timeout", () => {
+describe("exchangeOAuthCode respects timeout", () => {
   let originalFetch: typeof globalThis.fetch;
 
   before(() => {

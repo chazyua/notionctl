@@ -354,7 +354,7 @@ describe("image parsing", () => {
     assert.equal(blocks[2]!.type, "paragraph");
   });
 
-  it("image with parens in URL query still parses (BUG-10)", () => {
+  it("image with parens in URL query still parses", () => {
     const blocks = markdownToBlocks("![alt](https://example.com/img.png?size=(large))");
     assert.equal(blocks.length, 1);
     assert.equal(blocks[0]!.type, "image");
@@ -479,7 +479,7 @@ describe("blockquote parsing", () => {
   });
 });
 
-describe("markdownToBlocks — inline details body preservation (BUG-2 regression)", () => {
+describe("markdownToBlocks — inline details body preservation", () => {
   it("inline details with body creates toggle with children", () => {
     const md = "<details><summary>Title</summary>Body content here</details>";
     const blocks = markdownToBlocks(md);
@@ -510,7 +510,7 @@ describe("markdownToBlocks — inline details body preservation (BUG-2 regressio
   });
 });
 
-describe("markdownToBlocks — table column normalization (BUG-4 regression)", () => {
+describe("markdownToBlocks — table column normalization", () => {
   it("extra cells in data row are truncated to header width", () => {
     const md = "| A | B |\n| --- | --- |\n| 1 | 2 | 3 | 4 |";
     const blocks = markdownToBlocks(md);
@@ -537,7 +537,7 @@ describe("markdownToBlocks — table column normalization (BUG-4 regression)", (
   });
 });
 
-describe("markdownToBlocks — callout child blocks (BUG-5/6 regression)", () => {
+describe("markdownToBlocks — callout child blocks", () => {
   it("callout with list items creates children", () => {
     const md = "> [!NOTE]\n> Intro text\n> - Item one\n> - Item two";
     const blocks = markdownToBlocks(md);
@@ -626,7 +626,7 @@ describe("markdownToBlocks — callout sidecar color and icon (BH2-4)", () => {
 });
 
 describe("markdownToBlocks — H4/H5/H6 headings downgraded to H3 (BH2-5)", () => {
-  it("writes a stderr warning on downgrade (BUG-08)", () => {
+  it("writes a stderr warning on downgrade", () => {
     const captured: string[] = [];
     const origWrite = process.stderr.write.bind(process.stderr);
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -668,7 +668,7 @@ describe("markdownToBlocks — H4/H5/H6 headings downgraded to H3 (BH2-5)", () =
   });
 });
 
-describe("bug hunt round 4 regressions — write", () => {
+describe("markdown write edge cases", () => {
   afterEach(() => setMarkdownWarnHandler(null));
 
   it("emits a warning via the registered handler when lists are flattened", () => {
@@ -708,7 +708,7 @@ describe("bug hunt round 4 regressions — write", () => {
   });
 });
 
-describe("bug hunt round 6 — markdown write fixes", () => {
+describe("markdown write — list and heading fixes", () => {
   it("empty todo - [ ] is parsed as an unchecked to_do, not a bulleted list", () => {
     const blocks = markdownToBlocks("- [ ]");
     assert.equal(blocks.length, 1);
@@ -855,7 +855,7 @@ describe("markdownToBlocks — empty-body list items", () => {
   });
 });
 
-describe("BUG-C regression: notion-table has_column_header=false round-trip", () => {
+describe("notion-table has_column_header=false round-trip", () => {
   it("consumes the sidecar comment and sets has_column_header to false", () => {
     const md = [
       "<!-- notion-table: has_column_header=false -->",
@@ -886,7 +886,7 @@ describe("BUG-C regression: notion-table has_column_header=false round-trip", ()
   });
 });
 
-describe("BUG-K regression: code block closing fence respects CommonMark indentation", () => {
+describe("code block closing fence respects CommonMark indentation", () => {
   it("indented backticks (4+ spaces) inside a code block are treated as content, not a closing fence", () => {
     const md = [
       "```",
@@ -918,7 +918,7 @@ describe("BUG-K regression: code block closing fence respects CommonMark indenta
   });
 });
 
-describe("BUG-14 regression: embed sidecar round-trips back to embed block", () => {
+describe("embed sidecar round-trips back to embed block", () => {
   it("link with embed sidecar becomes embed block", () => {
     const md = [
       "[https://www.youtube.com/watch?v=test123](https://www.youtube.com/watch?v=test123)",
@@ -942,7 +942,7 @@ describe("BUG-14 regression: embed sidecar round-trips back to embed block", () 
   });
 });
 
-describe("BUG-N4 regression: markdownToBlocks does NOT strip YAML frontmatter", () => {
+describe("markdownToBlocks does NOT strip YAML frontmatter", () => {
   // markdownToBlocks is a pure markdown-to-blocks converter. Frontmatter
   // stripping is the caller's responsibility (extractFrontmatter). This test
   // confirms that block append must strip frontmatter before calling

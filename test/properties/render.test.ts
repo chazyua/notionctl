@@ -104,7 +104,7 @@ describe("renderProperty", () => {
   });
 });
 
-describe("BUG-H regression: rollup array flattens nested values to strings", () => {
+describe("rollup array flattens nested values to strings", () => {
   it("rollup array of numbers produces string array", () => {
     const result = renderProperty({
       type: "rollup",

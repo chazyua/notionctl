@@ -2,7 +2,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { resolveUploadName, guessMimeType, looksLikeText } from "../../src/commands/file.js";
 
-describe("resolveUploadName (bug hunt round 4)", () => {
+describe("resolveUploadName", () => {
   it("leaves a supported extension alone", () => {
     const out = resolveUploadName("notes.md");
     assert.equal(out.fallback, false);
@@ -34,7 +34,7 @@ describe("resolveUploadName (bug hunt round 4)", () => {
   });
 });
 
-describe("guessMimeType (bug hunt round 4)", () => {
+describe("guessMimeType", () => {
   it("returns application/octet-stream for unknown extensions", () => {
     assert.equal(guessMimeType("thing.xyz"), "application/octet-stream");
   });
@@ -70,7 +70,7 @@ describe("looksLikeText", () => {
   });
 });
 
-// BUG-B regression: file upload with directory path now throws a clean
+// file upload with directory path now throws a clean
 // USAGE error ("Not a regular file: ...") instead of crashing with EISDIR.
 // The fix is an st.isFile() check in fileUploadCommand — tested via dogfood
 // since the command requires filesystem + network integration.

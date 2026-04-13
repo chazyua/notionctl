@@ -93,7 +93,7 @@ describe("classifySyncState", () => {
     assert.equal(state, SyncState.CHANGED);
   });
 
-  it("DRIFT detected when remote edited in a later minute (BUG-3 context)", () => {
+  it("DRIFT detected when remote edited in a later minute", () => {
     // Notion's last_edited_time has minute precision.
     // sync at 10:05:45, remote edit in a later minute (10:06:00) → DRIFT
     const state = classifySyncState({

@@ -128,7 +128,7 @@ describe("getBooleanFlag", () => {
   });
 });
 
-describe("bug hunt round 4 regressions — parseFlags", () => {
+describe("parseFlags edge cases", () => {
   it("throws when a value flag is followed by another --flag instead of a value", () => {
     assert.throws(
       () => parseFlags(["--title", "--parent", "xyz"]),
@@ -155,7 +155,7 @@ describe("bug hunt round 4 regressions — parseFlags", () => {
   });
 });
 
-describe("bug hunt round 6 — readFileText error translation", () => {
+describe("readFileText error translation", () => {
   it("translates ENOENT into a typed USAGE error", async () => {
     let caught: NotionCliError | undefined;
     try {
@@ -181,7 +181,7 @@ describe("bug hunt round 6 — readFileText error translation", () => {
   });
 });
 
-describe("bug hunt round 6 audit — parseJsonObject prototype-pollution recursion", () => {
+describe("parseJsonObject prototype-pollution guard", () => {
   it("strips top-level __proto__ / constructor / prototype keys", () => {
     const out = parseJsonObject(
       '{"__proto__":{"bad":true},"constructor":{"bad":true},"prototype":{"bad":true},"keep":1}',

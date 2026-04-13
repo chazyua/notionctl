@@ -228,7 +228,7 @@ describe("parseProperty — error cases", () => {
   });
 });
 
-describe("bug hunt round 4 regressions — properties", () => {
+describe("property parsing edge cases", () => {
   it("checkbox accepts True/TRUE/1/yes/on as true", () => {
     for (const v of ["True", "TRUE", "1", "yes", "YES", "on", "y"]) {
       assert.deepEqual(parseProperty(schema, "Done", v), { checkbox: true }, `expected ${v} to be true`);
@@ -276,7 +276,7 @@ describe("bug hunt round 4 regressions — properties", () => {
   });
 });
 
-describe("BUG-G regression: files property url: with trailing slash", () => {
+describe("files property url: with trailing slash", () => {
   it("uses 'file' as name when URL ends with /", () => {
     const result = parseProperty(schema, "Attachment", "url:https://example.com/");
     assert.deepEqual(result, {

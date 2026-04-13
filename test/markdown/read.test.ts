@@ -124,7 +124,7 @@ describe("blocksToMarkdown basic blocks", () => {
     assert.match(blocksToMarkdown(blocks), /```typescript\nconst x = 1;\n```/);
   });
 
-  it("code block containing triple backticks uses a longer fence (BUG-04)", () => {
+  it("code block containing triple backticks uses a longer fence", () => {
     const inner = "Here is a nested fence:\n```python\nprint('hi')\n```\nEnd.";
     const blocks: Block[] = [
       mkBlock("code", {
@@ -436,7 +436,7 @@ describe("blocksToMarkdown nested lists", () => {
   });
 });
 
-describe("blocksToMarkdown — blockquote multi-line (BUG-1 regression)", () => {
+describe("blocksToMarkdown — blockquote multi-line", () => {
   it("multi-line quote rich_text gets > prefix on every line", () => {
     const block = mkBlock("quote", {
       rich_text: [rt("Line one\nLine two\nLine three")],
@@ -501,7 +501,7 @@ describe("blocksToMarkdown — blockquote multi-line (BUG-1 regression)", () => 
   });
 });
 
-describe("bug hunt round 6 — code block fence widening", () => {
+describe("code block fence widening", () => {
   it("emits a longer fence when code body contains triple backticks", () => {
     const blocks: Block[] = [
       mkBlock("code", {
@@ -530,7 +530,7 @@ describe("bug hunt round 6 — code block fence widening", () => {
   });
 });
 
-describe("BUG-13 regression: column content must not be silently dropped", () => {
+describe("column content must not be silently dropped", () => {
   it("renders column_list children as sequential content", () => {
     const col1: Block = {
       object: "block",
@@ -582,7 +582,7 @@ describe("BUG-13 regression: column content must not be silently dropped", () =>
   });
 });
 
-describe("BUG-14 regression: embed block URLs must be preserved", () => {
+describe("embed block URLs must be preserved", () => {
   it("renders embed as link with sidecar comment", () => {
     const embed: Block = {
       object: "block",

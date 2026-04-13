@@ -126,7 +126,7 @@ describe("parseSimpleFilter — multi_select", () => {
     assert.throws(() => parseSimpleFilter("Tags>urgent", s), /only supports =/);
   });
 
-  it("quoted comma is part of the value (BUG-L)", () => {
+  it("quoted comma is part of the value", () => {
     assert.deepEqual(parseSimpleFilter('Tags="tech,AI"', s), {
       property: "Tags",
       multi_select: { contains: "tech,AI" },
@@ -134,7 +134,7 @@ describe("parseSimpleFilter — multi_select", () => {
   });
 });
 
-describe("parseSimpleSort (BUG-G)", () => {
+describe("parseSimpleSort", () => {
   const s = schema({ Name: { type: "title" }, Due: { type: "date" } });
 
   it("ascending by default", () => {
@@ -376,7 +376,7 @@ describe("parseSimpleFilter — additional types", () => {
   });
 });
 
-describe("bug hunt round 4 regressions — db filter", () => {
+describe("db filter edge cases", () => {
   it("multi_select filter keeps commas inside quoted values", () => {
     const s = schema({ Tags: { type: "multi_select" } });
     assert.deepEqual(
@@ -399,7 +399,7 @@ describe("bug hunt round 4 regressions — db filter", () => {
   });
 });
 
-describe("bug hunt round 6 — db sort + column", () => {
+describe("db sort and column spec edge cases", () => {
   const s = schema({ Name: { type: "title" }, Date: { type: "date" } });
 
   it("rejects empty sort property like ':desc'", () => {
@@ -430,7 +430,7 @@ describe("bug hunt round 6 — db sort + column", () => {
   });
 });
 
-describe("BUG-E regression: parseSimpleSort rejects extra colon segments", () => {
+describe("parseSimpleSort rejects extra colon segments", () => {
   const s = schema({ Priority: { type: "number" } });
 
   it("rejects sort with too many colons", () => {
@@ -453,7 +453,7 @@ describe("BUG-E regression: parseSimpleSort rejects extra colon segments", () =>
   });
 });
 
-describe("BUG-N7 regression: --schema-json title column deduplication", () => {
+describe("--schema-json title column deduplication", () => {
   it("parseColumnSpec recognizes title type for override detection", () => {
     const { name, schema } = parseColumnSpec("Task=title");
     assert.equal(name, "Task");

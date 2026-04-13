@@ -117,7 +117,7 @@ async function detectParentKey(parentId: string): Promise<"page_id" | "database_
 
 async function readInputMarkdown(flags: Map<string, string>): Promise<string> {
   const fromFile = flags.get("from");
-  // Support --from - as explicit stdin alias (BUG-3 fix)
+  // Support --from - as explicit stdin alias
   if (fromFile && fromFile !== "-") return readFileText(fromFile, "input markdown");
   if (fromFile === "-" || !process.stdin.isTTY) return readStdinBounded();
   return "";

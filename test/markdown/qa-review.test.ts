@@ -1102,8 +1102,8 @@ describe("parseFlags — additional edge cases", () => {
   });
 });
 
-// ── BUG-21 regression: marker-only text produces non-empty rich_text ──
-describe("BUG-21 regression: marker-only text emits literal", () => {
+// ── marker-only text produces non-empty rich_text ──
+describe("marker-only text emits literal", () => {
   it("*** returns literal *** as plain text", () => {
     const runs = markdownToRichText("***");
     assert.ok(runs.length > 0, "expected at least one run for marker-only text");
@@ -1124,8 +1124,8 @@ describe("BUG-21 regression: marker-only text emits literal", () => {
   });
 });
 
-// ── BUG-22 regression: code blocks inside list items ──
-describe("BUG-22 regression: code blocks nest inside list items", () => {
+// ── code blocks inside list items ──
+describe("code blocks nest inside list items", () => {
   it("indented code fence becomes child of preceding list item", () => {
     const md = "- Item with code:\n  ```\n  let x = 1;\n  ```\n- Next item";
     const blocks = markdownToBlocks(md);
@@ -1155,8 +1155,8 @@ describe("BUG-22 regression: code blocks nest inside list items", () => {
   });
 });
 
-// ── BUG-18 regression: --format md rejected on table-centric commands ──
-describe("BUG-18 regression: md format rejection messages", () => {
+// ── --format md rejected on table-centric commands ──
+describe("md format rejection messages", () => {
   it("chooseFormat allows md as a valid format string", () => {
     // chooseFormat itself accepts md — the rejection is in the command layer
     const format = chooseFormat("md" as any, { isTty: true, defaultFormat: "table" });
@@ -1164,8 +1164,8 @@ describe("BUG-18 regression: md format rejection messages", () => {
   });
 });
 
-// ── BUG-22 read path: code blocks indented inside list children ──
-describe("BUG-22 read path: nested code blocks are indented", () => {
+// ── read path: code blocks indented inside list children ──
+describe("nested code blocks are indented inside list children", () => {
   it("code block child of a list item renders with indent", () => {
     const blocks: Block[] = [
       {

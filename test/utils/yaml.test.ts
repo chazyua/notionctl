@@ -212,7 +212,7 @@ describe("stringifyYaml", () => {
   });
 });
 
-describe("BUG-I regression: YAML single-quoted string escaping", () => {
+describe("YAML single-quoted string escaping", () => {
   it("unescapes doubled single quotes per YAML spec", () => {
     // YAML spec: 'O''Brien' → O'Brien
     const result = parseYaml("name: 'O''Brien'");

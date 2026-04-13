@@ -172,7 +172,8 @@ function linkUrl(run: RichText): string {
  * annotations of the match's first character. Non-text runs (equation,
  * mention) are opaque — any match that would cross them is skipped.
  *
- * Regression fix: BUG-09 (find-replace could not span run boundaries).
+ * Spans run boundaries so a match that crosses two adjacent text runs is
+ * replaced correctly.
  */
 export function findReplaceRichText(
   runs: RichText[],
@@ -612,7 +613,7 @@ const MAX_RICH_TEXT_LENGTH = 2000;
  * limit into multiple runs with identical annotations.
  *
  * Splits at UTF-16 code-unit boundaries but never in the middle of a
- * surrogate pair (BUG-B), so emoji and astral-plane characters stay intact.
+ * surrogate pair, so emoji and astral-plane characters stay intact.
  */
 function splitLongRuns(runs: RichText[]): RichText[] {
   const result: RichText[] = [];

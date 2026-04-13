@@ -30,7 +30,7 @@ function runCli(args: string[], env: NodeJS.ProcessEnv = {}): Promise<RunResult>
   });
 }
 
-describe("bug hunt round 6 audit — dispatch window for --help / --version", () => {
+describe("dispatch --help and --version flags", () => {
   it("notionctl --version prints version at position 0", async () => {
     const { code, stdout } = await runCli(["--version"]);
     assert.equal(code, 0);

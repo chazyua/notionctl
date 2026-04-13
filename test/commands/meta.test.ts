@@ -7,7 +7,7 @@ import { NotionCliError, ErrorCode } from "../../src/errors.js";
 // so these tests do not need a token provider or a network connection —
 // they only exercise the guard itself.
 
-describe("bug hunt round 6 audit — api command DELETE gate", () => {
+describe("api command DELETE gate", () => {
   it("refuses api DELETE without --yes and throws a USAGE error", async () => {
     let caught: NotionCliError | undefined;
     try {
@@ -48,7 +48,7 @@ describe("bug hunt round 6 audit — api command DELETE gate", () => {
   });
 });
 
-describe("BUG-J regression: api GET with --body throws USAGE error", () => {
+describe("api GET with --body throws USAGE error", () => {
   it("rejects --body on GET request", async () => {
     let caught: NotionCliError | undefined;
     try {

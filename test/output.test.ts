@@ -114,7 +114,7 @@ describe("output.renderTable — edge cases", () => {
     assert.ok(out.includes("val9"));
   });
 
-  it("aligns CJK-wide characters correctly (BUG-C)", () => {
+  it("aligns CJK-wide characters correctly", () => {
     const out = renderTable({
       columns: ["Name", "Value"],
       rows: [
@@ -148,7 +148,7 @@ describe("output.renderTable — edge cases", () => {
     );
   });
 
-  it("replaces embedded newlines inside a cell (BUG-C)", () => {
+  it("replaces embedded newlines inside a cell", () => {
     const out = renderTable({
       columns: ["A", "B"],
       rows: [["line1\nline2", "tail"]],
@@ -181,7 +181,7 @@ describe("output.renderCsv — edge cases", () => {
   });
 });
 
-describe("BUG-N5/N6 regression: unsupported format values must be catchable", () => {
+describe("unsupported format values must be catchable", () => {
   it("chooseFormat accepts md as a valid format string", () => {
     // Commands that don't support md must check AFTER chooseFormat returns.
     // chooseFormat itself should accept any valid format value.
