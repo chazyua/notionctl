@@ -274,15 +274,19 @@ function hasEmphasisUnderscore(s: string): boolean {
   return false;
 }
 
-/** True when at least one asterisk could trigger emphasis (not purely between alphanums). */
+/** True when the string has 2+ asterisks that could form an emphasis pair. */
 function hasEmphasisAsterisk(s: string): boolean {
+  // The write path opens/closes italic * when flanked by non-whitespace.
+  // A single * (e.g. "2*3") is safe — no matching closer. Two+ flanked
+  // asterisks (e.g. "*x*", "5*x*2") can form an open/close pair.
+  let flanked = 0;
   for (let i = 0; i < s.length; i++) {
     if (s[i] !== "*") continue;
     const prev = i > 0 ? s[i - 1]! : "";
     const next = i < s.length - 1 ? s[i + 1]! : "";
-    if (!(/[A-Za-z0-9]/.test(prev) && /[A-Za-z0-9]/.test(next))) return true;
+    if ((prev !== "" && /\S/.test(prev)) || (next !== "" && /\S/.test(next))) flanked++;
   }
-  return false;
+  return flanked >= 2;
 }
 
 function runContent(run: RichText): string {

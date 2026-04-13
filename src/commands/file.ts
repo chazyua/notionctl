@@ -77,7 +77,7 @@ const MIME_MAP: Record<string, string> = {
   ".ogg": "audio/ogg",
 };
 
-function guessMimeType(filename: string): string {
+export function guessMimeType(filename: string): string {
   const ext = extname(filename).toLowerCase();
   return MIME_MAP[ext] ?? "application/octet-stream";
 }

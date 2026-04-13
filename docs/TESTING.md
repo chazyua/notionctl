@@ -429,7 +429,7 @@ These automated checks run as part of the test suite and fail the build on viola
 ## Running
 
 ```sh
-# Automated test suite (481 tests)
+# Automated test suite (731 tests)
 npm test
 
 # Security checks only
