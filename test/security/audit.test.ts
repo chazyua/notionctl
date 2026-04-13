@@ -75,7 +75,12 @@ describe("security audit — source tree", () => {
     const NODE_BUILTINS = /^(node:|\.\.?\/)/;
     const offenders: string[] = [];
     for (const f of files) {
-      const imports = f.content.matchAll(/from\s+["']([^"']+)["']/g);
+      // Strip comments and string literals so doc/comment text containing
+      // `from "X"` cannot false-positive as a real import.
+      const stripped = f.content
+        .replace(/\/\/.*$/gm, "")
+        .replace(/\/\*[\s\S]*?\*\//g, "");
+      const imports = stripped.matchAll(/(?:^|[\s;{}()])(?:import|export)[^;]*?from\s+["']([^"']+)["']/g);
       for (const m of imports) {
         const pkg = m[1]!;
         if (!NODE_BUILTINS.test(pkg) && !pkg.startsWith("node:")) {

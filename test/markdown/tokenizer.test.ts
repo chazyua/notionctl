@@ -730,7 +730,7 @@ describe("richTextToMarkdown — additional edge cases", () => {
   });
 });
 
-describe("inline equation and emphasis edge cases", () => {
+describe("bug hunt round 4 regressions", () => {
   it("does not parse currency as equation when closing $ is preceded by whitespace", () => {
     const runs = markdownToRichText("I paid $5 for coffee and $10 for lunch.");
     assert.equal(runs.length, 1);
@@ -789,7 +789,24 @@ describe("inline equation and emphasis edge cases", () => {
     assert.equal((linkRun as any).text.link.url, "tel:+15551234567");
   });
 
-  it("preserves URL without title", () => {
+  it("strips CommonMark link title from URL", () => {
+    // Regression: `[label](url "title")` passed the whole `url "title"` as
+    // the URL to Notion, which rejects it as invalid. CommonMark titles
+    // are metadata-only and Notion has no link-title field, so we strip them.
+    const runs = markdownToRichText('[docs](https://example.com "API Reference")');
+    const linkRun = runs.find(r => (r as any).text?.link?.url);
+    assert.ok(linkRun, "link run exists");
+    assert.equal((linkRun as any).text.link.url, "https://example.com");
+  });
+
+  it("strips single-quoted link title", () => {
+    const runs = markdownToRichText("[label](https://example.com 'Title')");
+    const linkRun = runs.find(r => (r as any).text?.link?.url);
+    assert.ok(linkRun);
+    assert.equal((linkRun as any).text.link.url, "https://example.com");
+  });
+
+  it("preserves URL that only looks like it has a title but doesn't", () => {
     const runs = markdownToRichText("[label](https://example.com/path)");
     const linkRun = runs.find(r => (r as any).text?.link?.url);
     assert.ok(linkRun);
@@ -928,7 +945,7 @@ describe("round-trip marker escaping — richTextToMarkdown escapes literals", (
 
   it("purely alphanum-surrounded asterisks are clean (no escaping)", () => {
     // Common in math, wildcards
-    for (const s of ["2*3", "a*b"]) {
+    for (const s of ["2*3", "a*b", "5*x*2"]) {
       const md = richTextToMarkdown([text(s)]);
       assert.equal(md, s, `"${s}" should not be escaped`);
       const rt = markdownToRichText(md);

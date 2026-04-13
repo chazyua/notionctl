@@ -17,7 +17,9 @@ import { NotionCliError, ErrorCode, formatErrorJson, formatErrorHuman, scrub } f
 import { isStdoutTty } from "./output.js";
 import { VERSION } from "./version.js";
 import { setActiveProfile } from "./auth.js";
-import { setDebugMode, getRequestCount } from "./http.js";
+import { setMarkdownWarnHandler } from "./markdown/write.js";
+import { setTokenizerWarnHandler } from "./markdown/tokenizer.js";
+import { setDebugMode, setVerboseMode, isVerboseMode, getRequestCount } from "./http.js";
 
 type CommandHandler = (ctx: { args: string[] }) => Promise<string>;
 
@@ -183,10 +185,10 @@ Usage:
 Global flags:
   --format md|json|table|csv   Output format (default depends on command + TTY)
   --dry-run                    Preview write operations without sending
-  --verbose                    Show total API request count after command
+  --verbose                    Show request count on stderr after completion
   --quiet                      Suppress non-essential output
   --no-color                   Force plain output
-  --debug                      Log HTTP method and path for each request to stderr
+  --debug                      Log HTTP method, path, and status to stderr
   --yes                        Confirm destructive operations
   --profile <name>             Use a named auth profile
 
@@ -201,6 +203,8 @@ See https://github.com/chazyua/notionctl for full documentation.
 }
 
 async function main(): Promise<void> {
+  setMarkdownWarnHandler((msg) => process.stderr.write(msg + "\n"));
+  setTokenizerWarnHandler((msg) => process.stderr.write(msg + "\n"));
   const argv = process.argv.slice(2);
 
   if (argv.length === 0 || argv[0] === "--help" || argv[0] === "-h") {
@@ -213,39 +217,68 @@ async function main(): Promise<void> {
     process.exit(0);
   }
 
-  // Extract --profile before command parsing (it's a global flag)
-  const profileIdx = argv.indexOf("--profile");
-  if (profileIdx !== -1 && argv[profileIdx + 1]) {
-    setActiveProfile(argv[profileIdx + 1]!);
-    argv.splice(profileIdx, 2);
+  // Extract --profile before command parsing (global flag). Accept both
+  // `--profile name` and `--profile=name` forms.
+  const profileSpaceIdx = argv.indexOf("--profile");
+  if (profileSpaceIdx !== -1 && argv[profileSpaceIdx + 1]) {
+    setActiveProfile(argv[profileSpaceIdx + 1]!);
+    argv.splice(profileSpaceIdx, 2);
+  } else {
+    const profileEqIdx = argv.findIndex((a) => a.startsWith("--profile="));
+    if (profileEqIdx !== -1) {
+      setActiveProfile(argv[profileEqIdx]!.slice("--profile=".length));
+      argv.splice(profileEqIdx, 1);
+    }
   }
 
-  // Extract global --debug and --verbose (strip from argv so commands don't see them)
-  const debugIdx = argv.indexOf("--debug");
-  if (debugIdx !== -1) {
-    setDebugMode(true);
-    argv.splice(debugIdx, 1);
-  }
-  const verboseIdx = argv.indexOf("--verbose");
-  const verbose = verboseIdx !== -1;
-  if (verbose) {
-    argv.splice(verboseIdx, 1);
-  }
-
-  const noun = argv[0]!;
-
-  // Handle --help and --version after a noun (e.g. "notionctl page --help")
-  if (argv[1] === "--help" || argv[1] === "-h") {
+  // `--help`/`--version` are accepted in a bounded head window (positions
+  // 0 and 1) so a `--help` or `-v` buried inside a command's flag values
+  // cannot short-circuit dispatch. The window covers top-level invocations
+  // (`notionctl --help`) and per-noun help (`notionctl page --help`).
+  // Subcommand help (`notionctl page get --help`) is handled by stripping
+  // any `--help`/`-h` that appears after the verb so the per-command flag
+  // parser never sees it.
+  const HEAD_HELP = new Set(["--help", "-h"]);
+  const HEAD_VERSION = new Set(["--version", "-v"]);
+  if (argv.length > 0 && (HEAD_HELP.has(argv[0]!) || (argv.length > 1 && HEAD_HELP.has(argv[1]!)))) {
     process.stdout.write(printHelp());
     process.exit(0);
   }
-  if (argv[1] === "--version" || argv[1] === "-v") {
+  if (argv.length > 0 && (HEAD_VERSION.has(argv[0]!) || (argv.length > 1 && HEAD_VERSION.has(argv[1]!)))) {
     process.stdout.write(`notionctl ${VERSION}\n`);
     process.exit(0);
   }
 
+  const noun = argv[0]!;
   const verb = ["whoami", "resolve", "search", "api"].includes(noun) ? undefined : argv[1];
-  const rest = verb !== undefined ? argv.slice(2) : argv.slice(1);
+  // For grouped nouns (page, db, …), surface help when no verb is given so users
+  // discover the available subcommands instead of seeing "Unknown verb: undefined".
+  const NOUNS_WITH_VERBS = new Set(["page", "db", "block", "file", "comment", "user", "auth"]);
+  if (NOUNS_WITH_VERBS.has(noun) && verb === undefined) {
+    process.stdout.write(printHelp());
+    process.exit(0);
+  }
+  // Strip a single `--help`/`-h` that appears anywhere in the remaining args
+  // (e.g. `notionctl page get --help`) so subcommand help still works without
+  // letting a buried `-v` after a `--format` argument hijack the version path.
+  const restArgv = verb !== undefined ? argv.slice(2) : argv.slice(1);
+  const helpIdx = restArgv.findIndex((a) => HEAD_HELP.has(a));
+  if (helpIdx !== -1) {
+    process.stdout.write(printHelp());
+    process.exit(0);
+  }
+  const rest = restArgv;
+
+  // Activate --verbose / --debug before dispatch. They stay in rest so
+  // parseFlags inside each command can also see them (they're boolean flags).
+  if (rest.includes("--verbose")) setVerboseMode(true);
+  if (rest.includes("--debug")) setDebugMode(true);
+  const quiet = rest.includes("--quiet");
+  const noColor = rest.includes("--no-color");
+  if (quiet) {
+    setMarkdownWarnHandler(null);
+    setTokenizerWarnHandler(null);
+  }
 
   try {
     const handler = await loadCommand(noun, verb);
@@ -253,13 +286,13 @@ async function main(): Promise<void> {
     if (output && output.length > 0) {
       process.stdout.write(output + (output.endsWith("\n") ? "" : "\n"));
     }
-    if (verbose) {
-      process.stderr.write(`[notionctl] ${getRequestCount()} API request(s)\n`);
+    if (getRequestCount() > 0 && isVerboseMode() && !quiet) {
+      process.stderr.write(`notionctl: ${getRequestCount()} API request(s)\n`);
     }
     process.exit(0);
   } catch (err) {
     if (err instanceof NotionCliError) {
-      const color = isStdoutTty();
+      const color = isStdoutTty() && !noColor;
       if (!process.stdout.isTTY) {
         process.stderr.write(formatErrorJson(err) + "\n");
       } else {

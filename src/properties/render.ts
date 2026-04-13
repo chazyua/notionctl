@@ -55,8 +55,12 @@ export function renderProperty(prop: any): YamlValue {
       return prop.created_by ? `user:${prop.created_by.id}` : null;
     case "last_edited_by":
       return prop.last_edited_by ? `user:${prop.last_edited_by.id}` : null;
-    case "unique_id":
-      return prop.unique_id ? `${prop.unique_id.prefix ?? ""}${prop.unique_id.number ?? ""}` : null;
+    case "unique_id": {
+      if (!prop.unique_id) return null;
+      const prefix = prop.unique_id.prefix ?? "";
+      const number = prop.unique_id.number ?? "";
+      return prefix ? `${prefix}-${number}` : String(number);
+    }
     default:
       return null;
   }
@@ -76,7 +80,12 @@ function renderRollup(r: any): YamlValue {
   if (r.type === "number") return r.number ?? null;
   if (r.type === "date") return r.date?.start ?? null;
   if (r.type === "array") {
-    return ((r.array ?? []).map((item: any) => renderProperty(item)) as unknown) as YamlValue;
+    return (r.array ?? []).map((item: any) => {
+      const v = renderProperty(item);
+      if (v === null || v === undefined) return "";
+      if (Array.isArray(v)) return v.join(", ");
+      return String(v);
+    });
   }
   return null;
 }

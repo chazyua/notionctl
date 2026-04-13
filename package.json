@@ -1,6 +1,6 @@
 {
   "name": "notionctl",
-  "version": "0.1.1",
+  "version": "0.1.3",
   "description": "Security-auditable, zero-dependency command-line interface for Notion, designed to be driven by AI coding agents via shell invocations.",
   "keywords": [
     "notion",
@@ -28,7 +28,7 @@
   },
   "files": [
     "bin/",
-    "dist/",
+    "dist/src/",
     "README.md",
     "LICENSE",
     "SECURITY.md"
@@ -44,7 +44,7 @@
     "prepublishOnly": "npm run typecheck && npm run test"
   },
   "devDependencies": {
-    "typescript": "^5.4.0",
-    "@types/node": "^20.11.0"
+    "@types/node": "^25.6.0",
+    "typescript": "^6.0.2"
   }
 }

@@ -85,7 +85,7 @@ export async function authDoctorCommand(_ctx: { args: string[] }): Promise<strin
     try {
       const st = await stat(getConfigDir());
       const mode = st.mode & 0o777;
-      if (mode <= 0o700) {
+      if ((mode & 0o077) === 0) {
         checks.push({ check: "Config dir permissions", status: "pass", detail: `mode 0${mode.toString(8)}` });
       } else {
         checks.push({
@@ -125,9 +125,11 @@ export async function authDoctorCommand(_ctx: { args: string[] }): Promise<strin
       });
     }
 
-    // 4. Accessible pages (quick search to verify the integration has page connections)
+    // 4. Accessible pages (quick search to verify the integration has page connections).
+    // Cap pagination to a single page so the check stays fast — we only need to know
+    // whether any result exists, not paginate the whole workspace.
     try {
-      const res = await notionRequest<{ results: unknown[] }>("POST", "/search", { query: "", page_size: 1 });
+      const res = await notionRequest<{ results: unknown[] }>("POST", "/search", { query: "", page_size: 1 }, { maxPages: 1 });
       if (res.results.length > 0) {
         checks.push({ check: "Page access", status: "pass", detail: "At least one page accessible" });
       } else {
@@ -174,6 +176,9 @@ export async function authClearCommand(ctx: { args: string[] }): Promise<string>
   const { flags } = parseFlags(ctx.args);
   if (!getBooleanFlag(flags, "yes")) {
     throw new NotionCliError(ErrorCode.USAGE, "auth clear requires --yes");
+  }
+  if (getBooleanFlag(flags, "dry-run")) {
+    return renderJson({ action: "auth clear", wouldClear: true });
   }
   await clearToken();
   return renderJson({ cleared: true });

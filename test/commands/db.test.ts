@@ -126,8 +126,8 @@ describe("parseSimpleFilter — multi_select", () => {
     assert.throws(() => parseSimpleFilter("Tags>urgent", s), /only supports =/);
   });
 
-  it("backslash-escaped comma is part of the value (BUG-L)", () => {
-    assert.deepEqual(parseSimpleFilter("Tags=tech\\,AI", s), {
+  it("quoted comma is part of the value (BUG-L)", () => {
+    assert.deepEqual(parseSimpleFilter('Tags="tech,AI"', s), {
       property: "Tags",
       multi_select: { contains: "tech,AI" },
     });
@@ -150,7 +150,7 @@ describe("parseSimpleSort (BUG-G)", () => {
   });
 
   it("throws on empty property (e.g. ':desc')", () => {
-    assert.throws(() => parseSimpleSort(":desc", s), /requires a property name/);
+    assert.throws(() => parseSimpleSort(":desc", s), /Invalid sort/);
   });
 });
 
@@ -250,6 +250,42 @@ describe("parseColumnSpec", () => {
   it("rejects spec without =", () => {
     assert.throws(() => parseColumnSpec("JustName"), /Invalid column spec/);
   });
+
+  it("drops trailing-comma empty option from select", () => {
+    // Regression: `Todo,Doing,Done,` used to split into four entries with
+    // an empty-name option at the end, which Notion's API rejects with
+    // "select option name cannot be empty".
+    const result = parseColumnSpec("Status=select:Todo,Doing,Done,");
+    assert.deepEqual((result.schema as any).select.options, [
+      { name: "Todo" },
+      { name: "Doing" },
+      { name: "Done" },
+    ]);
+  });
+
+  it("rejects duplicate select options client-side", () => {
+    // Regression: duplicate options sailed through to the API which
+    // returned a cryptic "Invalid schema" error. Catch it locally.
+    assert.throws(
+      () => parseColumnSpec("Status=select:Todo,Todo,Done"),
+      /Duplicate option 'Todo'/,
+    );
+  });
+
+  it("rejects duplicate multi_select options client-side", () => {
+    assert.throws(
+      () => parseColumnSpec("Tags=multi_select:a,b,a"),
+      /Duplicate option 'a'/,
+    );
+  });
+
+  it("drops whitespace-only entries from multi_select options", () => {
+    const result = parseColumnSpec("Tags=multi_select:one,   ,two");
+    assert.deepEqual((result.schema as any).multi_select.options, [
+      { name: "one" },
+      { name: "two" },
+    ]);
+  });
 });
 
 describe("parseSimpleFilter — additional types", () => {
@@ -285,6 +321,26 @@ describe("parseSimpleFilter — additional types", () => {
     });
   });
 
+  it("checkbox filter accepts yes/no/1/0/on/off aliases", () => {
+    const s = schema({ Done: { type: "checkbox" } });
+    for (const v of ["yes", "1", "on", "Y", "TRUE"]) {
+      assert.deepEqual(parseSimpleFilter(`Done=${v}`, s), {
+        property: "Done",
+        checkbox: { equals: true },
+      });
+    }
+    for (const v of ["no", "0", "off", "N", "FALSE"]) {
+      assert.deepEqual(parseSimpleFilter(`Done=${v}`, s), {
+        property: "Done",
+        checkbox: { equals: false },
+      });
+    }
+    assert.throws(
+      () => parseSimpleFilter("Done=maybe", s),
+      /checkbox filter value/,
+    );
+  });
+
   it("status filter uses equals", () => {
     const s = schema({ State: { type: "status" } });
     assert.deepEqual(parseSimpleFilter("State=In Progress", s), {
@@ -317,5 +373,150 @@ describe("parseSimpleFilter — additional types", () => {
       property: "Count",
       number: { equals: 0 },
     });
+  });
+});
+
+describe("bug hunt round 4 regressions — db filter", () => {
+  it("multi_select filter keeps commas inside quoted values", () => {
+    const s = schema({ Tags: { type: "multi_select" } });
+    assert.deepEqual(
+      parseSimpleFilter('Tags="Design, Review",urgent', s),
+      {
+        and: [
+          { property: "Tags", multi_select: { contains: "Design, Review" } },
+          { property: "Tags", multi_select: { contains: "urgent" } },
+        ],
+      },
+    );
+  });
+
+  it("multi_select filter handles single quoted value with commas", () => {
+    const s = schema({ Tags: { type: "multi_select" } });
+    assert.deepEqual(
+      parseSimpleFilter('Tags="a, b, c"', s),
+      { property: "Tags", multi_select: { contains: "a, b, c" } },
+    );
+  });
+});
+
+describe("bug hunt round 6 — db sort + column", () => {
+  const s = schema({ Name: { type: "title" }, Date: { type: "date" } });
+
+  it("rejects empty sort property like ':desc'", () => {
+    assert.throws(() => parseSimpleSort(":desc", s), /Invalid sort/);
+  });
+
+  it("rejects unknown sort property", () => {
+    assert.throws(() => parseSimpleSort("Bogus:asc", s), /Unknown sort property/);
+  });
+
+  it("rejects invalid sort direction (uppercase DESC, etc.)", () => {
+    assert.throws(() => parseSimpleSort("Name:DESC", s), /Invalid sort direction/);
+    assert.throws(() => parseSimpleSort("Name:descending", s), /Invalid sort direction/);
+    assert.throws(() => parseSimpleSort("Name:ASCENDING", s), /Invalid sort direction/);
+  });
+
+  it("accepts valid sort directions", () => {
+    assert.deepEqual(parseSimpleSort("Name:asc", s), { property: "Name", direction: "ascending" });
+    assert.deepEqual(parseSimpleSort("Name:desc", s), { property: "Name", direction: "descending" });
+    assert.deepEqual(parseSimpleSort("Name", s), { property: "Name", direction: "ascending" });
+  });
+
+  it("parses --prop X=title to allow custom title column", () => {
+    assert.deepEqual(parseColumnSpec("Task=title"), {
+      name: "Task",
+      schema: { title: {} },
+    });
+  });
+});
+
+describe("BUG-E regression: parseSimpleSort rejects extra colon segments", () => {
+  const s = schema({ Priority: { type: "number" } });
+
+  it("rejects sort with too many colons", () => {
+    assert.throws(
+      () => parseSimpleSort("Priority:desc:extra", s),
+      /too many colons/,
+    );
+  });
+
+  it("rejects three-segment sort", () => {
+    assert.throws(
+      () => parseSimpleSort("Priority:asc:reversed", s),
+      /too many colons/,
+    );
+  });
+
+  it("still accepts valid one and two-segment sorts", () => {
+    assert.deepEqual(parseSimpleSort("Priority", s), { property: "Priority", direction: "ascending" });
+    assert.deepEqual(parseSimpleSort("Priority:desc", s), { property: "Priority", direction: "descending" });
+  });
+});
+
+describe("BUG-N7 regression: --schema-json title column deduplication", () => {
+  it("parseColumnSpec recognizes title type for override detection", () => {
+    const { name, schema } = parseColumnSpec("Task=title");
+    assert.equal(name, "Task");
+    assert.ok("title" in schema, "title key must be present for override detection");
+  });
+
+  it("detects title property in a schema-json-style object", () => {
+    // Simulates the check added to dbCreateCommand
+    const parsed: Record<string, unknown> = {
+      Task: { title: {} },
+      Status: { select: { options: [{ name: "Open" }] } },
+    };
+    const properties: Record<string, unknown> = { Name: { title: {} }, ...parsed };
+
+    // The fix scans parsed entries for a non-Name title column and removes Name
+    for (const [name, schema] of Object.entries(parsed)) {
+      if (name !== "Name" && typeof schema === "object" && schema !== null && "title" in (schema as Record<string, unknown>)) {
+        delete properties.Name;
+        break;
+      }
+    }
+
+    assert.equal(properties.Name, undefined, "default Name should be removed when schema-json provides a different title column");
+    assert.ok("Task" in properties, "custom title column should remain");
+    assert.ok("Status" in properties, "non-title columns should remain");
+  });
+
+  it("does not remove Name when schema-json has no title column", () => {
+    const parsed: Record<string, unknown> = {
+      Status: { select: {} },
+    };
+    const properties: Record<string, unknown> = { Name: { title: {} }, ...parsed };
+
+    let removed = false;
+    for (const [name, schema] of Object.entries(parsed)) {
+      if (name !== "Name" && typeof schema === "object" && schema !== null && "title" in (schema as Record<string, unknown>)) {
+        delete properties.Name;
+        removed = true;
+        break;
+      }
+    }
+
+    assert.equal(removed, false, "Name should not be removed when no title override exists");
+    assert.ok("Name" in properties);
+  });
+
+  it("does not remove Name when schema-json overrides Name itself", () => {
+    const parsed: Record<string, unknown> = {
+      Name: { title: {} },
+    };
+    const properties: Record<string, unknown> = { Name: { title: {} } };
+    Object.assign(properties, parsed);
+
+    let removed = false;
+    for (const [name, schema] of Object.entries(parsed)) {
+      if (name !== "Name" && typeof schema === "object" && schema !== null && "title" in (schema as Record<string, unknown>)) {
+        delete properties.Name;
+        removed = true;
+        break;
+      }
+    }
+
+    assert.equal(removed, false, "Name should not be removed when schema-json just replaces Name");
+    assert.ok("Name" in properties);
   });
 });

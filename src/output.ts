@@ -130,8 +130,10 @@ export function renderMarkdown(content: string): string {
 
 export function renderCsv(input: TableInput): string {
   const esc = (v: string): string => {
-    if (/[",\n]/.test(v)) return `"${v.replace(/"/g, '""')}"`;
-    return v;
+    // Coerce non-strings defensively — JSON.stringify may feed us numbers/booleans.
+    const s = v == null ? "" : String(v);
+    if (/[",\n\r]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
+    return s;
   };
   const lines: string[] = [];
   lines.push(input.columns.map(esc).join(","));

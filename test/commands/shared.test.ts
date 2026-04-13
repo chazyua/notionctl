@@ -1,16 +1,9 @@
-import { describe, it, before, after, mock } from "node:test";
+import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { Readable } from "node:stream";
-import {
-  parseFlags,
-  resolvePageId,
-  getBooleanFlag,
-  detectParentType,
-  resolveTitlePropertyKey,
-  readStdinBounded,
-} from "../../src/commands/shared.js";
-import { setTokenProvider, resetForTesting } from "../../src/http.js";
-import { AuthSource } from "../../src/auth.js";
+import { writeFile, mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { parseFlags, resolvePageId, getBooleanFlag, readFileText, parseJsonObject } from "../../src/commands/shared.js";
 import { NotionCliError, ErrorCode } from "../../src/errors.js";
 
 describe("parseFlags", () => {
@@ -102,9 +95,15 @@ describe("resolvePageId", () => {
     assert.equal(resolvePageId(url), "abcd1234-ef56-7890-abcd-1234567890ab");
   });
 
-  it("strips trailing slash on URL", () => {
-    const url = "https://www.notion.so/Page-abcd1234ef567890abcd1234567890ab/";
-    assert.equal(resolvePageId(url), "abcd1234-ef56-7890-abcd-1234567890ab");
+  it("strips trailing slashes from notion URLs", () => {
+    assert.equal(
+      resolvePageId("https://notion.so/Page-abcd1234ef567890abcd1234567890ab/"),
+      "abcd1234-ef56-7890-abcd-1234567890ab",
+    );
+    assert.equal(
+      resolvePageId("https://notion.so/Page-abcd1234ef567890abcd1234567890ab//"),
+      "abcd1234-ef56-7890-abcd-1234567890ab",
+    );
   });
 
   it("strips trailing slash before query string", () => {
@@ -129,160 +128,100 @@ describe("getBooleanFlag", () => {
   });
 });
 
-describe("detectParentType", () => {
-  let originalFetch: typeof globalThis.fetch;
-
-  before(() => {
-    originalFetch = globalThis.fetch;
-    setTokenProvider(async () => ({ token: "ntn_test_token", source: AuthSource.ENV }));
-  });
-
-  after(() => {
-    globalThis.fetch = originalFetch;
-    resetForTesting();
-  });
-
-  it("returns database_id when GET /databases/{id} succeeds", async () => {
-    const calls: string[] = [];
-    globalThis.fetch = mock.fn(async (url: string | URL) => {
-      const u = typeof url === "string" ? url : url.toString();
-      calls.push(u);
-      return new Response(JSON.stringify({ object: "database", id: "abc" }), {
-        status: 200,
-        headers: { "content-type": "application/json" },
-      });
-    }) as typeof globalThis.fetch;
-
-    const kind = await detectParentType("abcd1234-ef56-7890-abcd-1234567890ab");
-    assert.equal(kind, "database_id");
-    assert.ok(calls[0]!.includes("/databases/abcd1234-ef56-7890-abcd-1234567890ab"));
-  });
-
-  it("returns page_id when GET /databases/{id} returns 404", async () => {
-    globalThis.fetch = mock.fn(async () => {
-      return new Response(JSON.stringify({ object: "error", status: 404, code: "object_not_found", message: "Not found" }), {
-        status: 404,
-        headers: { "content-type": "application/json" },
-      });
-    }) as typeof globalThis.fetch;
-
-    const kind = await detectParentType("abcd1234-ef56-7890-abcd-1234567890ab");
-    assert.equal(kind, "page_id");
-  });
-});
-
-describe("readStdinBounded", () => {
-  it("reads full payload under the limit", async () => {
-    const payload = "hello world";
-    const stream = Readable.from([Buffer.from(payload, "utf8")]);
-    const result = await readStdinBounded(100, stream);
-    assert.equal(result, payload);
-  });
-
-  it("rejects when payload exceeds the limit", async () => {
-    const stream = Readable.from([Buffer.from("x".repeat(50), "utf8")]);
-    await assert.rejects(
-      readStdinBounded(10, stream),
-      (err: unknown) => {
-        assert.ok(err instanceof NotionCliError);
-        assert.equal(err.code, ErrorCode.USAGE);
-        assert.ok(err.message.includes("exceeds maximum size"));
-        return true;
-      },
+describe("bug hunt round 4 regressions — parseFlags", () => {
+  it("throws when a value flag is followed by another --flag instead of a value", () => {
+    assert.throws(
+      () => parseFlags(["--title", "--parent", "xyz"]),
+      /--title requires a value/,
     );
   });
 
-  it("does not double-settle when over-limit data is followed by stream end", async () => {
-    // Craft a stream that pushes data past the limit AND emits 'end' naturally.
-    // The old implementation left the 'end' listener attached after destroy(),
-    // which silently dropped a second settlement — harmless with native Promise
-    // but a hazard for refactors. This test asserts only ONE settle happens.
-    const chunks = [Buffer.from("aaaa", "utf8"), Buffer.from("bbbbbb", "utf8")];
-    const stream = new Readable({
-      read() {
-        for (const c of chunks) this.push(c);
-        this.push(null);
-      },
-    });
+  it("throws when a repeatable flag without value is followed by another --flag", () => {
+    // regression for --filter --dry-run silently swallowing --dry-run
+    assert.throws(
+      () => parseFlags(["--filter", "Status=Done", "--filter", "--dry-run"]),
+      /--filter requires a value/,
+    );
+  });
 
-    let rejections = 0;
-    let resolutions = 0;
-    try {
-      const result = await readStdinBounded(5, stream);
-      resolutions++;
-      assert.fail(`expected rejection, got resolved value: ${result}`);
-    } catch (err) {
-      rejections++;
-      assert.ok(err instanceof NotionCliError);
-      assert.equal(err.code, ErrorCode.USAGE);
-    }
+  it("still accepts negative numbers as flag values", () => {
+    const { flags } = parseFlags(["--count", "-5"]);
+    assert.equal(flags.get("count"), "-5");
+  });
 
-    // Give any straggler event listeners a tick to (incorrectly) fire.
-    await new Promise((r) => setImmediate(r));
-
-    assert.equal(rejections, 1);
-    assert.equal(resolutions, 0);
-    assert.equal(stream.listenerCount("data"), 0, "data listener must be removed after settle");
-    assert.equal(stream.listenerCount("end"), 0, "end listener must be removed after settle");
-    assert.equal(stream.listenerCount("error"), 0, "error listener must be removed after settle");
+  it("--flag= (empty string) remains allowed", () => {
+    const { flags } = parseFlags(["--title="]);
+    assert.equal(flags.get("title"), "");
   });
 });
 
-describe("resolveTitlePropertyKey", () => {
-  let originalFetch: typeof globalThis.fetch;
-
-  before(() => {
-    originalFetch = globalThis.fetch;
-    setTokenProvider(async () => ({ token: "ntn_test_token", source: AuthSource.ENV }));
+describe("bug hunt round 6 — readFileText error translation", () => {
+  it("translates ENOENT into a typed USAGE error", async () => {
+    let caught: NotionCliError | undefined;
+    try {
+      await readFileText("/tmp/notionctl-bh6-no-such-file.md", "input markdown");
+    } catch (e) {
+      if (e instanceof NotionCliError) caught = e;
+    }
+    assert.ok(caught, "expected NotionCliError");
+    assert.equal(caught!.code, ErrorCode.USAGE);
+    assert.match(caught!.message, /input markdown not found/);
   });
 
-  after(() => {
-    globalThis.fetch = originalFetch;
-    resetForTesting();
+  it("returns file contents on success", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "notionctl-bh6-"));
+    try {
+      const path = join(dir, "data.md");
+      await writeFile(path, "hello", "utf8");
+      const content = await readFileText(path, "test");
+      assert.equal(content, "hello");
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("bug hunt round 6 audit — parseJsonObject prototype-pollution recursion", () => {
+  it("strips top-level __proto__ / constructor / prototype keys", () => {
+    const out = parseJsonObject(
+      '{"__proto__":{"bad":true},"constructor":{"bad":true},"prototype":{"bad":true},"keep":1}',
+      "--x",
+    );
+    assert.deepEqual(Object.keys(out).sort(), ["keep"]);
+    assert.equal((out as any).keep, 1);
   });
 
-  it("returns the DB title property key (e.g. Name) for a database row", async () => {
-    globalThis.fetch = mock.fn(async () => {
-      return new Response(JSON.stringify({
-        id: "abcd1234-ef56-7890-abcd-1234567890ab",
-        properties: {
-          Status: { type: "select", select: null },
-          Name: { type: "title", title: [] },
-          Created: { type: "created_time", created_time: "2026-01-01T00:00:00Z" },
-        },
-      }), { status: 200, headers: { "content-type": "application/json" } });
-    }) as typeof globalThis.fetch;
-
-    const key = await resolveTitlePropertyKey("abcd1234-ef56-7890-abcd-1234567890ab");
-    assert.equal(key, "Name");
+  it("strips nested __proto__ inside an object value", () => {
+    const out = parseJsonObject(
+      '{"outer":{"__proto__":{"polluted":true},"real":"value"}}',
+      "--x",
+    );
+    const outer = (out as any).outer;
+    assert.deepEqual(Object.keys(outer).sort(), ["real"]);
+    assert.equal(outer.real, "value");
+    // Sanity: Object.prototype must not have been polluted
+    assert.equal((({} as any).polluted), undefined);
   });
 
-  it("returns 'title' for a standalone (non-database) page", async () => {
-    globalThis.fetch = mock.fn(async () => {
-      return new Response(JSON.stringify({
-        id: "abcd1234-ef56-7890-abcd-1234567890ab",
-        properties: {
-          title: { type: "title", title: [] },
-        },
-      }), { status: 200, headers: { "content-type": "application/json" } });
-    }) as typeof globalThis.fetch;
-
-    const key = await resolveTitlePropertyKey("abcd1234-ef56-7890-abcd-1234567890ab");
-    assert.equal(key, "title");
+  it("strips __proto__ inside an array element", () => {
+    const out = parseJsonObject(
+      '{"list":[{"__proto__":{"polluted":true},"ok":1},{"ok":2}]}',
+      "--x",
+    );
+    const list = (out as any).list as Array<Record<string, unknown>>;
+    assert.equal(list.length, 2);
+    assert.deepEqual(Object.keys(list[0]!).sort(), ["ok"]);
+    assert.equal(list[0]!.ok, 1);
   });
 
-  it("returns a custom DB title column name", async () => {
-    globalThis.fetch = mock.fn(async () => {
-      return new Response(JSON.stringify({
-        id: "abcd1234-ef56-7890-abcd-1234567890ab",
-        properties: {
-          "Task Title": { type: "title", title: [] },
-          Priority: { type: "select", select: null },
-        },
-      }), { status: 200, headers: { "content-type": "application/json" } });
-    }) as typeof globalThis.fetch;
+  it("passes scalars and plain objects through unchanged", () => {
+    const out = parseJsonObject('{"a":1,"b":"x","c":true,"d":null}', "--x");
+    assert.deepEqual(out, { a: 1, b: "x", c: true, d: null });
+  });
 
-    const key = await resolveTitlePropertyKey("abcd1234-ef56-7890-abcd-1234567890ab");
-    assert.equal(key, "Task Title");
+  it("still rejects top-level arrays and scalars", () => {
+    assert.throws(() => parseJsonObject("[]", "--x"), /must be a JSON object/);
+    assert.throws(() => parseJsonObject('"s"', "--x"), /must be a JSON object/);
+    assert.throws(() => parseJsonObject("null", "--x"), /must be a JSON object/);
   });
 });

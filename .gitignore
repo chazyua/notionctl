@@ -35,6 +35,6 @@ notion-cli-config.json
 # Dogfood output (screenshots, videos, reports)
 dogfood-output/
 
-# Ephemeral artifacts (bug reports, scratch docs, exploratory analysis)
+# Ephemeral scratch artifacts — bug reports, audit output, local notes
 temp/*
 !temp/.gitkeep

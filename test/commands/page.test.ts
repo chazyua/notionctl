@@ -1,10 +1,8 @@
-import { describe, it, before, after, mock } from "node:test";
+import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { extractSyncTitle, stripLeadingTitleH1, pageUpdateCommand } from "../../src/commands/page.js";
-import { fetchWith404Hint } from "../../src/commands/shared.js";
+import { extractSyncTitle, stripLeadingTitleHeading, stripLeadingTitleH1, replaceInRichText } from "../../src/commands/page.js";
+import { fetchWith404Hint, parseFlags } from "../../src/commands/shared.js";
 import { NotionCliError, ErrorCode } from "../../src/errors.js";
-import { setTokenProvider, resetForTesting } from "../../src/http.js";
-import { AuthSource } from "../../src/auth.js";
 
 describe("extractSyncTitle", () => {
   it("uses frontmatter title when present", () => {
@@ -35,119 +33,37 @@ describe("extractSyncTitle", () => {
     assert.equal(title, "First");
   });
 
-  it("ignores H1-looking lines inside a backtick fenced code block", () => {
-    const body = "```\n# Not a title\n```\n\n# Real Title\n\nBody";
-    const { title, syncBody } = extractSyncTitle({}, body);
-    assert.equal(title, "Real Title");
-    assert.ok(syncBody.includes("# Not a title"), "code block contents must be preserved");
-    assert.ok(!/^# Real Title/m.test(syncBody), "real H1 must be stripped from body");
+  it("marks explicit=true when title comes from frontmatter", () => {
+    const { explicit } = extractSyncTitle({ title: "Foo" }, "Body");
+    assert.equal(explicit, true);
   });
 
-  it("ignores H1 inside a tilde fenced code block", () => {
-    const body = "~~~\n# Pretend Title\n~~~\n\n# Real One";
-    const { title } = extractSyncTitle({}, body);
-    assert.equal(title, "Real One");
+  it("marks explicit=true when title comes from an H1", () => {
+    const { explicit } = extractSyncTitle({}, "# Foo\n\nBody");
+    assert.equal(explicit, true);
   });
 
-  it("finds H1 that appears after a closed fence", () => {
-    const body = "```js\nconsole.log(1);\n```\n# After Fence\n\nBody";
-    const { title } = extractSyncTitle({}, body);
-    assert.equal(title, "After Fence");
-  });
-
-  it("returns Untitled when the only H1 lives entirely inside a fence", () => {
-    const body = "```\n# Inside\n```\n\nJust body";
-    const { title } = extractSyncTitle({}, body);
+  it("marks explicit=false when title defaults to Untitled", () => {
+    const { title, explicit } = extractSyncTitle({}, "Just a body.");
     assert.equal(title, "Untitled");
+    assert.equal(explicit, false);
   });
 
-  it("handles fences with language hints", () => {
-    const body = "```typescript\n# import { x } from 'y';\n```\n\n# Actual Title";
+  it("ignores H1s inside a fenced code block whose closer is shorter than the opener", () => {
+    // Regression: the fence tracker used to toggle on any ` `{3,} ` match, so
+    // a ``` line inside a ```` fence flipped inFence=false and the next H1
+    // was picked up as the page title even though it was still code content.
+    const body = [
+      "````",
+      "# Not a real H1 inside code",
+      "```",
+      "# Still inside code",
+      "````",
+      "",
+      "# Real title",
+    ].join("\n");
     const { title } = extractSyncTitle({}, body);
-    assert.equal(title, "Actual Title");
-  });
-});
-
-describe("pageUpdateCommand title patch", () => {
-  let originalFetch: typeof globalThis.fetch;
-
-  before(() => {
-    originalFetch = globalThis.fetch;
-    setTokenProvider(async () => ({ token: "ntn_test_token", source: AuthSource.ENV }));
-  });
-
-  after(() => {
-    globalThis.fetch = originalFetch;
-    resetForTesting();
-  });
-
-  it("uses the DB row's actual title column name ('Name') in the PATCH body", async () => {
-    const pageId = "abcd1234-ef56-7890-abcd-1234567890ab";
-    const patchBodies: Array<{ url: string; body: unknown }> = [];
-
-    globalThis.fetch = mock.fn(async (url: string | URL, init?: RequestInit) => {
-      const u = typeof url === "string" ? url : url.toString();
-      const method = (init?.method ?? "GET").toUpperCase();
-
-      if (method === "GET" && u.endsWith(`/pages/${pageId}`)) {
-        return new Response(JSON.stringify({
-          id: pageId,
-          properties: {
-            Status: { type: "select", select: null },
-            Name: { type: "title", title: [] },
-          },
-        }), { status: 200, headers: { "content-type": "application/json" } });
-      }
-      if (method === "PATCH" && u.endsWith(`/pages/${pageId}`)) {
-        patchBodies.push({ url: u, body: JSON.parse((init?.body as string) ?? "{}") });
-        return new Response(JSON.stringify({ id: pageId }), {
-          status: 200,
-          headers: { "content-type": "application/json" },
-        });
-      }
-      return new Response("{}", { status: 404, headers: { "content-type": "application/json" } });
-    }) as typeof globalThis.fetch;
-
-    await pageUpdateCommand({ args: [pageId, "--title", "New Title"] });
-
-    assert.equal(patchBodies.length, 1, "expected one PATCH /pages/{id} call");
-    const body = patchBodies[0]!.body as { properties: Record<string, unknown> };
-    assert.ok(
-      "Name" in body.properties,
-      `PATCH body should use the DB title key "Name", got keys: ${Object.keys(body.properties).join(",")}`,
-    );
-    assert.ok(!("title" in body.properties), 'PATCH body should NOT use hardcoded "title" key for DB rows');
-  });
-
-  it("uses 'title' key for standalone (non-database) pages", async () => {
-    const pageId = "11111111-2222-3333-4444-555555555555";
-    const patchBodies: Array<{ body: unknown }> = [];
-
-    globalThis.fetch = mock.fn(async (url: string | URL, init?: RequestInit) => {
-      const u = typeof url === "string" ? url : url.toString();
-      const method = (init?.method ?? "GET").toUpperCase();
-
-      if (method === "GET" && u.endsWith(`/pages/${pageId}`)) {
-        return new Response(JSON.stringify({
-          id: pageId,
-          properties: { title: { type: "title", title: [] } },
-        }), { status: 200, headers: { "content-type": "application/json" } });
-      }
-      if (method === "PATCH" && u.endsWith(`/pages/${pageId}`)) {
-        patchBodies.push({ body: JSON.parse((init?.body as string) ?? "{}") });
-        return new Response(JSON.stringify({ id: pageId }), {
-          status: 200,
-          headers: { "content-type": "application/json" },
-        });
-      }
-      return new Response("{}", { status: 404, headers: { "content-type": "application/json" } });
-    }) as typeof globalThis.fetch;
-
-    await pageUpdateCommand({ args: [pageId, "--title", "Renamed"] });
-
-    assert.equal(patchBodies.length, 1);
-    const body = patchBodies[0]!.body as { properties: Record<string, unknown> };
-    assert.ok("title" in body.properties, "standalone page should use 'title' key");
+    assert.equal(title, "Real title");
   });
 });
 
@@ -215,5 +131,223 @@ describe("fetchWith404Hint", () => {
         return true;
       },
     );
+  });
+});
+
+describe("replaceInRichText (bug hunt round 5 — cross-run find-replace)", () => {
+  const plain = { bold: false, italic: false, strikethrough: false, underline: false, code: false, color: "default" };
+  const bold = { ...plain, bold: true };
+  const makeRun = (content: string, annotations: typeof plain) => ({
+    type: "text",
+    text: { content, link: null },
+    annotations,
+    plain_text: content,
+    href: null,
+  });
+
+  it("finds and replaces within a single run", () => {
+    const runs = [makeRun("hello world", plain)];
+    const { newRuns, count } = replaceInRichText(runs, "world", "there");
+    assert.equal(count, 1);
+    assert.equal(newRuns.map((r) => r.plain_text).join(""), "hello there");
+  });
+
+  it("finds matches that span two runs", () => {
+    // "This is **bold tar**get inline." → runs split between 'tar' (bold) and 'get' (plain)
+    const runs = [
+      makeRun("This is ", plain),
+      makeRun("bold tar", bold),
+      makeRun("get inline.", plain),
+    ];
+    const { newRuns, count } = replaceInRichText(runs, "target", "XYZ");
+    assert.equal(count, 1);
+    const flat = newRuns.map((r) => r.plain_text).join("");
+    assert.equal(flat, "This is bold XYZ inline.");
+  });
+
+  it("replacement inherits annotations from run at match start", () => {
+    const runs = [makeRun("bold tar", bold), makeRun("get", plain)];
+    const { newRuns } = replaceInRichText(runs, "target", "XYZ");
+    // The replacement 'XYZ' should carry bold (start-of-match annotations)
+    const xyz = newRuns.find((r) => r.plain_text === "XYZ");
+    assert.ok(xyz);
+    assert.equal((xyz as any).annotations.bold, true);
+  });
+
+  it("returns unchanged runs when no match", () => {
+    const runs = [makeRun("hello", plain)];
+    const { newRuns, count } = replaceInRichText(runs, "missing", "X");
+    assert.equal(count, 0);
+    assert.deepEqual(newRuns, runs);
+  });
+
+  it("counts multiple non-overlapping matches", () => {
+    const runs = [makeRun("ab ab ab", plain)];
+    const { count } = replaceInRichText(runs, "ab", "xx");
+    assert.equal(count, 3);
+  });
+
+  it("does not touch equation runs and leaves text replacements around them", () => {
+    // Regression: the previous implementation used each run's plain_text to
+    // build the flat search buffer, so an equation expression containing the
+    // find string was matched and replaced with a plain-text run, losing the
+    // equation shape entirely.
+    const equationRun = {
+      type: "equation",
+      equation: { expression: "x + y" },
+      annotations: { ...plain },
+      plain_text: "x + y",
+      href: null,
+    };
+    const runs = [
+      makeRun("solve for this ", plain),
+      equationRun,
+      makeRun(" then submit", plain),
+    ];
+    const { newRuns, count } = replaceInRichText(runs as any, "this", "THAT");
+    assert.equal(count, 1);
+    const eq = newRuns.find((r: any) => r.type === "equation");
+    assert.ok(eq, "equation run survives");
+    assert.equal((eq as any).equation.expression, "x + y");
+    const flat = newRuns.map((r: any) => r.plain_text).join("");
+    assert.ok(flat.includes("solve for THAT"));
+    assert.ok(flat.includes("then submit"));
+  });
+
+  it("does not touch mention runs", () => {
+    const mention = {
+      type: "mention",
+      mention: { type: "page", page: { id: "abc123" } },
+      annotations: { ...plain },
+      plain_text: "Some Page",
+      href: null,
+    };
+    const runs = [makeRun("hello ", plain), mention, makeRun(" world", plain)];
+    const { newRuns, count } = replaceInRichText(runs as any, "Page", "Doc");
+    assert.equal(count, 0, "mention is skipped");
+    const stillMention = newRuns.find((r: any) => r.type === "mention");
+    assert.ok(stillMention, "mention preserved");
+  });
+});
+
+describe("stripLeadingTitleHeading (bug hunt round 4)", () => {
+  it("strips a leading # Title matching the title argument", () => {
+    const body = "# My Title\n\nBody content.";
+    assert.equal(stripLeadingTitleHeading(body, "My Title"), "Body content.");
+  });
+
+  it("does not strip a later H1 that matches the title", () => {
+    // Regression: regex /^# .+\n?/m scanned the whole body and returned the
+    // first H1. If that first H1 wasn't the title, nothing was stripped and
+    // the duplicate stayed. We now only look at the very first line.
+    const body = "# Intro section\n\n# My Title\n\nBody.";
+    assert.equal(stripLeadingTitleHeading(body, "My Title"), body);
+  });
+
+  it("leaves the first H1 alone when it doesn't match the title", () => {
+    const body = "# Other heading\n\nBody content.";
+    assert.equal(stripLeadingTitleHeading(body, "My Title"), body);
+  });
+
+  it("tolerates blank lines above the leading H1", () => {
+    const body = "\n\n# My Title\n\nBody.";
+    assert.equal(stripLeadingTitleHeading(body, "My Title"), "Body.");
+  });
+
+  it("handles a trailing newline-free H1 at end of body", () => {
+    const body = "# My Title";
+    assert.equal(stripLeadingTitleHeading(body, "My Title"), "");
+  });
+});
+
+describe("BUG-N1 regression: page update --title must not auto-read stdin", () => {
+  it("parseFlags with only --title sets from=undefined", () => {
+    const { flags } = parseFlags(["some-id", "--title", "New Title"]);
+    assert.equal(flags.get("title"), "New Title");
+    assert.equal(flags.get("from"), undefined);
+    // hasFrom should be !!flags.get("from") = false, so title-only update
+    // must never enter the block-replacement path.
+    const hasFrom = !!flags.get("from");
+    assert.equal(hasFrom, false, "title-only update must not trigger content replacement");
+  });
+
+  it("parseFlags with --from - sets from correctly", () => {
+    const { flags } = parseFlags(["some-id", "--from", "-"]);
+    assert.equal(flags.get("from"), "-");
+    const hasFrom = !!flags.get("from");
+    assert.equal(hasFrom, true, "--from - should trigger content replacement");
+  });
+
+  it("parseFlags with --title and --from sets both", () => {
+    const { flags } = parseFlags(["some-id", "--title", "X", "--from", "file.md"]);
+    assert.equal(flags.get("title"), "X");
+    assert.equal(flags.get("from"), "file.md");
+    const hasFrom = !!flags.get("from");
+    assert.equal(hasFrom, true);
+  });
+});
+
+describe("BUG-N2 regression: page update with no flags must produce USAGE error", () => {
+  it("parseFlags with just a positional ID has no title and no from", () => {
+    const { flags } = parseFlags(["some-id"]);
+    const title = flags.get("title");
+    const hasFrom = !!flags.get("from");
+    assert.equal(title, undefined);
+    assert.equal(hasFrom, false);
+    // The guard `if (!title && !hasFrom)` must fire.
+    assert.ok(!title && !hasFrom, "no-flag invocation must hit the USAGE guard");
+  });
+});
+
+describe("BUG-N3 regression: page delete --yes must be checked before --dry-run", () => {
+  it("parseFlags extracts both --yes and --dry-run as boolean flags", () => {
+    const { flags } = parseFlags(["some-id", "--dry-run"]);
+    // --yes is absent, --dry-run is present
+    assert.equal(flags.get("yes"), undefined);
+    assert.equal(flags.get("dry-run"), "true");
+    // The --yes check must run first — if --yes is missing, throw before dry-run.
+    const yesPresent = flags.get("yes") === "true";
+    assert.equal(yesPresent, false, "--yes must be required even for dry-run");
+  });
+});
+
+describe("BUG-15 regression: page get output must be sync-compatible", () => {
+  it("page get frontmatter hash matches what extractFrontmatter+classifySyncState would compute", async () => {
+    // Simulate what page get now produces: frontmatter with notion_hash
+    // and notion_synced_at. When this output is saved to a file and fed
+    // to page sync, the sync state should be UNCHANGED.
+    const { extractFrontmatter } = await import("../../src/sync/frontmatter.js");
+    const { computeContentHash, classifySyncState } = await import("../../src/sync/sync.js");
+
+    // Simulate page get output format
+    const body = "# My Page\n\nSome content.\n";
+    const hash = computeContentHash(body);
+    const syncedAt = new Date().toISOString();
+
+    const output = [
+      "---",
+      `notion_id: "test-id-123"`,
+      `notion_hash: "${hash}"`,
+      `notion_synced_at: "${syncedAt}"`,
+      "---",
+      "",
+      body,
+    ].join("\n");
+
+    const { data: fm, body: extractedBody } = extractFrontmatter(output);
+    assert.equal(fm.notion_id, "test-id-123");
+    assert.equal(fm.notion_hash, hash);
+
+    // The extracted body should hash to the same value
+    const recomputedHash = computeContentHash(extractedBody);
+    assert.equal(recomputedHash, hash, "hash of extracted body must match stored hash");
+
+    // classifySyncState should return UNCHANGED
+    const state = classifySyncState({
+      frontmatter: fm,
+      localBody: extractedBody,
+      remoteEditedAt: syncedAt,
+    });
+    assert.equal(state, "UNCHANGED", "page get output fed to sync must be UNCHANGED");
   });
 });

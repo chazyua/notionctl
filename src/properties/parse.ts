@@ -60,7 +60,10 @@ export function parsePropertyFlag(flag: string): FlagPair {
       `Invalid --prop flag (missing '='): ${flag}`,
     );
   }
-  return { key: flag.slice(0, eqIdx).trim(), value: flag.slice(eqIdx + 1).trim() };
+  return {
+    key: stripQuotes(flag.slice(0, eqIdx).trim()),
+    value: flag.slice(eqIdx + 1).trim(),
+  };
 }
 
 function findUnquotedEquals(s: string): number {
@@ -108,22 +111,41 @@ export function parseProperty(
       return { number: n };
     }
     case "select":
+      // Empty value clears the property. Sending `{name: ""}` makes Notion's
+      // API reject the request with "Invalid property value" instead of
+      // clearing the select the way users expect.
+      if (value.length === 0) return { select: null };
       return { select: { name: value } };
     case "status":
+      if (value.length === 0) return { status: null };
       return { status: { name: value } };
     case "multi_select": {
       const items = parseList(value);
       return { multi_select: items.map((name) => ({ name })) };
     }
     case "date": {
-      const rangeMatch = /^(.+?)\.\.(.+)$/.exec(value);
-      if (rangeMatch) {
-        return { date: { start: rangeMatch[1]!, end: rangeMatch[2]! } };
+      if (value.length === 0) return { date: null };
+      const parts = value.split("..");
+      if (parts.length > 2) {
+        throw new NotionCliError(
+          ErrorCode.INVALID_PROPERTY,
+          `Property '${key}' date range must have at most one '..' separator, got: ${value}`,
+        );
+      }
+      if (parts.length === 2) {
+        const [start, end] = parts;
+        if (!start || !end) {
+          throw new NotionCliError(
+            ErrorCode.INVALID_PROPERTY,
+            `Property '${key}' date range needs both start and end dates, got: ${value}`,
+          );
+        }
+        return { date: { start, end } };
       }
       return { date: { start: value, end: null } };
     }
     case "checkbox":
-      return { checkbox: parseCheckbox(value, key) };
+      return { checkbox: parseCheckboxValue(key, value) };
     case "url":
       return { url: value };
     case "email":
@@ -147,7 +169,7 @@ export function parseProperty(
       }
       if (prefix[1] === "url") {
         const url = stripQuotes(value.slice(4));
-        const name = url.split("/").pop() ?? "file";
+        const name = url.split("/").pop() || "file";
         return { files: [{ name, external: { url } }] };
       }
       throw new NotionCliError(
@@ -168,19 +190,6 @@ export function parseProperty(
         `Property type '${propSchema.type}' is read-only; cannot set`,
       );
   }
-}
-
-const CHECKBOX_TRUE = new Set(["true", "yes", "y", "1", "on"]);
-const CHECKBOX_FALSE = new Set(["false", "no", "n", "0", "off", ""]);
-
-function parseCheckbox(value: string, propKey: string): boolean {
-  const v = value.trim().toLowerCase();
-  if (CHECKBOX_TRUE.has(v)) return true;
-  if (CHECKBOX_FALSE.has(v)) return false;
-  throw new NotionCliError(
-    ErrorCode.INVALID_PROPERTY,
-    `Property '${propKey}' (checkbox) must be true/false, yes/no, 1/0, or on/off — got: ${value}`,
-  );
 }
 
 function resolvePersonRef(ref: string, propKey: string): { id: string } {
@@ -229,6 +238,19 @@ function parseList(raw: string): string[] {
   }
   if (current.trim().length > 0) items.push(current.trim());
   return items;
+}
+
+const TRUTHY_CHECKBOX = new Set(["true", "1", "yes", "y", "on"]);
+const FALSY_CHECKBOX = new Set(["false", "0", "no", "n", "off"]);
+
+function parseCheckboxValue(key: string, raw: string): boolean {
+  const v = raw.trim().toLowerCase();
+  if (TRUTHY_CHECKBOX.has(v)) return true;
+  if (FALSY_CHECKBOX.has(v)) return false;
+  throw new NotionCliError(
+    ErrorCode.INVALID_PROPERTY,
+    `Property '${key}' (checkbox) must be true/false, yes/no, 1/0, or on/off — got: ${raw}`,
+  );
 }
 
 function stripQuotes(s: string): string {

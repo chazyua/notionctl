@@ -7,11 +7,10 @@
  * invocation and used to type-check property flags.
  */
 
-import { readFile } from "node:fs/promises";
 import { notionRequest } from "../http.js";
 import { parseProperty, parsePropertyFlag, type PropertySchema } from "../properties/parse.js";
 import { renderProperty } from "../properties/render.js";
-import { resolvePageId, parseFlags, getBooleanFlag, fetchWith404Hint, parseJsonObject, readStdinBounded } from "./shared.js";
+import { resolvePageId, parseFlags, getBooleanFlag, fetchWith404Hint, parseJsonObject, readStdinBounded, readFileText } from "./shared.js";
 import { markdownToBlocks, blocksToMarkdown } from "../markdown/index.js";
 import type { Block } from "../markdown/index.js";
 import { fetchBlockTree } from "../blocks.js";
@@ -20,15 +19,37 @@ import { renderJson, renderTable, renderCsv, chooseFormat, isStdoutTty, type For
 import { stringifyYaml, type YamlObject } from "../utils/yaml.js";
 import { extractFrontmatter } from "../sync/frontmatter.js";
 
-async function fetchSchema(dbId: string): Promise<Record<string, PropertySchema>> {
+/**
+ * Resolve a database ID to its primary data source ID. Since API version
+ * 2025-09-03, `GET /databases/{id}` returns a `data_sources` array instead
+ * of an inline `properties` schema. All schema operations (query, update
+ * properties, get schema) now go through `/data_sources/{dsId}`.
+ */
+async function resolveDataSourceId(dbId: string): Promise<string> {
   const db = await fetchWith404Hint(
-    () => notionRequest<{ properties: Record<string, PropertySchema> }>(
+    () => notionRequest<{ data_sources?: Array<{ id: string }> }>(
       "GET",
       `/databases/${dbId}`,
     ),
     `Database ${dbId}`,
   );
-  return db.properties;
+  const ds = db.data_sources?.[0];
+  if (!ds) {
+    throw new NotionCliError(
+      ErrorCode.API_ERROR,
+      `Database ${dbId} has no data sources — cannot resolve schema.`,
+    );
+  }
+  return ds.id;
+}
+
+async function fetchSchema(dbId: string): Promise<{ schema: Record<string, PropertySchema>; dataSourceId: string }> {
+  const dataSourceId = await resolveDataSourceId(dbId);
+  const ds = await notionRequest<{ properties: Record<string, PropertySchema> }>(
+    "GET",
+    `/data_sources/${dataSourceId}`,
+  );
+  return { schema: ds.properties, dataSourceId };
 }
 
 export async function dbSchemaCommand(ctx: { args: string[] }): Promise<string> {
@@ -37,11 +58,14 @@ export async function dbSchemaCommand(ctx: { args: string[] }): Promise<string> 
     throw new NotionCliError(ErrorCode.USAGE, "Usage: notionctl db schema <id>");
   }
   const id = resolvePageId(positional[0]!);
-  const schema = await fetchSchema(id);
+  const { schema } = await fetchSchema(id);
   const format = chooseFormat(flags.get("format") as Format | undefined, {
     isTty: isStdoutTty(),
     defaultFormat: "table",
   });
+  if (format === "md") {
+    throw new NotionCliError(ErrorCode.USAGE, "db schema does not support --format md. Use json, table, or csv.");
+  }
   if (format === "json") return renderJson(schema);
   const tableData = {
     columns: ["Name", "Type"],
@@ -49,6 +73,36 @@ export async function dbSchemaCommand(ctx: { args: string[] }): Promise<string> 
   };
   if (format === "csv") return renderCsv(tableData);
   return renderTable(tableData);
+}
+
+/**
+ * Split a comma-separated list while respecting double/single quoted
+ * segments. Used by multi_select filters so values with embedded commas
+ * ("Design, Review") can be passed literally.
+ */
+function splitQuotedCsv(raw: string): string[] {
+  const out: string[] = [];
+  let current = "";
+  let inQuote: '"' | "'" | null = null;
+  for (let i = 0; i < raw.length; i++) {
+    const c = raw[i]!;
+    if (inQuote) {
+      if (c === inQuote && raw[i - 1] !== "\\") { inQuote = null; continue; }
+      current += c;
+      continue;
+    }
+    if (c === '"' || c === "'") { inQuote = c; continue; }
+    if (c === ",") {
+      const trimmed = current.trim();
+      if (trimmed.length > 0) out.push(trimmed);
+      current = "";
+      continue;
+    }
+    current += c;
+  }
+  const trimmed = current.trim();
+  if (trimmed.length > 0) out.push(trimmed);
+  return out;
 }
 
 /**
@@ -99,8 +153,7 @@ export function parseSimpleFilter(expr: string, schema: Record<string, PropertyS
       return { property: key, status: { equals: value } };
     case "multi_select": {
       if (op !== "=") throw new NotionCliError(ErrorCode.USAGE, `multi_select filter only supports =`);
-      // BUG-L: split on unescaped commas so options like "tech,AI" are addressable via backslash-escape.
-      const values = splitEscapedCommas(value).filter(Boolean);
+      const values = splitQuotedCsv(value);
       if (values.length === 0) {
         throw new NotionCliError(ErrorCode.USAGE, `multi_select filter needs at least one value`);
       }
@@ -109,9 +162,19 @@ export function parseSimpleFilter(expr: string, schema: Record<string, PropertyS
       }
       return { and: values.map((v) => ({ property: key, multi_select: { contains: v } })) };
     }
-    case "checkbox":
+    case "checkbox": {
       if (op !== "=") throw new NotionCliError(ErrorCode.USAGE, `checkbox filter only supports =`);
-      return { property: key, checkbox: { equals: value === "true" } };
+      const v = value.trim().toLowerCase();
+      const truthy = new Set(["true", "1", "yes", "y", "on"]);
+      const falsy = new Set(["false", "0", "no", "n", "off"]);
+      if (!truthy.has(v) && !falsy.has(v)) {
+        throw new NotionCliError(
+          ErrorCode.USAGE,
+          `checkbox filter value must be true/false, yes/no, 1/0, or on/off — got: ${value}`,
+        );
+      }
+      return { property: key, checkbox: { equals: truthy.has(v) } };
+    }
     case "number": {
       const n = Number(value);
       if (!Number.isFinite(n)) {
@@ -150,36 +213,27 @@ export function parseSimpleFilter(expr: string, schema: Record<string, PropertyS
   }
 }
 
-function splitEscapedCommas(input: string): string[] {
-  const out: string[] = [];
-  let cur = "";
-  for (let i = 0; i < input.length; i++) {
-    const c = input[i]!;
-    if (c === "\\" && input[i + 1] === ",") {
-      cur += ",";
-      i++;
-      continue;
-    }
-    if (c === ",") {
-      out.push(cur.trim());
-      cur = "";
-      continue;
-    }
-    cur += c;
-  }
-  if (cur.trim().length > 0 || out.length > 0) out.push(cur.trim());
-  return out;
-}
-
 // Exported for unit testing.
 export function parseSimpleSort(expr: string, schema: Record<string, PropertySchema>): unknown {
-  const [prop, dir] = expr.split(":");
+  const parts = expr.split(":");
+  if (parts.length > 2) {
+    throw new NotionCliError(ErrorCode.USAGE, `Invalid sort: '${expr}' (too many colons — expected Name or Name:asc / Name:desc)`);
+  }
+  const [prop, dir] = parts;
   if (!prop) {
-    // BUG-G: --sort ":desc" would previously send {property:""} to Notion.
-    throw new NotionCliError(ErrorCode.USAGE, `--sort requires a property name (got: ${expr})`);
+    throw new NotionCliError(
+      ErrorCode.USAGE,
+      `Invalid sort: '${expr}' (expected Name or Name:asc / Name:desc)`,
+    );
   }
   if (!schema[prop]) {
     throw new NotionCliError(ErrorCode.INVALID_PROPERTY, `Unknown sort property: ${prop}`);
+  }
+  if (dir !== undefined && dir !== "asc" && dir !== "desc") {
+    throw new NotionCliError(
+      ErrorCode.USAGE,
+      `Invalid sort direction: '${dir}' (use asc or desc)`,
+    );
   }
   return {
     property: prop,
@@ -193,14 +247,14 @@ export async function dbQueryCommand(ctx: { args: string[] }): Promise<string> {
     throw new NotionCliError(ErrorCode.USAGE, "Usage: notionctl db query <id> [--filter ...] [--sort ...]");
   }
   const id = resolvePageId(positional[0]!);
-  const schema = await fetchSchema(id);
+  const { schema, dataSourceId } = await fetchSchema(id);
 
   const body: Record<string, unknown> = {};
   const filterFlags = repeated.get("filter") ?? [];
   const filterJsonFlag = flags.get("filter-json");
   if (filterJsonFlag) {
     const raw = filterJsonFlag.startsWith("@")
-      ? await readFile(filterJsonFlag.slice(1), "utf8")
+      ? await readFileText(filterJsonFlag.slice(1), "filter JSON")
       : filterJsonFlag;
     body.filter = parseJsonObject(raw, "--filter-json");
   } else if (filterFlags.length === 1) {
@@ -216,7 +270,7 @@ export async function dbQueryCommand(ctx: { args: string[] }): Promise<string> {
 
   const res = await notionRequest<{ results: Array<{ id: string; properties: Record<string, unknown> }> }>(
     "POST",
-    `/databases/${id}/query`,
+    `/data_sources/${dataSourceId}/query`,
     body,
   );
 
@@ -224,6 +278,9 @@ export async function dbQueryCommand(ctx: { args: string[] }): Promise<string> {
     isTty: isStdoutTty(),
     defaultFormat: "table",
   });
+  if (format === "md") {
+    throw new NotionCliError(ErrorCode.USAGE, "db query does not support --format md. Use json, table, or csv.");
+  }
   if (format === "json") return renderJson(res);
 
   const columns = ["ID", ...Object.keys(schema)];
@@ -231,12 +288,37 @@ export async function dbQueryCommand(ctx: { args: string[] }): Promise<string> {
     const row: string[] = [r.id];
     for (const name of Object.keys(schema)) {
       const rendered = renderProperty(r.properties[name]);
-      row.push(rendered === null || rendered === undefined ? "" : typeof rendered === "string" ? rendered : JSON.stringify(rendered));
+      row.push(rendered === null || rendered === undefined ? "" : Array.isArray(rendered) ? rendered.join(", ") : typeof rendered === "string" ? rendered : String(rendered));
     }
     return row;
   });
   if (format === "csv") return renderCsv({ columns, rows });
   return renderTable({ columns, rows });
+}
+
+/**
+ * Split a select / multi_select option list while dropping empty segments
+ * (from trailing commas like `Todo,Doing,`) and rejecting duplicates. The
+ * Notion API rejects schemas with duplicate option names, so catching them
+ * client-side gives a clean error instead of a cryptic API failure.
+ */
+function parseOptionList(raw: string, propName: string): Array<{ name: string }> {
+  if (!raw) return [];
+  const seen = new Set<string>();
+  const out: Array<{ name: string }> = [];
+  for (const part of raw.split(",")) {
+    const name = part.trim();
+    if (name.length === 0) continue;
+    if (seen.has(name)) {
+      throw new NotionCliError(
+        ErrorCode.USAGE,
+        `Duplicate option '${name}' in property '${propName}' — select and multi_select option names must be unique.`,
+      );
+    }
+    seen.add(name);
+    out.push({ name });
+  }
+  return out;
 }
 
 /**
@@ -257,6 +339,8 @@ export function parseColumnSpec(spec: string): { name: string; schema: Record<st
   const options = colonIdx === -1 ? "" : rest.slice(colonIdx + 1);
 
   switch (type) {
+    case "title":
+      return { name, schema: { title: {} } };
     case "text":
     case "rich_text":
       return { name, schema: { rich_text: {} } };
@@ -278,11 +362,11 @@ export function parseColumnSpec(spec: string): { name: string; schema: Record<st
     case "files":
       return { name, schema: { files: {} } };
     case "select": {
-      const opts = options ? options.split(",").map((o) => ({ name: o.trim() })) : [];
+      const opts = parseOptionList(options, name);
       return { name, schema: { select: { options: opts } } };
     }
     case "multi_select": {
-      const opts = options ? options.split(",").map((o) => ({ name: o.trim() })) : [];
+      const opts = parseOptionList(options, name);
       return { name, schema: { multi_select: { options: opts } } };
     }
     default:
@@ -305,7 +389,9 @@ export async function dbCreateCommand(ctx: { args: string[] }): Promise<string> 
   }
   const parentId = resolvePageId(parent);
 
-  // Build properties schema: title is always the first column
+  // Default title column is "Name". If a --prop X=title spec is supplied,
+  // it overrides the default so users can rename the title column at create
+  // time (e.g. --prop Task=title).
   const properties: Record<string, unknown> = {
     Name: { title: {} },
   };
@@ -314,13 +400,23 @@ export async function dbCreateCommand(ctx: { args: string[] }): Promise<string> 
   const schemaJson = flags.get("schema-json");
   if (schemaJson) {
     const raw = schemaJson.startsWith("@")
-      ? await readFile(schemaJson.slice(1), "utf8")
+      ? await readFileText(schemaJson.slice(1), "schema JSON")
       : schemaJson;
-    Object.assign(properties, parseJsonObject(raw, "--schema-json"));
+    const parsed = parseJsonObject(raw, "--schema-json");
+    Object.assign(properties, parsed);
+    // If --schema-json provides a title column with a different name,
+    // remove the default "Name" to avoid "Multiple title properties" API error.
+    for (const [name, schema] of Object.entries(parsed)) {
+      if (name !== "Name" && typeof schema === "object" && schema !== null && "title" in (schema as Record<string, unknown>)) {
+        delete properties.Name;
+        break;
+      }
+    }
   }
 
   // --prop Name=type[:options]: individual columns added on top.
-  // BUG-D: block --prop Name=<anything-but-title> so the title column is never wiped.
+  // Block --prop Name=<anything-but-title> so the title column is never wiped.
+  let titleOverride: string | null = null;
   for (const raw of repeated.get("prop") ?? []) {
     const { name, schema } = parseColumnSpec(raw);
     if (name === "Name" && !("title" in schema)) {
@@ -329,13 +425,31 @@ export async function dbCreateCommand(ctx: { args: string[] }): Promise<string> 
         "Cannot override the 'Name' column with a non-title type — every database needs a title column. Pick a different column name.",
       );
     }
+    if ((schema as { title?: unknown }).title !== undefined) {
+      titleOverride = name;
+    }
     properties[name] = schema;
+  }
+  if (titleOverride && titleOverride !== "Name") {
+    delete properties.Name;
+  }
+
+  // Validate exactly one title column — combined --schema-json + --prop
+  // can produce duplicates that the Notion API rejects with a cryptic error.
+  const titleCols = Object.entries(properties).filter(
+    ([, s]) => typeof s === "object" && s !== null && "title" in (s as Record<string, unknown>),
+  );
+  if (titleCols.length > 1) {
+    throw new NotionCliError(
+      ErrorCode.USAGE,
+      `Multiple title columns detected (${titleCols.map(([n]) => n).join(", ")}). A database can have exactly one title column.`,
+    );
   }
 
   const payload = {
     parent: { type: "page_id", page_id: parentId },
     title: [{ type: "text", text: { content: title, link: null } }],
-    properties,
+    initial_data_source: { properties },
   };
 
   if (getBooleanFlag(flags, "dry-run")) {
@@ -389,16 +503,14 @@ export async function dbUpdateCommand(ctx: { args: string[] }): Promise<string> 
   const schemaJson = flags.get("schema-json");
   if (schemaJson) {
     const raw = schemaJson.startsWith("@")
-      ? await readFile(schemaJson.slice(1), "utf8")
+      ? await readFileText(schemaJson.slice(1), "schema JSON")
       : schemaJson;
     Object.assign(properties, parseJsonObject(raw, "--schema-json"));
   }
 
-  if (Object.keys(properties).length > 0) {
-    payload.properties = properties;
-  }
+  const hasPropertyChanges = Object.keys(properties).length > 0;
 
-  if (Object.keys(payload).length === 0) {
+  if (!hasPropertyChanges && Object.keys(payload).length === 0) {
     throw new NotionCliError(
       ErrorCode.USAGE,
       "Nothing to update. Provide at least one of: --title, --add-prop, --remove-prop, --rename-prop, --schema-json",
@@ -406,11 +518,27 @@ export async function dbUpdateCommand(ctx: { args: string[] }): Promise<string> 
   }
 
   if (getBooleanFlag(flags, "dry-run")) {
-    return renderJson({ action: "db update", dbId: id, payload });
+    return renderJson({ action: "db update", dbId: id, payload: { ...payload, ...(hasPropertyChanges ? { properties } : {}) } });
   }
 
-  const res = await notionRequest<{ id: string; url?: string }>("PATCH", `/databases/${id}`, payload);
-  return renderJson({ id: res.id, url: res.url });
+  const result: Record<string, unknown> = {};
+
+  // Database-level changes (title, icon, etc.) go to /databases/{id}
+  if (Object.keys(payload).length > 0) {
+    const res = await notionRequest<{ id: string; url?: string }>("PATCH", `/databases/${id}`, payload);
+    result.id = res.id;
+    result.url = res.url;
+  }
+
+  // Schema changes (add/remove/rename properties) go to /data_sources/{dsId}
+  if (hasPropertyChanges) {
+    const dsId = await resolveDataSourceId(id);
+    const res = await notionRequest<{ id: string }>("PATCH", `/data_sources/${dsId}`, { properties });
+    result.dataSourceId = res.id;
+    if (!result.id) result.id = id;
+  }
+
+  return renderJson(result);
 }
 
 export async function dbRowGetCommand(ctx: { args: string[] }): Promise<string> {
@@ -447,7 +575,7 @@ export async function dbRowCreateCommand(ctx: { args: string[] }): Promise<strin
     throw new NotionCliError(ErrorCode.USAGE, "Usage: notionctl db row create <db-id> [--prop Key=value ...]");
   }
   const dbId = resolvePageId(positional[0]!);
-  const schema = await fetchSchema(dbId);
+  const { schema } = await fetchSchema(dbId);
 
   const properties: Record<string, unknown> = {};
   const propJson = flags.get("prop-json");
@@ -466,7 +594,7 @@ export async function dbRowCreateCommand(ctx: { args: string[] }): Promise<strin
     if (fromFile === "-") {
       raw = await readStdinBounded();
     } else {
-      raw = await readFile(fromFile, "utf8");
+      raw = await readFileText(fromFile, "row body markdown");
     }
     const { body } = extractFrontmatter(raw);
     children = markdownToBlocks(body);
@@ -491,11 +619,17 @@ export async function dbRowUpdateCommand(ctx: { args: string[] }): Promise<strin
     throw new NotionCliError(ErrorCode.USAGE, "Usage: notionctl db row update <page-id> [--prop Key=value ...]");
   }
   const pageId = resolvePageId(positional[0]!);
-  const page = await notionRequest<{ parent: { type: string; database_id?: string } }>("GET", `/pages/${pageId}`);
-  if (page.parent.type !== "database_id" || !page.parent.database_id) {
+  const page = await fetchWith404Hint(
+    () => notionRequest<{ parent: { type: string; database_id?: string; data_source_id?: string } }>("GET", `/pages/${pageId}`),
+    `Database row ${pageId}`,
+  );
+  // API 2025-09-03+ returns parent.type = "data_source_id" with both database_id and data_source_id.
+  // Earlier versions use parent.type = "database_id".
+  const parentDbId = page.parent.database_id;
+  if (!parentDbId) {
     throw new NotionCliError(ErrorCode.USAGE, `Page ${pageId} is not a database row. Use 'page update' for non-database pages.`);
   }
-  const schema = await fetchSchema(page.parent.database_id);
+  const { schema } = await fetchSchema(parentDbId);
 
   const properties: Record<string, unknown> = {};
   const propJson = flags.get("prop-json");
@@ -528,6 +662,12 @@ export async function dbRowDeleteCommand(ctx: { args: string[] }): Promise<strin
     throw new NotionCliError(ErrorCode.USAGE, "Refusing to archive without --yes");
   }
   const id = resolvePageId(positional[0]!);
-  const res = await notionRequest("PATCH", `/pages/${id}`, { archived: true });
+  if (getBooleanFlag(flags, "dry-run")) {
+    return renderJson({ action: "db row delete", id });
+  }
+  const res = await fetchWith404Hint(
+    () => notionRequest("PATCH", `/pages/${id}`, { in_trash: true }),
+    `Database row ${id}`,
+  );
   return renderJson(res);
 }

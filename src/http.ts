@@ -22,7 +22,7 @@ import { NotionCliError, ErrorCode } from "./errors.js";
 import { VERSION } from "./version.js";
 
 const API_BASE = "https://api.notion.com/v1";
-const NOTION_VERSION = "2022-06-28";
+const NOTION_VERSION = "2026-03-11";
 const DEFAULT_TIMEOUT_MS = 30_000;
 const USER_AGENT = `notionctl/${VERSION}`;
 
@@ -41,26 +41,26 @@ type TokenProvider = () => Promise<LoadedToken>;
 
 let tokenProvider: TokenProvider = loadToken;
 let cachedToken: string | undefined;
+
 let debugMode = false;
+let verboseMode = false;
 let requestCount = 0;
+
+export function setDebugMode(on: boolean): void { debugMode = on; }
+export function setVerboseMode(on: boolean): void { verboseMode = on; }
+export function isVerboseMode(): boolean { return verboseMode; }
+export function getRequestCount(): number { return requestCount; }
 
 export function setTokenProvider(provider: TokenProvider): void {
   tokenProvider = provider;
   cachedToken = undefined;
 }
 
-export function setDebugMode(enabled: boolean): void {
-  debugMode = enabled;
-}
-
-export function getRequestCount(): number {
-  return requestCount;
-}
-
 export function resetForTesting(): void {
   tokenProvider = loadToken;
   cachedToken = undefined;
   debugMode = false;
+  verboseMode = false;
   requestCount = 0;
 }
 
@@ -124,7 +124,7 @@ async function notionRequestSingle<T = unknown>(
 
     requestCount++;
     if (debugMode) {
-      process.stderr.write(`[notionctl] ${method} ${path}${attempt > 0 ? ` (retry ${attempt})` : ""}\n`);
+      process.stderr.write(`[debug] ${method} ${path}${attempt > 0 ? ` (retry ${attempt})` : ""}\n`);
     }
 
     try {
@@ -152,6 +152,10 @@ async function notionRequestSingle<T = unknown>(
       continue;
     } finally {
       clearTimeout(timer);
+    }
+
+    if (debugMode) {
+      process.stderr.write(`[debug] ${response.status} ${response.statusText}\n`);
     }
 
     if (response.ok) {
@@ -287,14 +291,15 @@ export async function appendBlocksChunked(
   for (let i = 0; i < blocks.length; i += BLOCK_CHUNK_SIZE) {
     const chunk = blocks.slice(i, i + BLOCK_CHUNK_SIZE);
     const body: Record<string, unknown> = { children: chunk };
-    if (afterId) body.after = afterId;
+    if (afterId) {
+      body.position = { type: "after_block", after_block: { id: afterId } };
+    }
     const res = await notionRequest<{ results: Array<{ id: string }> }>(
       "PATCH",
       `/blocks/${parentId}/children`,
       body,
     );
     allResults.push(...res.results);
-    // Subsequent chunks append after the last block of the previous chunk
     if (res.results.length > 0) {
       afterId = res.results[res.results.length - 1]!.id;
     }
@@ -312,7 +317,7 @@ export async function appendBlocksChunked(
  * Same auth, same URL enforcement, same domain restriction.
  */
 export async function notionUploadFile(
-  fileBuffer: Buffer,
+  filePath: string,
   fileName: string,
   contentType: string,
 ): Promise<{ id: string; status: string; [key: string]: unknown }> {
@@ -323,9 +328,10 @@ export async function notionUploadFile(
     { file_name: fileName, content_type: contentType },
   );
 
-  // Step 2: send file data with retry and timeout. Caller is responsible
-  // for reading the file — taking a Buffer avoids the TOCTOU race where
-  // a separate stat() + readFile() would cross file-descriptor boundaries.
+  // Step 2: send file data with retry and timeout
+  const { readFile } = await import("node:fs/promises");
+  const fileBuffer = await readFile(filePath);
+
   const uploadUrl = `${API_BASE}/file_uploads/${session.id}/send`;
   if (!uploadUrl.startsWith("https://api.notion.com/")) {
     throw new NotionCliError(ErrorCode.GENERIC, "Internal error: upload URL escaped api.notion.com");
@@ -342,11 +348,6 @@ export async function notionUploadFile(
 
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
-
-    requestCount++;
-    if (debugMode) {
-      process.stderr.write(`[notionctl] POST /file_uploads/${session.id}/send${attempt > 0 ? ` (retry ${attempt})` : ""}\n`);
-    }
 
     try {
       response = await fetch(uploadUrl, {
@@ -413,19 +414,33 @@ export async function exchangeOAuthCode(
   const url = `${API_BASE}/oauth/token`;
   const credentials = Buffer.from(`${clientId}:${clientSecret}`).toString("base64");
 
-  const response = await fetch(url, {
-    method: "POST",
-    headers: {
-      "Authorization": `Basic ${credentials}`,
-      "Content-Type": "application/json",
-      "User-Agent": USER_AGENT,
-    },
-    body: JSON.stringify({
-      grant_type: "authorization_code",
-      code,
-      redirect_uri: redirectUri,
-    }),
-  });
+  const timeoutMs = parseTimeoutEnv() ?? DEFAULT_TIMEOUT_MS;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      method: "POST",
+      headers: {
+        "Authorization": `Basic ${credentials}`,
+        "Content-Type": "application/json",
+        "User-Agent": USER_AGENT,
+      },
+      body: JSON.stringify({
+        grant_type: "authorization_code",
+        code,
+        redirect_uri: redirectUri,
+      }),
+      signal: controller.signal,
+    });
+  } catch (err: unknown) {
+    if (err instanceof Error && err.name === "AbortError") {
+      throw new NotionCliError(ErrorCode.NETWORK_ERROR, `OAuth token exchange timed out after ${timeoutMs}ms`);
+    }
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
 
   if (!response.ok) {
     let message = `HTTP ${response.status}`;

@@ -1,6 +1,6 @@
 import { describe, it, before, after, mock } from "node:test";
 import assert from "node:assert/strict";
-import { notionRequest, appendBlocksChunked, notionUploadFile, setTokenProvider, resetForTesting } from "../src/http.js";
+import { notionRequest, appendBlocksChunked, setTokenProvider, resetForTesting } from "../src/http.js";
 import { NotionCliError, ErrorCode } from "../src/errors.js";
 import { AuthSource } from "../src/auth.js";
 
@@ -36,7 +36,7 @@ describe("http.ts base client", () => {
 
     assert.equal(capturedUrl, "https://api.notion.com/v1/users/me");
     assert.equal(capturedHeaders["authorization"], "Bearer ntn_test_token");
-    assert.equal(capturedHeaders["notion-version"], "2022-06-28");
+    assert.equal(capturedHeaders["notion-version"], "2026-03-11");
     assert.match(capturedHeaders["user-agent"] ?? "", /^notionctl\//);
     assert.deepEqual(result, { object: "user", id: "abc" });
   });
@@ -231,53 +231,6 @@ describe("http.ts retries", () => {
   });
 });
 
-describe("notionUploadFile", () => {
-  let originalFetch: typeof globalThis.fetch;
-
-  before(() => {
-    originalFetch = globalThis.fetch;
-    setTokenProvider(async () => ({ token: "ntn_upload_test", source: AuthSource.ENV }));
-  });
-
-  after(() => {
-    globalThis.fetch = originalFetch;
-    resetForTesting();
-  });
-
-  it("uploads a provided Buffer without touching the filesystem", async () => {
-    const calls: Array<{ url: string; method: string }> = [];
-    const payload = Buffer.from("hello notion", "utf8");
-
-    globalThis.fetch = mock.fn(async (url: string | URL, init?: RequestInit) => {
-      const u = typeof url === "string" ? url : url.toString();
-      calls.push({ url: u, method: init?.method ?? "GET" });
-
-      if (u.endsWith("/file_uploads")) {
-        return new Response(
-          JSON.stringify({ id: "upload-123", status: "pending" }),
-          { status: 200, headers: { "content-type": "application/json" } },
-        );
-      }
-      if (u.endsWith("/file_uploads/upload-123/send")) {
-        // verify we sent multipart FormData (body is a FormData/ReadableStream)
-        return new Response(
-          JSON.stringify({ id: "upload-123", status: "uploaded" }),
-          { status: 200, headers: { "content-type": "application/json" } },
-        );
-      }
-      return new Response("", { status: 404 });
-    }) as typeof globalThis.fetch;
-
-    const result = await notionUploadFile(payload, "hello.txt", "text/plain");
-
-    assert.equal(result.id, "upload-123");
-    assert.equal(result.status, "uploaded");
-    assert.equal(calls.length, 2);
-    assert.ok(calls[0]!.url.endsWith("/file_uploads"));
-    assert.ok(calls[1]!.url.endsWith("/file_uploads/upload-123/send"));
-  });
-});
-
 describe("http.ts pagination", () => {
   let originalFetch: typeof globalThis.fetch;
 
@@ -418,12 +371,12 @@ describe("appendBlocksChunked", () => {
     assert.equal(res.results.length, 250);
   });
 
-  it("passes after ID to first chunk and chains subsequent chunks", async () => {
-    const capturedAfters: Array<string | undefined> = [];
+  it("passes position to first chunk and chains subsequent chunks", async () => {
+    const capturedPositions: Array<unknown> = [];
     globalThis.fetch = mock.fn(async (_url: string | URL, init?: RequestInit) => {
-      const body = JSON.parse(init?.body as string) as { children: unknown[]; after?: string };
-      capturedAfters.push(body.after);
-      const lastId = `last-of-chunk-${capturedAfters.length}`;
+      const body = JSON.parse(init?.body as string) as { children: unknown[]; position?: unknown };
+      capturedPositions.push(body.position);
+      const lastId = `last-of-chunk-${capturedPositions.length}`;
       return new Response(
         JSON.stringify({ results: [{ id: lastId }] }),
         { status: 200, headers: { "content-type": "application/json" } },
@@ -432,7 +385,35 @@ describe("appendBlocksChunked", () => {
 
     const blocks = Array.from({ length: 150 }, (_, i) => ({ type: "paragraph", id: `${i}` }));
     await appendBlocksChunked("page-1", blocks, { after: "anchor-block" });
-    assert.equal(capturedAfters[0], "anchor-block");
-    assert.equal(capturedAfters[1], "last-of-chunk-1");
+    assert.deepEqual(capturedPositions[0], { type: "after_block", after_block: { id: "anchor-block" } });
+    assert.deepEqual(capturedPositions[1], { type: "after_block", after_block: { id: "last-of-chunk-1" } });
+  });
+});
+
+describe("BUG-L regression: exchangeOAuthCode respects timeout", () => {
+  let originalFetch: typeof globalThis.fetch;
+
+  before(() => {
+    originalFetch = globalThis.fetch;
+  });
+
+  after(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  it("passes an AbortSignal to the fetch call", async () => {
+    let capturedSignal: AbortSignal | undefined;
+    globalThis.fetch = mock.fn(async (_url: string | URL, init?: RequestInit) => {
+      capturedSignal = init?.signal as AbortSignal | undefined;
+      return new Response(
+        JSON.stringify({ access_token: "ntn_test_abc" }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }) as typeof globalThis.fetch;
+
+    const { exchangeOAuthCode } = await import("../src/http.js");
+    await exchangeOAuthCode("cid", "csecret", "code123", "http://localhost:9876/callback");
+    assert.ok(capturedSignal, "AbortSignal must be passed to fetch");
+    assert.equal(capturedSignal!.aborted, false, "signal should not be aborted on success");
   });
 });

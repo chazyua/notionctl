@@ -1,6 +1,6 @@
-import { describe, it } from "node:test";
+import { describe, it, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { markdownToBlocks } from "../../src/markdown/write.js";
+import { markdownToBlocks, setMarkdownWarnHandler } from "../../src/markdown/write.js";
 
 describe("markdownToBlocks basic blocks", () => {
   it("single paragraph", () => {
@@ -138,18 +138,13 @@ describe("markdownToBlocks complex blocks", () => {
     assert.equal((blocks[0] as any).equation.expression, "E = mc^2");
   });
 
-  it("pass-through block preserves ID", () => {
+  it("standalone sidecar comment for non-markdown-expressible type is dropped", () => {
+    // synced_block, column_list, embed, etc. cannot be expressed in markdown.
+    // The read path emits a sidecar comment with the original block id as a
+    // round-trip breadcrumb. Creating a stub block here would fail Notion's
+    // API (the block has a type but no body data), so the write path drops
+    // it instead and the page sync / update skips it.
     const blocks = markdownToBlocks("<!-- notion-block: synced_block id=abc-123 -->");
-    assert.equal(blocks.length, 1);
-    assert.equal(blocks[0]!.type, "synced_block");
-    assert.equal(blocks[0]!.id, "abc-123");
-  });
-
-  it("pass-through block with unknown type is NOT parsed as a block", () => {
-    // Defense-in-depth: a manually-edited comment must not inject arbitrary
-    // block types into the API call stream.
-    const blocks = markdownToBlocks("<!-- notion-block: arbitrary_unknown_type id=abc-123 -->");
-    // The comment is ignored — zero blocks produced (not a block, not a paragraph either)
     assert.equal(blocks.length, 0);
   });
 
@@ -298,12 +293,11 @@ describe("markdownToBlocks — paragraph/block boundary edge cases", () => {
     assert.equal(blocks[1]!.type, "toggle");
   });
 
-  it("pass-through comment after paragraph is parsed separately", () => {
+  it("standalone sidecar comment after paragraph is dropped, paragraph kept", () => {
     const md = "Some text\n<!-- notion-block: synced_block id=abc-123 -->";
     const blocks = markdownToBlocks(md);
-    assert.equal(blocks.length, 2);
+    assert.equal(blocks.length, 1);
     assert.equal(blocks[0]!.type, "paragraph");
-    assert.equal(blocks[1]!.type, "synced_block");
   });
 });
 
@@ -446,33 +440,27 @@ describe("toggle (details) parsing", () => {
 });
 
 describe("blockquote parsing", () => {
-  it("single-paragraph multi-line blockquote stays in rich_text", () => {
+  it("preserves multi-paragraph blockquotes with newline separation", () => {
     const md = "> First paragraph.\n>\n> Second paragraph.\n>\n> Third paragraph.";
     const blocks = markdownToBlocks(md);
     assert.equal(blocks.length, 1);
     assert.equal(blocks[0]!.type, "quote");
     const text = (blocks[0] as any).quote.rich_text.map((r: any) => r.plain_text).join("");
     assert.ok(text.includes("First paragraph."), "first paragraph present");
+    assert.ok(text.includes("Second paragraph."), "second paragraph present");
+    assert.ok(!text.includes("  "), "no double spaces from collapsed blank lines");
   });
 
-  it("multi-paragraph blockquote puts trailing paragraphs in children blocks (Notion renders those as paragraph breaks)", () => {
+  it("multi-paragraph blockquote preserves paragraph breaks", () => {
     const md = "> First paragraph.\n>\n> Second paragraph.\n>\n> Third paragraph.";
     const blocks = markdownToBlocks(md);
     assert.equal(blocks.length, 1);
-    const quote = blocks[0] as any;
-    assert.equal(quote.type, "quote");
-    // first paragraph lives in rich_text
-    const firstText = quote.quote.rich_text.map((r: any) => r.plain_text).join("");
-    assert.equal(firstText.trim(), "First paragraph.");
-    // remaining paragraphs live in children (as paragraph blocks), NOT embedded with \n
-    assert.ok(Array.isArray(quote.quote.children), "multi-paragraph quote must have children array");
-    assert.equal(quote.quote.children.length, 2);
-    assert.equal(quote.quote.children[0].type, "paragraph");
-    const secondText = quote.quote.children[0].paragraph.rich_text.map((r: any) => r.plain_text).join("");
-    assert.equal(secondText.trim(), "Second paragraph.");
-    const thirdText = quote.quote.children[1].paragraph.rich_text.map((r: any) => r.plain_text).join("");
-    assert.equal(thirdText.trim(), "Third paragraph.");
-    assert.ok(!firstText.includes("\n\n"), "first rich_text must not embed \\n\\n — use children instead");
+    assert.equal(blocks[0]!.type, "quote");
+    const text = (blocks[0] as any).quote.rich_text.map((r: any) => r.plain_text).join("");
+    assert.ok(text.includes("First paragraph."), "first paragraph present");
+    assert.ok(text.includes("Second paragraph."), "second paragraph present");
+    assert.ok(text.includes("Third paragraph."), "third paragraph present");
+    assert.ok(text.includes("\n\n"), "paragraph breaks preserved");
   });
 
   it("blockquote without space after > is recognized", () => {
@@ -677,6 +665,307 @@ describe("markdownToBlocks — H4/H5/H6 headings downgraded to H3 (BH2-5)", () =
     assert.equal(blocks.length, 2);
     assert.equal(blocks[0]!.type, "heading_3");
     assert.equal(blocks[1]!.type, "heading_3");
+  });
+});
+
+describe("bug hunt round 4 regressions — write", () => {
+  afterEach(() => setMarkdownWarnHandler(null));
+
+  it("emits a warning via the registered handler when lists are flattened", () => {
+    const warnings: string[] = [];
+    setMarkdownWarnHandler((msg) => warnings.push(msg));
+    const md = "- a\n  - b\n    - c\n      - d\n        - e";
+    markdownToBlocks(md);
+    assert.equal(warnings.length, 1);
+    assert.match(warnings[0]!, /list item/i);
+    assert.match(warnings[0]!, /2 levels/i);
+  });
+
+  it("does not warn when list nesting stays within 2 levels", () => {
+    const warnings: string[] = [];
+    setMarkdownWarnHandler((msg) => warnings.push(msg));
+    markdownToBlocks("- a\n  - b\n- c");
+    assert.equal(warnings.length, 0);
+  });
+
+  it("image URL containing parens still parses as image block", () => {
+    const md = "![wiki](https://en.wikipedia.org/wiki/Foo_(bar).png)";
+    const blocks = markdownToBlocks(md);
+    assert.equal(blocks.length, 1);
+    assert.equal(blocks[0]!.type, "image");
+    const img = (blocks[0] as any).image;
+    assert.equal(img.type, "external");
+    assert.equal(img.external.url, "https://en.wikipedia.org/wiki/Foo_(bar).png");
+    assert.equal(img.caption[0]?.text?.content, "wiki");
+  });
+
+  it("image with empty alt and parens URL still parses", () => {
+    const md = "![](https://example.com/a(b)c.jpg)";
+    const blocks = markdownToBlocks(md);
+    assert.equal(blocks.length, 1);
+    assert.equal(blocks[0]!.type, "image");
+    assert.equal((blocks[0] as any).image.external.url, "https://example.com/a(b)c.jpg");
+  });
+});
+
+describe("bug hunt round 6 — markdown write fixes", () => {
+  it("empty todo - [ ] is parsed as an unchecked to_do, not a bulleted list", () => {
+    const blocks = markdownToBlocks("- [ ]");
+    assert.equal(blocks.length, 1);
+    assert.equal(blocks[0]!.type, "to_do");
+    const td = (blocks[0] as any).to_do;
+    assert.equal(td.checked, false);
+    assert.equal(td.rich_text.length, 0);
+  });
+
+  it("empty todo - [x] is parsed as a checked to_do", () => {
+    const blocks = markdownToBlocks("- [x]");
+    assert.equal(blocks.length, 1);
+    assert.equal(blocks[0]!.type, "to_do");
+    const td = (blocks[0] as any).to_do;
+    assert.equal(td.checked, true);
+    assert.equal(td.rich_text.length, 0);
+  });
+
+  it("blockquote containing a list creates structured children", () => {
+    const md = "> Quote intro\n> - item 1\n> - item 2\n> outro";
+    const blocks = markdownToBlocks(md);
+    assert.equal(blocks.length, 1);
+    assert.equal(blocks[0]!.type, "quote");
+    const q = (blocks[0] as any).quote;
+    // First paragraph stays in rich_text…
+    assert.ok(
+      q.rich_text.some((r: any) => (r.text?.content ?? r.plain_text ?? "").includes("Quote intro")),
+      "leading paragraph in rich_text",
+    );
+    // …and the rest become children, including the bullets.
+    assert.ok(Array.isArray(q.children) && q.children.length > 0, "structured children present");
+    const types = q.children.map((c: any) => c.type);
+    assert.ok(types.includes("bulleted_list_item"), "bullet survives as a child block");
+  });
+
+  it("plain multi-paragraph blockquote still flattens to a single rich_text run", () => {
+    const md = "> First paragraph.\n>\n> Second paragraph.";
+    const blocks = markdownToBlocks(md);
+    assert.equal(blocks.length, 1);
+    assert.equal(blocks[0]!.type, "quote");
+    const q = (blocks[0] as any).quote;
+    const text = q.rich_text.map((r: any) => r.plain_text ?? r.text?.content ?? "").join("");
+    assert.ok(text.includes("First paragraph."));
+    assert.ok(text.includes("Second paragraph."));
+    assert.ok(text.includes("\n\n"), "paragraph break preserved");
+    assert.ok(!q.children, "no structured children for paragraph-only quote");
+  });
+
+  it("multi-paragraph blockquote preserves bold/italic/link annotations", () => {
+    // Regression: the allParagraphs branch used to flatten each paragraph's
+    // rich_text runs to their plain content and re-parse the joined string,
+    // which silently stripped bold/italic/link annotations on round-trip.
+    const md = "> first **bold** para\n>\n> second _italic_ para with [link](https://example.com)";
+    const blocks = markdownToBlocks(md);
+    assert.equal(blocks.length, 1);
+    const runs = (blocks[0] as any).quote.rich_text;
+    assert.ok(runs.some((r: any) => r.annotations?.bold === true), "bold preserved");
+    assert.ok(runs.some((r: any) => r.annotations?.italic === true), "italic preserved");
+    assert.ok(runs.some((r: any) => r.text?.link?.url === "https://example.com"), "link preserved");
+  });
+});
+
+describe("round-trip sidecar comment absorption", () => {
+  it("image line followed by video sidecar becomes a video block", () => {
+    const md = "![caption](https://example.com/v.mp4)\n<!-- notion-block: video id=vid-abc-1234 -->";
+    const blocks = markdownToBlocks(md);
+    assert.equal(blocks.length, 1, "single block emitted, sidecar absorbed");
+    assert.equal(blocks[0]!.type, "video");
+    const url = (blocks[0] as any).video.external.url;
+    assert.equal(url, "https://example.com/v.mp4");
+  });
+
+  it("image line followed by file sidecar becomes a file block", () => {
+    const md = "![report.pdf](https://example.com/r.pdf)\n<!-- notion-block: file id=file-abc-1234 -->";
+    const blocks = markdownToBlocks(md);
+    assert.equal(blocks.length, 1);
+    assert.equal(blocks[0]!.type, "file");
+  });
+
+  it("image line followed by pdf sidecar becomes a pdf block", () => {
+    const md = "![](https://example.com/doc.pdf)\n<!-- notion-block: pdf id=pdf-abc-1234 -->";
+    const blocks = markdownToBlocks(md);
+    assert.equal(blocks.length, 1);
+    assert.equal(blocks[0]!.type, "pdf");
+  });
+
+  it("bare link line followed by bookmark sidecar becomes a bookmark block", () => {
+    const md = "[Example](https://example.com)\n<!-- notion-block: bookmark id=bm-abc-1234 -->";
+    const blocks = markdownToBlocks(md);
+    assert.equal(blocks.length, 1);
+    assert.equal(blocks[0]!.type, "bookmark");
+    assert.equal((blocks[0] as any).bookmark.url, "https://example.com");
+  });
+
+  it("bare link line followed by link_preview sidecar becomes link_preview block", () => {
+    const md = "[https://github.com/owner/repo](https://github.com/owner/repo)\n<!-- notion-block: link_preview id=lp-abc -->";
+    const blocks = markdownToBlocks(md);
+    assert.equal(blocks.length, 1);
+    assert.equal(blocks[0]!.type, "link_preview");
+  });
+
+  it("image line without sidecar stays as image block", () => {
+    const blocks = markdownToBlocks("![caption](https://example.com/pic.png)");
+    assert.equal(blocks.length, 1);
+    assert.equal(blocks[0]!.type, "image");
+  });
+});
+
+describe("markdownToBlocks — CRLF normalization", () => {
+  it("CRLF line endings do not leave carriage returns in paragraph text", () => {
+    const md = "line one\r\nline two\r\n\r\nanother para";
+    const blocks = markdownToBlocks(md);
+    assert.equal(blocks.length, 2);
+    const text = (blocks[0] as any).paragraph.rich_text
+      .map((r: any) => r.text?.content ?? "")
+      .join("");
+    assert.ok(!text.includes("\r"), "no stray \\r in rich_text content");
+  });
+});
+
+describe("markdownToBlocks — empty-body list items", () => {
+  it("whitespace-only bullet does not infinite-loop", () => {
+    // Regression: `isListLine` matched on trailing whitespace after the
+    // bullet char but `classifyListLine` rejected the line after trim, so
+    // the main loop kept re-entering parseListSection at the same index.
+    // A 5-second hard timer via test runner would catch the hang, but
+    // just finishing at all is enough for this regression.
+    const blocks = markdownToBlocks("- \n- real");
+    assert.equal(blocks.length, 2);
+    assert.equal(blocks[0]!.type, "bulleted_list_item");
+    assert.equal(blocks[1]!.type, "bulleted_list_item");
+  });
+
+  it("single whitespace-only bullet parses as one empty item", () => {
+    const blocks = markdownToBlocks("- ");
+    assert.equal(blocks.length, 1);
+    assert.equal(blocks[0]!.type, "bulleted_list_item");
+  });
+
+  it("whitespace-only numbered item does not infinite-loop", () => {
+    const blocks = markdownToBlocks("1. \n2. real");
+    assert.equal(blocks.length, 2);
+    blocks.forEach((b) => assert.equal(b.type, "numbered_list_item"));
+  });
+});
+
+describe("BUG-C regression: notion-table has_column_header=false round-trip", () => {
+  it("consumes the sidecar comment and sets has_column_header to false", () => {
+    const md = [
+      "<!-- notion-table: has_column_header=false -->",
+      "|   |   |",
+      "| --- | --- |",
+      "| A1 | B1 |",
+      "| A2 | B2 |",
+    ].join("\n");
+    const blocks = markdownToBlocks(md);
+    assert.equal(blocks.length, 1);
+    const table = blocks[0] as unknown as { type: string; table: { has_column_header: boolean; children: unknown[] } };
+    assert.equal(table.type, "table");
+    assert.equal(table.table.has_column_header, false);
+    // The synthetic empty header row should be skipped — only data rows remain
+    assert.equal(table.table.children.length, 2);
+  });
+
+  it("table without the sidecar comment still gets has_column_header=true", () => {
+    const md = [
+      "| Col A | Col B |",
+      "| --- | --- |",
+      "| A1 | B1 |",
+    ].join("\n");
+    const blocks = markdownToBlocks(md);
+    const table = blocks[0] as unknown as { table: { has_column_header: boolean; children: unknown[] } };
+    assert.equal(table.table.has_column_header, true);
+    assert.equal(table.table.children.length, 2); // header + 1 data row
+  });
+});
+
+describe("BUG-K regression: code block closing fence respects CommonMark indentation", () => {
+  it("indented backticks (4+ spaces) inside a code block are treated as content, not a closing fence", () => {
+    const md = [
+      "```",
+      "some code",
+      "    ```",
+      "more code",
+      "```",
+    ].join("\n");
+    const blocks = markdownToBlocks(md);
+    assert.equal(blocks.length, 1);
+    assert.equal(blocks[0]!.type, "code");
+    const code = (blocks[0] as unknown as { code: { rich_text: Array<{ text: { content: string } }> } }).code;
+    const content = code.rich_text[0]!.text.content;
+    assert.ok(content.includes("    ```"), "indented backticks should be preserved as content");
+    assert.ok(content.includes("more code"), "content after indented backticks should be included");
+  });
+
+  it("closing fence with 0-3 spaces of indentation still closes the block", () => {
+    const md = [
+      "```",
+      "some code",
+      "   ```",
+      "after block",
+    ].join("\n");
+    const blocks = markdownToBlocks(md);
+    assert.equal(blocks.length, 2);
+    assert.equal(blocks[0]!.type, "code");
+    assert.equal(blocks[1]!.type, "paragraph");
+  });
+});
+
+describe("BUG-14 regression: embed sidecar round-trips back to embed block", () => {
+  it("link with embed sidecar becomes embed block", () => {
+    const md = [
+      "[https://www.youtube.com/watch?v=test123](https://www.youtube.com/watch?v=test123)",
+      "<!-- notion-block: embed id=embed-id -->",
+    ].join("\n");
+    const blocks = markdownToBlocks(md);
+    assert.equal(blocks.length, 1);
+    assert.equal(blocks[0]!.type, "embed");
+    const embed = (blocks[0] as any).embed;
+    assert.equal(embed.url, "https://www.youtube.com/watch?v=test123");
+  });
+
+  it("link with bookmark sidecar still becomes bookmark block", () => {
+    const md = [
+      "[Example](https://example.com)",
+      "<!-- notion-block: bookmark id=bm-id -->",
+    ].join("\n");
+    const blocks = markdownToBlocks(md);
+    assert.equal(blocks.length, 1);
+    assert.equal(blocks[0]!.type, "bookmark");
+  });
+});
+
+describe("BUG-N4 regression: markdownToBlocks does NOT strip YAML frontmatter", () => {
+  // markdownToBlocks is a pure markdown-to-blocks converter. Frontmatter
+  // stripping is the caller's responsibility (extractFrontmatter). This test
+  // confirms that block append must strip frontmatter before calling
+  // markdownToBlocks, otherwise YAML fences become divider/paragraph blocks.
+  it("frontmatter produces divider and paragraph blocks if not stripped", () => {
+    const md = "---\ntitle: test\n---\n\nReal content";
+    const blocks = markdownToBlocks(md);
+    assert.ok(blocks.length > 1, "frontmatter should produce multiple blocks");
+    const types = blocks.map((b) => b.type);
+    assert.ok(types.includes("divider"), "--- should become a divider block");
+    assert.ok(types.includes("paragraph"), "body should become a paragraph");
+  });
+
+  it("pre-stripped frontmatter produces only content blocks", async () => {
+    // Simulates what block append now does after the fix
+    const { extractFrontmatter } = await import("../../src/sync/frontmatter.js");
+    const md = "---\ntitle: test\n---\n\nReal content";
+    const { body } = extractFrontmatter(md);
+    const blocks = markdownToBlocks(body);
+    assert.equal(blocks.length, 1);
+    assert.equal(blocks[0]!.type, "paragraph");
+    const text = (blocks[0] as any).paragraph.rich_text[0]?.text?.content;
+    assert.equal(text, "Real content");
   });
 });
 

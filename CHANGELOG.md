@@ -5,7 +5,40 @@ All notable changes to `notionctl` will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.1.4] — 2026-04-12
+## [0.1.3] — 2026-04-12
+
+### Fixed
+- **Column content silently dropped** (BUG-13): `page get`, `page update`,
+  `page sync`, and `page find-replace` now recurse into `column_list`/`column`
+  blocks. Column content is rendered as sequential paragraphs with a sidecar
+  comment preserving the column_list ID. Previously, all content inside columns
+  was silently lost.
+- **Embed block URLs lost** (BUG-14): embed blocks now preserve their URL as a
+  `[url](url)` link with a sidecar comment (same pattern as bookmarks and
+  link_previews). The write path round-trips embeds back to the correct block
+  type. Previously, only the block ID was kept in an HTML comment and the URL
+  was dropped entirely.
+- **`page get` output triggers unnecessary sync re-push** (BUG-15): `page get`
+  now includes `notion_hash` and `notion_synced_at` in YAML frontmatter so
+  `page get > f.md && page sync f.md` correctly detects UNCHANGED state instead
+  of re-pushing all blocks.
+- **`page get` DB row detection** adapted to 2025-09-03+ API: uses
+  `database_id` field presence instead of `parent.type` string comparison.
+- **`page update --title` in non-TTY** no longer auto-reads empty stdin,
+  preventing accidental content deletion in scripts.
+- **`page delete` guard ordering**: `--yes` check now runs before `--dry-run`
+  so dry-run without confirmation is rejected.
+- **`page sync` hosted-media warning**: CHANGED/DRIFT paths now warn before
+  deleting Notion-hosted media blocks (matching `page update` behavior).
+- **`page restore` / `page delete`** now show 404 hints about Connections
+  instead of bare "not found" errors.
+- **Indented code blocks in list items**: read path indents code fences for list
+  children; write path re-associates indented fences with the parent list item.
+
+### Added
+- 7 new regression tests (706 → 713).
+
+## [0.1.3a] — 2026-04-12
 
 ### Fixed
 - **Over-escaped markdown output**: `richTextToMarkdown` no longer backslash-
@@ -19,42 +52,59 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - 9 new regression tests (722 → 731).
 
-## [0.1.3] — 2026-04-12
+## [0.1.2] — 2026-04-11
 
 ### Fixed
-- 50+ bugs across markdown engine, commands, and property handling from
-  systematic code audits and live Notion testing.
-- **Column content silently dropped**: `page get`, `page update`, `page sync`,
-  and `page find-replace` now recurse into `column_list`/`column` blocks.
-- **Embed block URLs lost**: embed blocks now preserve their URL on round-trip.
-- **`page get` output triggers unnecessary sync re-push**: frontmatter now
-  includes `notion_hash` and `notion_synced_at`.
-- **`page get` DB row detection** adapted to 2025-09-03+ API changes.
-- **`page update --title` in non-TTY** no longer auto-reads empty stdin.
-- **`page sync` hosted-media warning**: CHANGED/DRIFT paths now warn before
-  deleting Notion-hosted media blocks.
-- **Media block round-trip**: `page get → page update` no longer creates
-  duplicate stub blocks for image/video/file/pdf/bookmark/link_preview.
-- **Multi-paragraph blockquote/callout formatting** preserved on round-trip.
-- **Infinite loop on whitespace-only list items**: `markdownToBlocks("- ")`
-  no longer hangs.
-- **`page find-replace` now reaches all content** including toggleable headings,
-  paragraphs with nested children.
-- **`page duplicate` skips Notion-hosted file blocks** with a clear warning.
-- **`page update` warns before deleting uploaded file attachments**.
-- **Symlink escape prevention in `page sync`**.
-- **CRLF normalization** in `markdownToBlocks`.
-- **Property parse for select/status/date**: empty values now send `null`.
-- **`parseColumnSpec`**: trailing commas no longer create empty-name options.
-- **`unique_id` render** includes the hyphen separator (TASK-42, not TASK42).
-- **Link title attributes** stripped so Notion doesn't reject the URL.
-- **DB title update** uses PATCH instead of full schema replacement.
-- **TOCTOU race in file upload** resolved with single file descriptor.
+- **Media block round-trip**: `page get → page update` no longer creates duplicate
+  stub blocks for image/video/file/pdf/bookmark/link_preview. The write path
+  absorbs the round-trip sidecar comment and preserves the original block type.
+- **Multi-paragraph blockquote/callout formatting**: bold, italic, and links inside
+  multi-paragraph blockquotes are no longer silently stripped on round-trip.
+  Paragraph breaks between quote/callout children also survive round-tripping.
+- **Infinite loop on whitespace-only list items**: `markdownToBlocks("- ")` no
+  longer hangs. Empty-body bullets and numbered items are accepted as valid.
+- **`page find-replace` now reaches all content**: previously missed text under
+  toggleable headings, paragraphs with nested children, and table cells (table
+  cells remain a documented limitation).
+- **`page get` renders heading and paragraph children**: content nested under
+  toggleable headings or deeply-appended paragraphs is no longer silently dropped.
+- **`page update` H1 handling matches `page create`**: a leading H1 is only
+  stripped from the body when it matches the explicit `--title` value, not
+  unconditionally.
+- **`page duplicate` skips Notion-hosted file blocks** with a clear warning instead
+  of silently creating empty media blocks from expired signed URLs.
+- **`page update` warns before deleting uploaded file attachments** that cannot be
+  recreated from markdown, recommending `page append` for additive edits.
+- **`page sync` warns on UNCHANGED when remote is inaccessible**: if `notion_id`
+  points to a trashed page, stderr now explains instead of silently succeeding.
+- **Symlink escape prevention in `page sync`**: resolves symlink targets via
+  `realpath` so a symlink inside the working directory cannot redirect writes
+  outside it.
+- **`extractSyncTitle` fence tracking**: mixed-length fences (e.g. ```` inside a
+  ````` block) no longer confuse the code-block state and promote an H1 inside
+  code to the page title.
+- **`replaceInRichText` skips equation and mention runs**: find-replace no longer
+  rewrites equation expressions or mention references into plain-text runs.
+- **CRLF normalization**: `markdownToBlocks` strips carriage returns so Windows
+  line endings don't leak `\r` into Notion rich-text content.
+- **Property parse for select/status/date**: empty values now send `null` (to clear
+  the property) instead of `{name: ""}` which Notion rejects. Open-ended date
+  ranges like `..2026-04-20` are rejected client-side with a clear message.
+- **`parseColumnSpec` for select/multi_select**: trailing commas no longer create
+  empty-name options; duplicate option names are rejected client-side.
+- **`unique_id` render** includes the hyphen separator between prefix and number
+  (TASK-42, not TASK42) matching Notion's UI.
+- **Link title attributes** (`[label](url "title")`) are stripped so Notion doesn't
+  reject the URL as invalid.
+- **Notion-hosted media in `page get`**: uploaded files/images/videos/pdfs are now
+  represented as sidecar-only markers instead of emitting ephemeral signed URLs
+  that break on round-trip.
 
 ### Added
-- **`--verbose` flag**: shows request count on stderr after completion.
-- **`--debug` flag**: logs HTTP method, path, and status to stderr.
-- 250+ new regression tests (481 → 731).
+- **`--verbose` flag**: shows request count on stderr after command completion.
+- **`--debug` flag**: logs HTTP method, path, and response status to stderr
+  (token-scrubbed).
+- 31 new regression tests (588 → 619).
 
 ## [0.1.1] — 2026-04-10
 

@@ -7,8 +7,8 @@ import { notionRequest, appendBlocksChunked } from "../http.js";
 import { blocksToMarkdown, markdownToBlocks } from "../markdown/index.js";
 import type { Block } from "../markdown/index.js";
 import { fetchBlockTree } from "../blocks.js";
-import { readFile } from "node:fs/promises";
-import { resolvePageId, parseFlags, getBooleanFlag, fetchWith404Hint, parseJsonObject, readStdinBounded } from "./shared.js";
+import { extractFrontmatter } from "../sync/frontmatter.js";
+import { resolvePageId, parseFlags, getBooleanFlag, fetchWith404Hint, parseJsonObject, readStdinBounded, readFileText } from "./shared.js";
 import { NotionCliError, ErrorCode } from "../errors.js";
 import { renderJson, chooseFormat, isStdoutTty, type Format } from "../output.js";
 
@@ -27,6 +27,9 @@ export async function blockGetCommand(ctx: { args: string[] }): Promise<string> 
     defaultFormat: "json",
   });
   if (format === "md") return blocksToMarkdown([block as Block]);
+  if (format !== "json") {
+    throw new NotionCliError(ErrorCode.USAGE, `block get does not support --format ${format}. Use json or md.`);
+  }
   return renderJson(block);
 }
 
@@ -67,13 +70,17 @@ export async function blockAppendCommand(ctx: { args: string[] }): Promise<strin
   }
   const id = resolvePageId(positional[0]!);
   const fromFile = flags.get("from");
+  // Additive commands (append) auto-read piped stdin without requiring
+  // --from, unlike destructive-replacement commands (page update) which
+  // require explicit --from to prevent accidental content deletion.
   let md = "";
   if (fromFile && fromFile !== "-") {
-    md = await readFile(fromFile, "utf8");
+    md = await readFileText(fromFile, "input markdown");
   } else if (fromFile === "-" || !process.stdin.isTTY) {
     md = await readStdinBounded();
   }
-  const blocks = markdownToBlocks(md);
+  const { body } = extractFrontmatter(md);
+  const blocks = markdownToBlocks(body);
   if (blocks.length === 0) {
     return renderJson({ action: "block append", id, blocks: [], warning: "no blocks parsed from input" });
   }
@@ -114,6 +121,9 @@ export async function blockDeleteCommand(ctx: { args: string[] }): Promise<strin
     throw new NotionCliError(ErrorCode.USAGE, "Refusing to delete without --yes");
   }
   const id = resolvePageId(positional[0]!);
+  if (getBooleanFlag(flags, "dry-run")) {
+    return renderJson({ action: "block delete", id });
+  }
   const res = await notionRequest("DELETE", `/blocks/${id}`);
   return renderJson(res);
 }

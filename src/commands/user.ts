@@ -1,6 +1,7 @@
 import { notionRequest } from "../http.js";
 import { renderJson, renderTable, renderCsv, chooseFormat, isStdoutTty, type Format } from "../output.js";
 import { parseFlags } from "./shared.js";
+import { NotionCliError, ErrorCode } from "../errors.js";
 
 export async function userListCommand(ctx: { args: string[] }): Promise<string> {
   const { flags } = parseFlags(ctx.args);
@@ -9,6 +10,9 @@ export async function userListCommand(ctx: { args: string[] }): Promise<string> 
     isTty: isStdoutTty(),
     defaultFormat: "table",
   });
+  if (format === "md") {
+    throw new NotionCliError(ErrorCode.USAGE, "user list does not support --format md. Use json, table, or csv.");
+  }
   if (format === "json") return renderJson(res);
   const tableData = {
     columns: ["ID", "Name", "Type"],
@@ -25,6 +29,9 @@ export async function userMeCommand(ctx: { args: string[] }): Promise<string> {
     isTty: isStdoutTty(),
     defaultFormat: "json",
   });
+  if (format === "md") {
+    throw new NotionCliError(ErrorCode.USAGE, "user me does not support --format md. Use json, table, or csv.");
+  }
   if (format === "json") return renderJson(me);
   const tableData = {
     columns: ["ID", "Name", "Type"],

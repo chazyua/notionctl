@@ -7,7 +7,7 @@
  * (from --from file or stdin) and convert to blocks.
  */
 
-import { readFile, writeFile, rename, realpath } from "node:fs/promises";
+import { writeFile, rename, realpath } from "node:fs/promises";
 import { resolve, sep } from "node:path";
 import { execFile } from "node:child_process";
 import { extractFrontmatter, reinsertFrontmatter } from "../sync/frontmatter.js";
@@ -15,19 +15,9 @@ import { classifySyncState, computeContentHash, SyncState } from "../sync/sync.j
 import { notionRequest, appendBlocksChunked } from "../http.js";
 import { blocksToMarkdown, markdownToBlocks } from "../markdown/index.js";
 import type { Block } from "../markdown/index.js";
-import type { RichText } from "../markdown/types.js";
-import { findReplaceRichText } from "../markdown/tokenizer.js";
 import { renderProperty } from "../properties/render.js";
 import { stringifyYaml, type YamlObject } from "../utils/yaml.js";
-import {
-  resolvePageId,
-  parseFlags,
-  getBooleanFlag,
-  fetchWith404Hint,
-  readStdinBounded,
-  detectParentType,
-  resolveTitlePropertyKey,
-} from "./shared.js";
+import { resolvePageId, parseFlags, getBooleanFlag, fetchWith404Hint, readStdinBounded, readFileText } from "./shared.js";
 import { fetchBlockTree } from "../blocks.js";
 import { NotionCliError, ErrorCode } from "../errors.js";
 import { renderJson, chooseFormat, isStdoutTty, type Format } from "../output.js";
@@ -44,7 +34,7 @@ export async function pageGetCommand(ctx: { args: string[] }): Promise<string> {
       id: string;
       object: string;
       properties: Record<string, unknown>;
-      parent: { type: string };
+      parent: { type: string; database_id?: string };
       url: string;
     }>("GET", `/pages/${id}`),
     `Page ${id}`,
@@ -63,10 +53,15 @@ export async function pageGetCommand(ctx: { args: string[] }): Promise<string> {
     throw new NotionCliError(ErrorCode.USAGE, `page get does not support --format ${format}. Use md or json.`);
   }
 
+  // API 2025-09-03+ returns parent.type = "data_source_id" for DB rows but
+  // still includes the database_id field. Use field presence (not type string)
+  // to detect database pages, matching the pattern in db.ts.
+  const isDbRow = !!page.parent.database_id;
+
   const frontmatter: YamlObject = {
     notion_id: page.id,
   };
-  if (page.parent.type === "database_id") {
+  if (isDbRow) {
     for (const [name, value] of Object.entries(page.properties)) {
       const rendered = renderProperty(value);
       if (rendered !== null && rendered !== undefined) {
@@ -75,23 +70,55 @@ export async function pageGetCommand(ctx: { args: string[] }): Promise<string> {
     }
   }
 
-  // Prepend # Title for non-database pages (BUG-1 fix)
+  // Prepend # Title for non-database pages
   let titleLine = "";
-  if (page.parent.type !== "database_id") {
+  if (!isDbRow) {
     const titleProp = page.properties.title as { title?: Array<{ plain_text?: string }> } | undefined;
     const title = titleProp?.title?.map((t) => t.plain_text ?? "").join("") ?? "";
     if (title) titleLine = `# ${title}\n\n`;
   }
 
   const body = blocksToMarkdown(childBlocks);
+  // Include sync metadata so `page get > f.md && page sync f.md` detects the
+  // file as UNCHANGED instead of re-pushing all blocks unnecessarily.
+  // The output ends with "\n" so index.ts doesn't append another; the hash
+  // must match what extractFrontmatter would return on read-back (body with
+  // trailing newline).
+  const fullBody = `${titleLine}${body}`;
+  const bodyForHash = fullBody.endsWith("\n") ? fullBody : fullBody + "\n";
+  frontmatter.notion_hash = computeContentHash(bodyForHash);
+  frontmatter.notion_synced_at = new Date().toISOString();
   const yaml = stringifyYaml(frontmatter);
-  return `---\n${yaml}\n---\n\n${titleLine}${body}`;
+  return `---\n${yaml}\n---\n\n${fullBody}\n`;
+}
+
+/**
+ * Detect whether the given id points at a database or a page. Notion
+ * returns NOT_FOUND for missing ids and an API_ERROR like "is a page,
+ * not a database" when the id belongs to a page — both are valid
+ * fall-backs to page_id. Auth / network / 5xx errors propagate so
+ * callers see the real failure instead of a mysterious wrong-parent
+ * rejection later.
+ */
+async function detectParentKey(parentId: string): Promise<"page_id" | "database_id"> {
+  try {
+    await notionRequest("GET", `/databases/${parentId}`);
+    return "database_id";
+  } catch (err) {
+    if (err instanceof NotionCliError) {
+      if (err.code === ErrorCode.NOT_FOUND) return "page_id";
+      if (err.code === ErrorCode.API_ERROR && /not a database|is a page/i.test(err.message)) {
+        return "page_id";
+      }
+    }
+    throw err;
+  }
 }
 
 async function readInputMarkdown(flags: Map<string, string>): Promise<string> {
   const fromFile = flags.get("from");
   // Support --from - as explicit stdin alias (BUG-3 fix)
-  if (fromFile && fromFile !== "-") return readFile(fromFile, "utf8");
+  if (fromFile && fromFile !== "-") return readFileText(fromFile, "input markdown");
   if (fromFile === "-" || !process.stdin.isTTY) return readStdinBounded();
   return "";
 }
@@ -99,6 +126,25 @@ async function readInputMarkdown(flags: Map<string, string>): Promise<string> {
 /** Strip YAML frontmatter from markdown so page get → page update/append round-trips cleanly */
 function stripFrontmatter(md: string): string {
   return extractFrontmatter(md).body;
+}
+
+/**
+ * Remove a leading `# <title>` line from a markdown body when it matches the
+ * page's title. Only inspects the very first non-blank line — later H1s are
+ * preserved, even if they happen to match. Keeps page-create output from
+ * showing the title twice while staying out of the way of multi-section docs.
+ */
+export function stripLeadingTitleHeading(body: string, title: string): string {
+  const lines = body.split("\n");
+  let firstNonBlank = 0;
+  while (firstNonBlank < lines.length && lines[firstNonBlank]!.trim() === "") firstNonBlank++;
+  if (firstNonBlank >= lines.length) return body;
+  const first = lines[firstNonBlank]!;
+  const headingMatch = /^#\s+(.+?)\s*$/.exec(first);
+  if (!headingMatch) return body;
+  if (headingMatch[1] !== title) return body;
+  const remaining = lines.slice(firstNonBlank + 1).join("\n");
+  return remaining.replace(/^[\n\r]+/, "");
 }
 
 export async function pageCreateCommand(ctx: { args: string[] }): Promise<string> {
@@ -112,19 +158,23 @@ export async function pageCreateCommand(ctx: { args: string[] }): Promise<string
     );
   }
   const parentId = resolvePageId(parent);
-  const parentKey = await detectParentType(parentId);
+
+  const parentKey = await detectParentKey(parentId);
 
   let bodyMd = stripFrontmatter(await readInputMarkdown(flags));
-  // Strip leading H1 if it matches --title (prevents duplicate heading in page body).
-  // Fence-aware (BUG-07): an `# ...` line inside a code fence stays put.
-  bodyMd = stripLeadingTitleH1(bodyMd, title).trimStart();
+  bodyMd = stripLeadingTitleHeading(bodyMd, title);
   const blocks = bodyMd.length > 0 ? markdownToBlocks(bodyMd) : [];
 
   const firstChunk = blocks.slice(0, 100);
   const overflow = blocks.slice(100);
 
+  // For both regular pages and DB rows, the title property id is always
+  // `title`, so keying the PATCH by that id works even when the user
+  // renamed their title column to something other than the default. For
+  // non-DB pages we use the bare `title:` shorthand the API accepts at
+  // the page level.
   const titleProp = parentKey === "database_id"
-    ? { Name: { title: [{ type: "text", text: { content: title, link: null } }] } }
+    ? { title: { title: [{ type: "text", text: { content: title, link: null } }] } }
     : { title: [{ type: "text", text: { content: title, link: null } }] };
 
   const payload = {
@@ -172,20 +222,39 @@ export async function pageUpdateCommand(ctx: { args: string[] }): Promise<string
   }
   const id = resolvePageId(positional[0]!);
   const title = flags.get("title");
+  // page update requires explicit --from to read body content. Unlike
+  // page create/append where piped stdin is the primary input, page update
+  // replaces ALL blocks — auto-reading empty stdin in non-TTY contexts would
+  // silently destroy content (e.g. `page update <id> --title "X"` in a script).
   const hasFrom = !!flags.get("from");
 
   if (!title && !hasFrom) {
     throw new NotionCliError(ErrorCode.USAGE, "Usage: notionctl page update <id> [--title <text>] [--from file.md]\nProvide at least --title or --from.");
   }
 
-  // Strip frontmatter and extract title from H1 when --from is used without --title
+  // Strip frontmatter and extract title from H1 when --from is used without
+  // --title. We use the same semantics as `page create`: only strip the
+  // leading H1 if it matches the explicit title; otherwise leave the body
+  // alone so an unrelated H1 isn't silently dropped from the user's content.
   let resolvedTitle = title;
   let newBlocks: ReturnType<typeof markdownToBlocks> | null = null;
   if (hasFrom) {
     const raw = stripFrontmatter(await readInputMarkdown(flags));
-    const { title: h1Title, syncBody } = extractSyncTitle({}, raw);
-    newBlocks = markdownToBlocks(syncBody);
-    if (!resolvedTitle && h1Title !== "Untitled") resolvedTitle = h1Title;
+    let bodyForBlocks = raw;
+    if (!resolvedTitle) {
+      // No explicit --title: use the leading H1 as the new title and strip
+      // it from the body so it isn't duplicated.
+      const { title: h1Title, syncBody } = extractSyncTitle({}, raw);
+      if (h1Title !== "Untitled") {
+        resolvedTitle = h1Title;
+        bodyForBlocks = syncBody;
+      }
+    } else {
+      // --title is explicit: only strip a leading H1 if it matches the
+      // chosen title (same rule as `page create`).
+      bodyForBlocks = stripLeadingTitleHeading(raw, resolvedTitle);
+    }
+    newBlocks = markdownToBlocks(bodyForBlocks);
   }
 
   if (getBooleanFlag(flags, "dry-run")) {
@@ -198,17 +267,32 @@ export async function pageUpdateCommand(ctx: { args: string[] }): Promise<string
   const result: Record<string, unknown> = {};
 
   if (resolvedTitle) {
-    const titleKey = await resolveTitlePropertyKey(id);
-    const titleValue = [{ type: "text", text: { content: resolvedTitle, link: null } }];
-    const properties: Record<string, unknown> = titleKey === "title"
-      ? { title: titleValue }
-      : { [titleKey]: { title: titleValue } };
-    await notionRequest("PATCH", `/pages/${id}`, { properties });
+    await notionRequest("PATCH", `/pages/${id}`, {
+      properties: { title: { title: [{ type: "text", text: { content: resolvedTitle, link: null } }] } },
+    });
     result["title"] = resolvedTitle;
   }
 
   if (newBlocks !== null) {
     const existing = await notionRequest<{ results: Block[] }>("GET", `/blocks/${id}/children`);
+    // Warn loudly if we're about to delete Notion-hosted media blocks that
+    // cannot be recreated from the markdown representation. The user either
+    // re-uploads the files themselves or uses `page append` for additive
+    // changes that don't rewrite the page.
+    // Note: only top-level hosted media blocks are detected; nested blocks
+    // (inside toggles, callouts, columns) are deleted without this warning.
+    const hostedMedia = existing.results.filter((b) => {
+      const t = b.type;
+      if (t !== "image" && t !== "video" && t !== "file" && t !== "pdf") return false;
+      const media = (b as any)[t];
+      if (!media) return false;
+      return media.type === "file" || media.type === "file_upload";
+    });
+    if (hostedMedia.length > 0) {
+      process.stderr.write(
+        `notionctl: page update will DELETE ${hostedMedia.length} Notion-hosted media block(s) (uploaded files/images/videos/pdfs). These cannot be recreated from markdown and will need to be re-uploaded manually. Use 'notionctl file upload' after the update, or use 'page append' for additive edits that preserve existing attachments.\n`,
+      );
+    }
     for (const b of existing.results) {
       await notionRequest("DELETE", `/blocks/${b.id}`);
     }
@@ -258,7 +342,7 @@ export async function pageDuplicateCommand(ctx: { args: string[] }): Promise<str
   let parentId: string;
   if (parentFlag) {
     parentId = resolvePageId(parentFlag);
-    parentKey = await detectParentType(parentId);
+    parentKey = await detectParentKey(parentId);
   } else if (sourcePage.parent.database_id) {
     parentId = sourcePage.parent.database_id;
     parentKey = "database_id";
@@ -272,23 +356,64 @@ export async function pageDuplicateCommand(ctx: { args: string[] }): Promise<str
     );
   }
 
+  // Block types that cannot be recreated via the public blocks API from a
+  // duplication. We filter them out of the duplicate with a warning so the
+  // copy still succeeds for the rest of the content.
+  const UNCOPYABLE_TYPES = new Set([
+    "child_page", "child_database", "synced_block", "column_list", "column",
+    "table_of_contents", "breadcrumb", "unsupported",
+  ]);
+  const MEDIA_TYPES = new Set(["image", "video", "file", "pdf"]);
+  let droppedBlocks = 0;
+  let skippedUploadedFiles = 0;
+
   // Strip API-only fields and null values so blocks are valid for creation
   const sanitizeForCreate = (blocks: Block[]): unknown[] => {
-    return blocks.map((b) => {
+    const out: unknown[] = [];
+    for (const b of blocks) {
       const typeKey = b.type;
+      if (UNCOPYABLE_TYPES.has(typeKey)) {
+        droppedBlocks++;
+        continue;
+      }
       const typeData = (b as any)[typeKey];
-      if (!typeData) return { object: "block", type: typeKey };
+      if (!typeData) {
+        droppedBlocks++;
+        continue;
+      }
+      // Media blocks with a Notion-hosted `file` source carry a short-lived
+      // signed URL that Notion's API cannot ingest as an `external` URL on a
+      // new block (the S3 fetch fails silently and the block ends up with no
+      // URL). Re-uploading would require downloading then re-posting the
+      // bytes, which is out of scope here, so we drop these blocks with a
+      // warning and let the rest of the duplicate succeed.
+      if (MEDIA_TYPES.has(typeKey) && typeData && typeof typeData === "object"
+        && typeData.type === "file") {
+        skippedUploadedFiles++;
+        continue;
+      }
       // Deep-clone the type data and strip null values
       const cleaned = JSON.parse(JSON.stringify(typeData, (_k, v) => v === null ? undefined : v));
       const nested = (b as any)._children as Block[] | undefined;
       if (nested && nested.length > 0) {
         cleaned.children = sanitizeForCreate(nested);
       }
-      return { object: "block", type: typeKey, [typeKey]: cleaned };
-    });
+      out.push({ object: "block", type: typeKey, [typeKey]: cleaned });
+    }
+    return out;
   };
 
   const children = sanitizeForCreate(sourceBlocks);
+  if (droppedBlocks > 0) {
+    process.stderr.write(
+      `notionctl: skipped ${droppedBlocks} block(s) in duplicate — types like child_page, synced_block, column_list cannot be recreated via the API.\n`,
+    );
+  }
+  if (skippedUploadedFiles > 0) {
+    process.stderr.write(
+      `notionctl: skipped ${skippedUploadedFiles} uploaded-file block(s) in duplicate — Notion-hosted files cannot be referenced from a new page via signed URL; re-upload manually in the copy if needed.\n`,
+    );
+  }
   const firstChunk = children.slice(0, 100);
   const overflow = children.slice(100);
 
@@ -348,7 +473,8 @@ export async function pageMoveCommand(ctx: { args: string[] }): Promise<string> 
     throw new NotionCliError(ErrorCode.USAGE, "page move requires --to <new-parent-page-id>");
   }
   const toId = resolvePageId(to);
-  const parentKey = await detectParentType(toId);
+
+  const parentKey = await detectParentKey(toId);
   const body = { parent: { [parentKey]: toId } };
 
   if (getBooleanFlag(flags, "dry-run")) {
@@ -396,6 +522,114 @@ export async function pageOpenCommand(ctx: { args: string[] }): Promise<string> 
   });
 }
 
+interface RichRun {
+  type: string;
+  text?: { content: string; link?: unknown };
+  plain_text: string;
+  annotations?: unknown;
+  href?: unknown;
+}
+
+/**
+ * Find and replace across rich-text runs, including matches that span
+ * run boundaries (e.g. "**bold tar**get" where "target" crosses runs).
+ * Replacement text inherits annotations from the run containing the
+ * match start — partial annotation loss is unavoidable when spans cross
+ * formatting boundaries, so we pick a consistent rule.
+ *
+ * Equation and mention runs act as boundaries: they are passed through
+ * unchanged, and matches cannot cross them. This prevents the replacement
+ * from rewriting an equation's expression or a mention's referenced ID
+ * into a plain-text run and losing the original data.
+ *
+ * Exported for unit testing. Production callers use pageFindReplaceCommand.
+ */
+export function replaceInRichText(
+  runs: RichRun[],
+  findStr: string,
+  replaceStr: string,
+): { newRuns: RichRun[]; count: number } {
+  if (findStr.length === 0) return { newRuns: runs, count: 0 };
+  const newRuns: RichRun[] = [];
+  let totalCount = 0;
+  let i = 0;
+  while (i < runs.length) {
+    if (runs[i]!.type !== "text") {
+      newRuns.push(runs[i]!);
+      i++;
+      continue;
+    }
+    const groupStart = i;
+    while (i < runs.length && runs[i]!.type === "text") i++;
+    const group = runs.slice(groupStart, i);
+    const { newRuns: gResult, count } = replaceInTextRunGroup(group, findStr, replaceStr);
+    newRuns.push(...gResult);
+    totalCount += count;
+  }
+  return { newRuns, count: totalCount };
+}
+
+function replaceInTextRunGroup(
+  runs: RichRun[],
+  findStr: string,
+  replaceStr: string,
+): { newRuns: RichRun[]; count: number } {
+  const charRuns: number[] = [];
+  let flat = "";
+  for (let i = 0; i < runs.length; i++) {
+    const content = runs[i]!.text?.content ?? "";
+    for (let c = 0; c < content.length; c++) charRuns.push(i);
+    flat += content;
+  }
+
+  const matches: Array<{ start: number; end: number }> = [];
+  let pos = 0;
+  while (true) {
+    const idx = flat.indexOf(findStr, pos);
+    if (idx === -1) break;
+    matches.push({ start: idx, end: idx + findStr.length });
+    pos = idx + findStr.length;
+  }
+  if (matches.length === 0) return { newRuns: runs, count: 0 };
+
+  interface Segment { content: string; runIdx: number }
+  const segments: Segment[] = [];
+  const pushSlice = (from: number, to: number): void => {
+    if (from >= to) return;
+    let subStart = from;
+    let currentRun = charRuns[subStart]!;
+    for (let c = from + 1; c <= to; c++) {
+      if (c === to || charRuns[c] !== currentRun) {
+        segments.push({ content: flat.slice(subStart, c), runIdx: currentRun });
+        subStart = c;
+        if (c < to) currentRun = charRuns[c]!;
+      }
+    }
+  };
+
+  let cursor = 0;
+  for (const m of matches) {
+    pushSlice(cursor, m.start);
+    segments.push({ content: replaceStr, runIdx: charRuns[m.start]! });
+    cursor = m.end;
+  }
+  pushSlice(cursor, flat.length);
+
+  const newRuns: RichRun[] = [];
+  for (const seg of segments) {
+    if (seg.content.length === 0) continue;
+    const orig = runs[seg.runIdx]!;
+    newRuns.push({
+      type: "text",
+      text: { content: seg.content, link: orig.text?.link ?? null },
+      annotations: orig.annotations,
+      plain_text: seg.content,
+      href: orig.href ?? null,
+    });
+  }
+  return { newRuns, count: matches.length };
+}
+
 /** Block types that carry rich_text content suitable for find-replace. */
 const RICH_TEXT_BLOCK_TYPES: Record<string, string> = {
   paragraph: "paragraph",
@@ -427,19 +661,32 @@ export async function pageFindReplaceCommand(ctx: { args: string[] }): Promise<s
   let matchCount = 0;
   let blockCount = 0;
 
-  // Also check/update the page title. BUG-09: use findReplaceRichText so matches
-  // crossing run boundaries are picked up (e.g. bold/plain transitions).
+  // Also check/update the page title. For database rows, the title is stored
+  // on whichever property has `type: "title"` (the user may have renamed it);
+  // for regular pages the runs live under the `title` property key directly.
   let titleUpdated = false;
-  const page = await notionRequest<{ properties: Record<string, unknown> }>("GET", `/pages/${id}`);
-  const titleProp = page.properties.title as { title?: RichText[] } | undefined;
-  if (titleProp?.title) {
-    const { runs: newTitleRuns, count } = findReplaceRichText(titleProp.title, findStr, replaceStr);
+  const page = await fetchWith404Hint(
+    () => notionRequest<{ properties: Record<string, unknown> }>("GET", `/pages/${id}`),
+    `Page ${id}`,
+  );
+  let titleKey: string | null = null;
+  let titleRuns: RichRun[] | undefined;
+  for (const [name, value] of Object.entries(page.properties)) {
+    const prop = value as { type?: string; title?: RichRun[] };
+    if (prop.type === "title" && Array.isArray(prop.title)) {
+      titleKey = name;
+      titleRuns = prop.title;
+      break;
+    }
+  }
+  if (titleRuns && titleRuns.length > 0 && titleKey) {
+    const { newRuns, count } = replaceInRichText(titleRuns, findStr, replaceStr);
     if (count > 0) {
       matchCount += count;
       titleUpdated = true;
       if (!getBooleanFlag(flags, "dry-run")) {
         await notionRequest("PATCH", `/pages/${id}`, {
-          properties: { title: newTitleRuns },
+          properties: { [titleKey]: { title: newRuns } },
         });
       }
     }
@@ -450,12 +697,16 @@ export async function pageFindReplaceCommand(ctx: { args: string[] }): Promise<s
   const processBlocks = async (blks: Block[]): Promise<void> => {
     for (const block of blks) {
       const typeKey = RICH_TEXT_BLOCK_TYPES[block.type];
-      if (!typeKey) continue;
+      if (!typeKey) {
+        const nestedOnly = (block as any)._children as Block[] | undefined;
+        if (nestedOnly) await processBlocks(nestedOnly);
+        continue;
+      }
       const typeData = (block as any)[typeKey];
-      const richText = typeData?.rich_text as RichText[] | undefined;
+      const richText = typeData?.rich_text as RichRun[] | undefined;
       if (!richText) continue;
 
-      const { runs: newRuns, count } = findReplaceRichText(richText, findStr, replaceStr);
+      const { newRuns, count } = replaceInRichText(richText, findStr, replaceStr);
       if (count > 0) {
         matchCount += count;
         blockCount++;
@@ -491,7 +742,10 @@ export async function pageRestoreCommand(ctx: { args: string[] }): Promise<strin
     throw new NotionCliError(ErrorCode.USAGE, "Usage: notionctl page restore <id>");
   }
   const id = resolvePageId(positional[0]!);
-  const res = await notionRequest<{ id: string; url: string }>("PATCH", `/pages/${id}`, { archived: false });
+  const res = await fetchWith404Hint(
+    () => notionRequest<{ id: string; url: string }>("PATCH", `/pages/${id}`, { in_trash: false }),
+    `Page ${id}`,
+  );
   return renderJson({ id: res.id, url: res.url, restored: true });
 }
 
@@ -500,14 +754,20 @@ export async function pageDeleteCommand(ctx: { args: string[] }): Promise<string
   if (positional.length === 0) {
     throw new NotionCliError(ErrorCode.USAGE, "Usage: notionctl page delete <id> --yes");
   }
+  const id = resolvePageId(positional[0]!);
   if (!getBooleanFlag(flags, "yes")) {
     throw new NotionCliError(
       ErrorCode.USAGE,
       "Refusing to archive without --yes confirmation",
     );
   }
-  const id = resolvePageId(positional[0]!);
-  const res = await notionRequest("PATCH", `/pages/${id}`, { archived: true });
+  if (getBooleanFlag(flags, "dry-run")) {
+    return renderJson({ action: "page delete", pageId: id, wouldTrash: true });
+  }
+  const res = await fetchWith404Hint(
+    () => notionRequest("PATCH", `/pages/${id}`, { in_trash: true }),
+    `Page ${id}`,
+  );
   return renderJson(res);
 }
 
@@ -542,22 +802,43 @@ export function stripLeadingTitleH1(body: string, title: string): string {
 export function extractSyncTitle(
   frontmatter: Record<string, unknown>,
   body: string,
-): { title: string; syncBody: string } {
-  if (frontmatter.title) return { title: String(frontmatter.title), syncBody: body };
-  // Find H1 outside fenced code blocks (backtick or tilde)
+): { title: string; syncBody: string; explicit: boolean } {
+  if (frontmatter.title) {
+    return { title: String(frontmatter.title), syncBody: body, explicit: true };
+  }
+  // Find H1 outside fenced code blocks (backtick or tilde). We track the
+  // opening fence's char and length so a shorter closer (e.g. ``` inside a
+  // ```` fence) is treated as code content instead of toggling out of the
+  // fence and misreading an H1 inside the block as the page title.
   const lines = body.split("\n");
-  let inFence = false;
+  let fenceChar: "`" | "~" | null = null;
+  let fenceLen = 0;
   for (let i = 0; i < lines.length; i++) {
-    if (/^(`{3,}|~{3,})/.test(lines[i]!.trim())) { inFence = !inFence; continue; }
-    if (inFence) continue;
+    const trimmed = lines[i]!.trim();
+    const openMatch = /^(`{3,}|~{3,})/.exec(trimmed);
+    if (openMatch) {
+      const mark = openMatch[1]!;
+      if (fenceChar === null) {
+        fenceChar = mark[0] as "`" | "~";
+        fenceLen = mark.length;
+        continue;
+      }
+      if (mark[0] === fenceChar && mark.length >= fenceLen && /^\s*$/.test(trimmed.slice(mark.length))) {
+        fenceChar = null;
+        fenceLen = 0;
+        continue;
+      }
+      continue;
+    }
+    if (fenceChar !== null) continue;
     const h1 = /^# (.+)$/.exec(lines[i]!);
     if (h1) {
       const title = h1[1]!.trim();
       const syncBody = [...lines.slice(0, i), ...lines.slice(i + 1)].join("\n").trimStart();
-      return { title, syncBody };
+      return { title, syncBody, explicit: true };
     }
   }
-  return { title: "Untitled", syncBody: body };
+  return { title: "Untitled", syncBody: body, explicit: false };
 }
 
 async function atomicWriteFile(path: string, content: string): Promise<void> {
@@ -577,26 +858,29 @@ export async function pageSyncCommand(ctx: { args: string[] }): Promise<string> 
   if (file !== cwd && !file.startsWith(cwdPrefix)) {
     throw new NotionCliError(ErrorCode.USAGE, `Refusing to sync file outside working directory: ${file}`);
   }
-  // BUG-13: resolve symlinks and re-verify containment so a symlink inside cwd
-  // that points outside can't smuggle a write through the check.
-  let canonical: string;
+  // Resolve symlinks so a symlink inside the working directory cannot be used
+  // to redirect sync state into a file outside the working directory.
   try {
-    canonical = await realpath(file);
-  } catch {
-    canonical = file;
+    const realCwd = await realpath(cwd);
+    const realFile = await realpath(file);
+    const realCwdPrefix = realCwd.endsWith(sep) ? realCwd : realCwd + sep;
+    if (realFile !== realCwd && !realFile.startsWith(realCwdPrefix)) {
+      throw new NotionCliError(
+        ErrorCode.USAGE,
+        `Refusing to sync file outside working directory (resolved target ${realFile} escapes ${realCwd}).`,
+      );
+    }
+  } catch (err) {
+    if (err instanceof NotionCliError) throw err;
+    // ENOENT is fine — the file may not exist yet on first sync.
   }
-  if (canonical !== cwd && !canonical.startsWith(cwdPrefix)) {
-    throw new NotionCliError(
-      ErrorCode.USAGE,
-      `Refusing to sync file outside working directory (symlink target: ${canonical})`,
-    );
-  }
-  const source = await readFile(file, "utf8");
+  const source = await readFileText(file, "sync file");
   const { data: frontmatter, body } = extractFrontmatter(source);
 
   // Fetch remote page metadata for drift detection when notion_id exists
   let remoteEditedAt: string | undefined;
   let validatedNotionId: string | undefined;
+  let remoteFetchFailed = false;
   if (typeof frontmatter.notion_id === "string" && frontmatter.notion_id) {
     validatedNotionId = resolvePageId(frontmatter.notion_id);
     try {
@@ -606,7 +890,7 @@ export async function pageSyncCommand(ctx: { args: string[] }): Promise<string> 
       );
       remoteEditedAt = remotePage.last_edited_time;
     } catch {
-      // If fetch fails (trashed page), proceed — the CHANGED path will give a better error
+      remoteFetchFailed = true;
     }
   }
 
@@ -622,6 +906,11 @@ export async function pageSyncCommand(ctx: { args: string[] }): Promise<string> 
   }
 
   if (state === SyncState.UNCHANGED) {
+    if (remoteFetchFailed && validatedNotionId) {
+      process.stderr.write(
+        `notionctl: notion_id ${validatedNotionId} could not be fetched — the page may have been trashed or the integration disconnected. Local file is unchanged so no action was taken, but the remote may no longer exist. Remove notion_id from frontmatter and sync again to recreate if needed.\n`,
+      );
+    }
     return renderJson({ file, state, message: "no changes to sync" });
   }
 
@@ -649,9 +938,11 @@ export async function pageSyncCommand(ctx: { args: string[] }): Promise<string> 
     }
     const { title, syncBody } = extractSyncTitle(frontmatter, body);
     const parentId = resolvePageId(parent);
-    const parentKey = await detectParentType(parentId);
+    const parentKey = await detectParentKey(parentId);
+    // The title property id is always `title`, so the PATCH works for DB rows
+    // whose title column has been renamed, as well as for regular pages.
     const titleProp = parentKey === "database_id"
-      ? { Name: { title: [{ type: "text", text: { content: title, link: null } }] } }
+      ? { title: { title: [{ type: "text", text: { content: title, link: null } }] } }
       : { title: [{ type: "text", text: { content: title, link: null } }] };
     const blocks = markdownToBlocks(syncBody);
     const firstChunk = blocks.slice(0, 100);
@@ -673,7 +964,7 @@ export async function pageSyncCommand(ctx: { args: string[] }): Promise<string> 
 
   if (state === SyncState.CHANGED || state === SyncState.DRIFT) {
     const pageId = validatedNotionId!;
-    const { title, syncBody } = extractSyncTitle(frontmatter, body);
+    const { title, syncBody, explicit: titleExplicit } = extractSyncTitle(frontmatter, body);
     let existing: { results: Block[] };
     try {
       existing = await notionRequest<{ results: Block[] }>("GET", `/blocks/${pageId}/children`);
@@ -688,12 +979,27 @@ export async function pageSyncCommand(ctx: { args: string[] }): Promise<string> 
       throw err;
     }
     const newBlocks = markdownToBlocks(syncBody);
-    const titleKey = await resolveTitlePropertyKey(pageId);
-    const titleValue = [{ type: "text", text: { content: title, link: null } }];
-    const titleProps: Record<string, unknown> = titleKey === "title"
-      ? { title: titleValue }
-      : { [titleKey]: { title: titleValue } };
-    await notionRequest("PATCH", `/pages/${pageId}`, { properties: titleProps });
+    const hostedMedia = existing.results.filter((b) => {
+      const t = b.type;
+      if (t !== "image" && t !== "video" && t !== "file" && t !== "pdf") return false;
+      const media = (b as any)[t];
+      if (!media) return false;
+      return media.type === "file" || media.type === "file_upload";
+    });
+    if (hostedMedia.length > 0) {
+      process.stderr.write(
+        `notionctl: page sync will DELETE ${hostedMedia.length} Notion-hosted media block(s) (uploaded files/images/videos/pdfs). These cannot be recreated from markdown and will need to be re-uploaded manually. Use 'notionctl file upload' after the sync.\n`,
+      );
+    }
+    // Only PATCH the title when the file explicitly specifies one (via
+    // frontmatter `title:` or a leading `# H1`). Otherwise, a DB row or
+    // regular page keeps its existing name — otherwise files without a
+    // title source silently clobber the row with "Untitled".
+    if (titleExplicit) {
+      await notionRequest("PATCH", `/pages/${pageId}`, {
+        properties: { title: { title: [{ type: "text", text: { content: title, link: null } }] } },
+      });
+    }
     for (const b of existing.results) {
       await notionRequest("DELETE", `/blocks/${b.id}`);
     }

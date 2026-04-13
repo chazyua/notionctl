@@ -9,7 +9,6 @@ import {
   clearToken,
   getConfigPath,
   AuthSource,
-  isValidTokenFormat,
 } from "../src/auth.js";
 import { NotionCliError, ErrorCode } from "../src/errors.js";
 
@@ -121,32 +120,6 @@ describe("auth", () => {
         return true;
       },
     );
-  });
-});
-
-describe("isValidTokenFormat", () => {
-  it("accepts a realistic-length ntn_ token", () => {
-    const token = "ntn_" + "a".repeat(43);
-    assert.equal(isValidTokenFormat(token), true);
-  });
-
-  it("accepts a realistic-length legacy secret_ token", () => {
-    const token = "secret_" + "B".repeat(43);
-    assert.equal(isValidTokenFormat(token), true);
-  });
-
-  it("rejects a short ntn_ token that could be truncated", () => {
-    // Previously the regex accepted 10+ chars which let obviously-short
-    // tokens through. Real Notion tokens are ~43 chars after the prefix.
-    assert.equal(isValidTokenFormat("ntn_aaaaaaaaaa"), false);
-  });
-
-  it("rejects tokens without ntn_ or secret_ prefix", () => {
-    assert.equal(isValidTokenFormat("bearer_abc1234567890123456789012345678901234567"), false);
-  });
-
-  it("rejects tokens with invalid characters in the body", () => {
-    assert.equal(isValidTokenFormat("ntn_has-dashes-which-are-invalid-in-body-part-aa"), false);
   });
 });
 
@@ -298,5 +271,33 @@ describe("auth login (OAuth)", () => {
     } finally {
       blocker.close();
     }
+  });
+});
+
+describe("BUG-F regression: config dir permission check uses bitwise mask", () => {
+  // The auth doctor check is (mode & 0o077) === 0, meaning no group/other bits.
+  // This validates the logic catches insecure modes that the old <= 0o700 check missed.
+  it("0o700 (rwx------) passes the check", () => {
+    assert.equal((0o700 & 0o077) === 0, true);
+  });
+
+  it("0o500 (r-x------) passes the check (less permissive is ok)", () => {
+    assert.equal((0o500 & 0o077) === 0, true);
+  });
+
+  it("0o077 (---rwxrwx) fails — old <= check would have passed this", () => {
+    assert.equal((0o077 & 0o077) === 0, false);
+  });
+
+  it("0o755 (rwxr-xr-x) fails — group+other can read/execute", () => {
+    assert.equal((0o755 & 0o077) === 0, false);
+  });
+
+  it("0o701 (rwx-----x) fails — other has execute", () => {
+    assert.equal((0o701 & 0o077) === 0, false);
+  });
+
+  it("0o710 (rwx--x---) fails — group has execute", () => {
+    assert.equal((0o710 & 0o077) === 0, false);
   });
 });

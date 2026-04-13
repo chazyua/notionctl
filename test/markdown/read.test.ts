@@ -43,6 +43,35 @@ describe("blocksToMarkdown basic blocks", () => {
     assert.match(out, /^### Subsubtitle$/m);
   });
 
+  it("heading with nested children renders children after the heading line", () => {
+    // Regression: renderBlock used to emit only the heading line, dropping
+    // any children. For toggleable headings and paragraphs-with-children,
+    // that meant `page get` silently lost content from the markdown output.
+    const child = mkBlock("paragraph", { rich_text: [rt("under the heading")], color: "default" });
+    const parent = mkBlock(
+      "heading_1",
+      { rich_text: [rt("Section")], color: "default", is_toggleable: true },
+      { has_children: true },
+    );
+    (parent as any)._children = [child];
+    const out = blocksToMarkdown([parent]);
+    assert.match(out, /# Section/);
+    assert.match(out, /under the heading/);
+  });
+
+  it("paragraph with nested children renders children after the paragraph", () => {
+    const child = mkBlock("paragraph", { rich_text: [rt("nested body")], color: "default" });
+    const parent = mkBlock(
+      "paragraph",
+      { rich_text: [rt("top level")], color: "default" },
+      { has_children: true },
+    );
+    (parent as any)._children = [child];
+    const out = blocksToMarkdown([parent]);
+    assert.match(out, /top level/);
+    assert.match(out, /nested body/);
+  });
+
   it("bulleted and numbered list items", () => {
     const blocks: Block[] = [
       mkBlock("bulleted_list_item", { rich_text: [rt("bullet one")], color: "default" }),
@@ -449,7 +478,141 @@ describe("blocksToMarkdown — blockquote multi-line (BUG-1 regression)", () => 
     const out = blocksToMarkdown([block as unknown as Block]);
     const lines = out.split("\n");
     for (const line of lines) {
-      assert.ok(line.startsWith("> "), `all lines must start with "> " but got: "${line}"`);
+      // Either `> text` or a bare `>` paragraph-break continuation line.
+      assert.ok(
+        line.startsWith("> ") || line === ">",
+        `all lines must be in the quote (> text or bare >) but got: "${line}"`,
+      );
     }
+  });
+
+  it("quote with child paragraph preserves paragraph break on round-trip", () => {
+    // Regression: the read path used to emit `> main\n> child` back-to-back,
+    // which a subsequent write pass collapses into a single main paragraph
+    // run, losing the second paragraph.
+    const child = mkBlock("paragraph", { rich_text: [rt("Second paragraph")], color: "default" });
+    const block = {
+      ...mkBlock("quote", { rich_text: [rt("First paragraph")], color: "default" }),
+      _children: [child],
+    };
+    const out = blocksToMarkdown([block as unknown as Block]);
+    // Expect an empty `>` line (bare) between the two paragraphs.
+    assert.match(out, /> First paragraph\n>\n> Second paragraph/);
+  });
+});
+
+describe("bug hunt round 6 — code block fence widening", () => {
+  it("emits a longer fence when code body contains triple backticks", () => {
+    const blocks: Block[] = [
+      mkBlock("code", {
+        rich_text: [rt("outer\n```\nnested fence\n```\nclose")],
+        caption: [],
+        language: "plain text",
+      }),
+    ];
+    const out = blocksToMarkdown(blocks);
+    // The opening and closing fences must be at least 4 backticks so the
+    // 3-backtick lines inside the body don't terminate the block early.
+    assert.match(out, /^`{4,}/m);
+    assert.match(out, /`{4,}$/m);
+  });
+
+  it("uses the standard 3-backtick fence when no inner backticks", () => {
+    const blocks: Block[] = [
+      mkBlock("code", {
+        rich_text: [rt("plain content")],
+        caption: [],
+        language: "plain text",
+      }),
+    ];
+    const out = blocksToMarkdown(blocks);
+    assert.ok(out.startsWith("```\n"), `expected 3-backtick fence, got: ${out}`);
+  });
+});
+
+describe("BUG-13 regression: column content must not be silently dropped", () => {
+  it("renders column_list children as sequential content", () => {
+    const col1: Block = {
+      object: "block",
+      id: "col1-id",
+      type: "column" as Block["type"],
+      has_children: true,
+      column: {},
+      _children: [
+        mkBlock("paragraph", { rich_text: [rt("Left column text")], color: "default" }),
+      ],
+    } as unknown as Block;
+    const col2: Block = {
+      object: "block",
+      id: "col2-id",
+      type: "column" as Block["type"],
+      has_children: true,
+      column: {},
+      _children: [
+        mkBlock("paragraph", { rich_text: [rt("Right column text")], color: "default" }),
+      ],
+    } as unknown as Block;
+    const columnList: Block = {
+      object: "block",
+      id: "collist-id",
+      type: "column_list" as Block["type"],
+      has_children: true,
+      column_list: {},
+      _children: [col1, col2],
+    } as unknown as Block;
+
+    const out = blocksToMarkdown([columnList]);
+    assert.ok(out.includes("Left column text"), `expected left column text, got: ${out}`);
+    assert.ok(out.includes("Right column text"), `expected right column text, got: ${out}`);
+    assert.ok(out.includes("<!-- notion-block: column_list"), "expected sidecar comment");
+  });
+
+  it("renders column_list without children as plain comment", () => {
+    const columnList: Block = {
+      object: "block",
+      id: "empty-collist",
+      type: "column_list" as Block["type"],
+      has_children: false,
+      column_list: {},
+    } as unknown as Block;
+
+    const out = blocksToMarkdown([columnList]);
+    assert.ok(out.includes("<!-- notion-block: column_list id=empty-collist -->"));
+    assert.ok(!out.includes("undefined"));
+  });
+});
+
+describe("BUG-14 regression: embed block URLs must be preserved", () => {
+  it("renders embed as link with sidecar comment", () => {
+    const embed: Block = {
+      object: "block",
+      id: "embed-id",
+      type: "embed" as Block["type"],
+      has_children: false,
+      embed: {
+        url: "https://www.youtube.com/watch?v=test123",
+        caption: [],
+      },
+    } as unknown as Block;
+
+    const out = blocksToMarkdown([embed]);
+    assert.ok(out.includes("https://www.youtube.com/watch?v=test123"), `expected embed URL, got: ${out}`);
+    assert.ok(out.includes("<!-- notion-block: embed id=embed-id -->"), "expected sidecar");
+  });
+
+  it("uses caption as link label when available", () => {
+    const embed: Block = {
+      object: "block",
+      id: "embed-id",
+      type: "embed" as Block["type"],
+      has_children: false,
+      embed: {
+        url: "https://example.com/widget",
+        caption: [{ plain_text: "My Widget" }],
+      },
+    } as unknown as Block;
+
+    const out = blocksToMarkdown([embed]);
+    assert.ok(out.includes("[My Widget](https://example.com/widget)"), `expected captioned link, got: ${out}`);
   });
 });

@@ -4,6 +4,7 @@
  * option handling across commands.
  */
 
+import { readFile as nodeReadFile } from "node:fs/promises";
 import { NotionCliError, ErrorCode } from "../errors.js";
 import { notionRequest } from "../http.js";
 import type { Readable } from "node:stream";
@@ -108,11 +109,14 @@ export function parseFlags(args: string[]): ParsedFlags {
       if (BOOLEAN_FLAGS.has(name)) {
         value = "true";
       } else {
-        const next = args[i + 1];
-        if (next === undefined || next.startsWith("--")) {
-          throw new NotionCliError(ErrorCode.USAGE, `Flag --${name} requires a value`);
+        const nextArg = args[i + 1];
+        if (nextArg === undefined || nextArg.startsWith("--")) {
+          throw new NotionCliError(
+            ErrorCode.USAGE,
+            `Flag --${name} requires a value. If the value itself starts with '--', use --${name}=<value> instead.`,
+          );
         }
-        value = next;
+        value = nextArg;
         i++;
       }
     }
@@ -132,7 +136,7 @@ export function parseFlags(args: string[]): ParsedFlags {
 export function resolvePageId(input: string): string {
   let raw = input.trim().split("#")[0]!;  // strip #block-anchor fragments
   raw = raw.split("?")[0]!;              // strip ?query-string parameters
-  raw = raw.replace(/\/+$/, "");         // strip any trailing slash(es)
+  raw = raw.replace(/\/+$/, "");         // strip trailing slashes
   const urlMatch = /notion\.(?:so|site)\/(?:[^/]+\/)*([^/?#]+)$/.exec(raw);
   if (urlMatch) raw = urlMatch[1]!;
   const lastDash = raw.lastIndexOf("-");
@@ -154,7 +158,14 @@ export function getBooleanFlag(flags: Map<string, string>, name: string): boolea
 
 /**
  * Parse a JSON string and validate it is a plain object (not null, array, or scalar).
- * Strips __proto__ and constructor keys to prevent prototype pollution.
+ * Recursively strips `__proto__`, `constructor`, and `prototype` keys from
+ * every nested object / array element so an adversarial payload like
+ * `{"a":{"__proto__":{"polluted":true}}}` cannot survive into downstream
+ * code paths that might spread it back onto a literal.
+ *
+ * We run a single post-parse walker instead of relying on `JSON.parse` reviver
+ * semantics so the sanitization is observable and testable, and so the error
+ * path remains a clean `USAGE` error on parse failure.
  */
 export function parseJsonObject(raw: string, flagName: string): Record<string, unknown> {
   let parsed: unknown;
@@ -166,9 +177,49 @@ export function parseJsonObject(raw: string, flagName: string): Record<string, u
   if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
     throw new NotionCliError(ErrorCode.USAGE, `${flagName} must be a JSON object, not an array or scalar`);
   }
-  return Object.fromEntries(
-    Object.entries(parsed as Record<string, unknown>).filter(([k]) => k !== "__proto__" && k !== "constructor"),
-  );
+  return sanitizeJsonObject(parsed as Record<string, unknown>);
+}
+
+const DANGEROUS_KEYS = new Set(["__proto__", "constructor", "prototype"]);
+
+function sanitizeJsonValue(value: unknown): unknown {
+  if (value === null || typeof value !== "object") return value;
+  if (Array.isArray(value)) return value.map(sanitizeJsonValue);
+  return sanitizeJsonObject(value as Record<string, unknown>);
+}
+
+function sanitizeJsonObject(obj: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = Object.create(null);
+  for (const [k, v] of Object.entries(obj)) {
+    if (DANGEROUS_KEYS.has(k)) continue;
+    out[k] = sanitizeJsonValue(v);
+  }
+  // Return a regular object (not null-prototype) so downstream JSON.stringify
+  // and destructuring continue to behave the same as before.
+  return { ...out };
+}
+
+/**
+ * Read a file as utf-8, translating filesystem errors into typed
+ * NotionCliErrors so the CLI surfaces a clean message instead of leaking a
+ * bare ENOENT through the unhandled-error path.
+ */
+export async function readFileText(path: string, label = "file"): Promise<string> {
+  try {
+    return await nodeReadFile(path, "utf8");
+  } catch (err) {
+    const e = err as NodeJS.ErrnoException;
+    if (e.code === "ENOENT") {
+      throw new NotionCliError(ErrorCode.USAGE, `${label} not found: ${path}`);
+    }
+    if (e.code === "EACCES" || e.code === "EPERM") {
+      throw new NotionCliError(ErrorCode.USAGE, `Permission denied reading ${label}: ${path}`);
+    }
+    if (e.code === "EISDIR") {
+      throw new NotionCliError(ErrorCode.USAGE, `Expected a file but got a directory: ${path}`);
+    }
+    throw new NotionCliError(ErrorCode.GENERIC, `Failed to read ${label} ${path}: ${e.message}`);
+  }
 }
 
 /**

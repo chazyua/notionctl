@@ -33,27 +33,59 @@ const ALERT_TYPE_TO_COLOR: Record<string, string> = {
   CAUTION: "red_background",
 };
 
-// Block types that the read path emits as pass-through HTML comments.
-// Keep in sync with renderBlock() in read.ts — any type not listed here
-// will be rejected at parse time to prevent arbitrary block-type injection.
-const PASSTHROUGH_BLOCK_TYPES = new Set([
-  "image",
-  "video",
-  "file",
-  "pdf",
-  "bookmark",
-  "link_preview",
-  "synced_block",
-  "column_list",
-  "column",
-  "embed",
-  "table_of_contents",
-  "breadcrumb",
-]);
+// The sidecar comment supports an optional trailing suffix (e.g. `name="foo"
+// hosted=notion`) that the read path uses to convey extra info for
+// Notion-hosted media blocks. The write path only cares about `type` and
+// `id`, so the trailing portion is matched non-greedily and discarded.
+const PASS_THROUGH_RE = /^<!--\s*notion-block:\s*(\w+)\s+id=([\w-]+)(?:\s[^>]*)?\s*-->$/;
+
+const MEDIA_SIDECAR_TYPES = new Set(["image", "video", "file", "pdf"]);
+const LINK_SIDECAR_TYPES = new Set(["bookmark", "link_preview", "embed"]);
+
+function peekSidecar(lines: string[], startIdx: number): { type: string; nextIdx: number } | null {
+  let i = startIdx;
+  while (i < lines.length && lines[i]!.trim().length === 0) i++;
+  if (i >= lines.length) return null;
+  const m = PASS_THROUGH_RE.exec(lines[i]!.trim());
+  if (!m) return null;
+  return { type: m[1]!, nextIdx: i + 1 };
+}
+
+function parseBareLinkLine(line: string): { label: string; url: string } | null {
+  if (!line.startsWith("[")) return null;
+  let i = 1;
+  let depth = 1;
+  while (i < line.length && depth > 0) {
+    if (line[i] === "\\") { i += 2; continue; }
+    if (line[i] === "[") depth++;
+    else if (line[i] === "]") { depth--; if (depth === 0) break; }
+    i++;
+  }
+  if (depth !== 0) return null;
+  const labelEnd = i;
+  if (line[i + 1] !== "(") return null;
+  let parenDepth = 1;
+  let j = i + 2;
+  while (j < line.length && parenDepth > 0) {
+    if (line[j] === "\\") { j += 2; continue; }
+    if (line[j] === "(") parenDepth++;
+    else if (line[j] === ")") { parenDepth--; if (parenDepth === 0) break; }
+    j++;
+  }
+  if (parenDepth !== 0) return null;
+  if (j !== line.length - 1) return null;
+  const label = line.slice(1, labelEnd);
+  const url = line.slice(labelEnd + 2, j);
+  if (url.length === 0) return null;
+  return { label, url };
+}
 
 export function markdownToBlocks(md: string): Block[] {
+  // Normalize CRLF and stray CR to LF so paragraph runs don't carry trailing
+  // carriage returns that would bleed into Notion rich_text content.
+  const normalized = md.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
   const ctx: ParseContext = { warnedHeadingDowngrade: false };
-  return markdownToBlocksInternal(md, ctx);
+  return markdownToBlocksInternal(normalized, ctx);
 }
 
 interface ParseContext {
@@ -64,6 +96,7 @@ function markdownToBlocksInternal(md: string, ctx: ParseContext): Block[] {
   const lines = md.split("\n");
   const blocks: Block[] = [];
   let i = 0;
+  let tableNoHeader = false;
 
   while (i < lines.length) {
     const line = lines[i]!;
@@ -85,7 +118,7 @@ function markdownToBlocksInternal(md: string, ctx: ParseContext): Block[] {
         : new RegExp(`^~{${fenceLen},}\\s*$`);
       const codeLines: string[] = [];
       i++;
-      while (i < lines.length && !closePat.test(lines[i]!.trim())) {
+      while (i < lines.length && !closePat.test(lines[i]!.replace(/^ {0,3}/, ""))) {
         codeLines.push(lines[i]!);
         i++;
       }
@@ -101,30 +134,75 @@ function markdownToBlocksInternal(md: string, ctx: ParseContext): Block[] {
       continue;
     }
 
-    // Image: ![alt](url [ "title"]) — only when it's the entire line.
-    // Handles URLs with balanced parens and optional "title" text (BUG-10).
-    if (trimmed.startsWith("![")) {
-      const parsedImg = parseImageLine(trimmed);
-      if (parsedImg) {
-        const { alt, url } = parsedImg;
-        if (!/^https?:\/\//i.test(url)) {
-          // Skip non-HTTP image URLs (javascript:, data:, file://, etc.)
-          i++;
-          continue;
-        }
-        blocks.push({
-          object: "block",
-          id: "",
-          type: "image",
-          has_children: false,
-          image: {
-            type: "external",
-            external: { url },
-            caption: alt ? [{ type: "text", text: { content: alt, link: null }, annotations: { bold: false, italic: false, strikethrough: false, underline: false, code: false, color: "default" }, plain_text: alt, href: null }] : [],
-          },
-        } as unknown as Block);
+    // Image: ![alt](url) — only when it's the entire line. Parses the URL
+    // with balanced parentheses so links like Wikipedia's Foo_(bar).png work.
+    const parsedImage = parseImageLine(trimmed);
+    if (parsedImage) {
+      const { alt, url } = parsedImage;
+      if (!/^https?:\/\//i.test(url)) {
+        // Skip non-HTTP image URLs (javascript:, data:, file://, etc.)
         i++;
         continue;
+      }
+      // If the next non-blank line is a round-trip sidecar comment naming a
+      // media type (video/file/pdf), upgrade the block's type so the original
+      // Notion block type survives round-tripping from read → write.
+      let blockType: "image" | "video" | "file" | "pdf" = "image";
+      const sidecar = peekSidecar(lines, i + 1);
+      if (sidecar && MEDIA_SIDECAR_TYPES.has(sidecar.type)) {
+        blockType = sidecar.type as typeof blockType;
+        i = sidecar.nextIdx;
+      } else {
+        i++;
+      }
+      const caption = alt ? [{ type: "text", text: { content: alt, link: null }, annotations: { bold: false, italic: false, strikethrough: false, underline: false, code: false, color: "default" }, plain_text: alt, href: null }] : [];
+      blocks.push({
+        object: "block",
+        id: "",
+        type: blockType,
+        has_children: false,
+        [blockType]: {
+          type: "external",
+          external: { url },
+          caption,
+        },
+      } as unknown as Block);
+      continue;
+    }
+
+    // Bare link line: [caption](url) alone on a line. On its own this would
+    // become a paragraph with a link, but when followed by a bookmark/
+    // link_preview sidecar from the read path we upgrade it to that block type
+    // so the round-trip preserves the original Notion block shape.
+    if (trimmed.startsWith("[")) {
+      const parsedLink = parseBareLinkLine(trimmed);
+      if (parsedLink) {
+        const sidecar = peekSidecar(lines, i + 1);
+        if (sidecar && LINK_SIDECAR_TYPES.has(sidecar.type)) {
+          if (sidecar.type === "embed") {
+            blocks.push({
+              object: "block",
+              id: "",
+              type: "embed",
+              has_children: false,
+              embed: { url: parsedLink.url },
+            } as unknown as Block);
+          } else {
+            const blockType = sidecar.type as "bookmark" | "link_preview";
+            const captionRuns = parsedLink.label && parsedLink.label !== parsedLink.url
+              ? [{ type: "text", text: { content: parsedLink.label, link: null }, annotations: { bold: false, italic: false, strikethrough: false, underline: false, code: false, color: "default" }, plain_text: parsedLink.label, href: null }]
+              : [];
+            blocks.push({
+              object: "block",
+              id: "",
+              type: blockType,
+              has_children: false,
+              [blockType]: { url: parsedLink.url, caption: captionRuns },
+            } as unknown as Block);
+          }
+          i = sidecar.nextIdx;
+          continue;
+        }
       }
     }
 
@@ -161,7 +239,11 @@ function markdownToBlocksInternal(md: string, ctx: ParseContext): Block[] {
     if (isListLine(line)) {
       const { blocks: listBlocks, nextIdx } = parseListSection(lines, i);
       blocks.push(...listBlocks);
-      i = nextIdx;
+      // Defense in depth: if parseListSection made no progress, force-advance
+      // to avoid an infinite loop on a line that isListLine recognizes but
+      // classifyListLine rejects. The main parser must always consume at
+      // least one line per iteration or hang.
+      i = nextIdx > i ? nextIdx : i + 1;
       continue;
     }
 
@@ -176,20 +258,56 @@ function markdownToBlocksInternal(md: string, ctx: ParseContext): Block[] {
         quoteLines.push(raw);
         i++;
       }
-      // Parse quote body as markdown so multi-paragraph quotes become real
-      // paragraph breaks (children blocks), not a single rich_text with
-      // embedded \n — Notion collapses \n inside rich_text back to one line.
+      // Recurse into the quote body so block-level constructs (lists, nested
+      // code, headings) become structured children of the quote instead of
+      // being collapsed into a flat rich_text run.
+      //
+      // Plain prose: when every inner block is a paragraph we keep the
+      // legacy behavior of joining them into a single rich_text run with
+      // double-newline separators — that matches how the read path renders
+      // multi-paragraph blockquotes and round-trips cleanly.
+      //
+      // Mixed content (lists, code, etc.): emit non-paragraph blocks as
+      // children. Any leading paragraph still becomes the quote's
+      // rich_text body so the visual ordering is preserved.
       const innerMd = quoteLines.join("\n");
-      const inner = innerMd.trim().length > 0 ? markdownToBlocksInternal(innerMd, ctx) : [];
+      const innerBlocks = innerMd.length > 0 ? markdownToBlocks(innerMd) : [];
+      const allParagraphs = innerBlocks.length > 0
+        && innerBlocks.every((b) => b.type === "paragraph");
       let quoteRichText: RichText[] = [];
       let quoteChildren: Block[] = [];
-      if (inner.length > 0 && inner[0]!.type === "paragraph") {
-        quoteRichText = (inner[0]!.paragraph as { rich_text: RichText[] }).rich_text;
-        quoteChildren = inner.slice(1);
-      } else if (inner.length > 0) {
-        quoteChildren = inner;
+      if (allParagraphs) {
+        // Concatenate each paragraph's rich_text runs directly, separating
+        // paragraphs with a literal "\n\n" text run. Building a flat runs
+        // array preserves inline annotations (bold, italic, links) that
+        // would be stripped if we re-serialized to plain text and re-parsed.
+        const sep: RichText = {
+          type: "text",
+          text: { content: "\n\n", link: null },
+          annotations: { bold: false, italic: false, strikethrough: false, underline: false, code: false, color: "default" },
+          plain_text: "\n\n",
+          href: null,
+        } as unknown as RichText;
+        for (let bi = 0; bi < innerBlocks.length; bi++) {
+          if (bi > 0) quoteRichText.push(sep);
+          const runs = (innerBlocks[bi] as { paragraph: { rich_text: RichText[] } }).paragraph.rich_text;
+          quoteRichText.push(...runs);
+        }
+      } else if (innerBlocks.length > 0 && innerBlocks[0]!.type === "paragraph") {
+        quoteRichText = (innerBlocks[0]!.paragraph as { rich_text: RichText[] }).rich_text;
+        quoteChildren = innerBlocks.slice(1);
+      } else {
+        quoteChildren = innerBlocks;
       }
-      blocks.push(makeQuoteBlock(quoteRichText, quoteChildren));
+      const quoteData: any = { rich_text: quoteRichText, color: "default" };
+      if (quoteChildren.length > 0) quoteData.children = quoteChildren;
+      blocks.push({
+        object: "block",
+        id: "",
+        type: "quote",
+        has_children: quoteChildren.length > 0,
+        quote: quoteData,
+      } as unknown as Block);
       continue;
     }
 
@@ -366,36 +484,54 @@ function markdownToBlocksInternal(md: string, ctx: ParseContext): Block[] {
       continue;
     }
 
-    // Pass-through HTML comment — only accept types the read path actually emits.
-    const passMatch = /^<!--\s*notion-block:\s*(\w+)\s+id=([\w-]+)\s*-->$/.exec(trimmed);
+    // Round-trip sidecar comment with no preceding media line. These are
+    // emitted by the read path for block types we can't reconstruct from
+    // markdown — structural blocks (synced_block, column_list, etc.)
+    // and Notion-hosted media (uploaded files/images/videos/pdfs whose URLs
+    // are short-lived signed links Notion's own API can't re-ingest).
+    // Creating a stub block here would fail Notion's API or silently store
+    // an empty block, so we drop it and warn.
+    const passMatch = PASS_THROUGH_RE.exec(trimmed);
     if (passMatch) {
-      if (PASSTHROUGH_BLOCK_TYPES.has(passMatch[1]!)) {
-        blocks.push({
-          object: "block",
-          id: passMatch[2]!,
-          type: passMatch[1]! as Block["type"],
-          has_children: false,
-        } as Block);
+      if (warnHandler) {
+        const droppedType = passMatch[1]!;
+        const isMedia = droppedType === "image" || droppedType === "video"
+          || droppedType === "file" || droppedType === "pdf";
+        const reason = isMedia
+          ? `Notion-hosted media (uploaded files/images) cannot round-trip through markdown — the signed S3 URL is ephemeral. Re-upload with 'notionctl file upload' or use 'page append' for additive edits.`
+          : `structural blocks (synced_block, column_list, etc.) cannot be expressed in markdown and are preserved only in the original Notion workspace.`;
+        warnHandler(`notionctl: dropped '${droppedType}' block on write — ${reason}`);
       }
-      // Unknown types are silently dropped (defense-in-depth) but still
-      // consume the line so they don't fall through to the paragraph parser.
+      i++;
+      continue;
+    }
+
+    // Sidecar comment for tables without a column header (emitted by read path).
+    // Consume it and let the following table inherit has_column_header=false.
+    if (/^<!--\s*notion-table:\s*has_column_header=false\s*-->$/.test(trimmed)) {
+      tableNoHeader = true;
       i++;
       continue;
     }
 
     // GFM table — separator row may have alignment colons: | :--- | ---: | :---: |
     if (/^\|.*\|$/.test(trimmed) && i + 1 < lines.length && /^\|\s*:?---/.test(lines[i + 1]!.trim())) {
+      const noHeader = tableNoHeader;
+      tableNoHeader = false;
       const headerCells = parseTableRow(trimmed);
       i += 2;  // skip header + separator
-      const rowBlocks: Block[] = [
-        {
+      const rowBlocks: Block[] = [];
+      // When has_column_header=false, the header row is a synthetic empty
+      // row emitted by the read path — skip it from the block list.
+      if (!noHeader) {
+        rowBlocks.push({
           object: "block",
           id: "",
           type: "table_row",
           has_children: false,
           table_row: { cells: headerCells.map((c) => markdownToRichText(c)) },
-        } as unknown as Block,
-      ];
+        } as unknown as Block);
+      }
       while (i < lines.length && /^\|.*\|$/.test(lines[i]!.trim())) {
         let rowCells = parseTableRow(lines[i]!.trim());
         // Normalize cell count to match header width (Notion API requires uniform width)
@@ -417,7 +553,7 @@ function markdownToBlocksInternal(md: string, ctx: ParseContext): Block[] {
         has_children: true,
         table: {
           table_width: headerCells.length,
-          has_column_header: true,
+          has_column_header: !noHeader,
           has_row_header: false,
           children: rowBlocks,
         },
@@ -441,6 +577,11 @@ function markdownToBlocksInternal(md: string, ctx: ParseContext): Block[] {
   return blocks;
 }
 
+/**
+ * Parse a standalone image line `![alt](url)` where the URL may contain
+ * balanced parentheses (Wikipedia-style links) and optional title text.
+ * Returns null if the line does not match the full `![...](...)` shape end-to-end.
+ */
 function parseImageLine(line: string): { alt: string; url: string } | null {
   if (!line.startsWith("![")) return null;
   let i = 2;
@@ -470,7 +611,6 @@ function parseImageLine(line: string): { alt: string; url: string } | null {
     j++;
   }
   if (parenDepth !== 0) return null;
-  // The line must end right at this closing paren to count as a block-level image.
   if (j !== line.length - 1) return null;
   const inner = line.slice(urlStart, j);
   // Strip optional title: "<url> \"title\"" or "<url> 'title'"
@@ -523,6 +663,7 @@ interface ListItem {
   checked: boolean;
   indent: number;
   children: ListItem[];
+  trailingBlocks: Block[];
 }
 
 function isListLine(line: string): boolean {
@@ -530,28 +671,91 @@ function isListLine(line: string): boolean {
 }
 
 function parseListSection(lines: string[], startIdx: number): { blocks: Block[]; nextIdx: number } {
-  const rawItems: Omit<ListItem, "children">[] = [];
+  const rawItems: Omit<ListItem, "children" | "trailingBlocks">[] = [];
+  const trailingBlocksMap = new Map<number, Block[]>();
   let i = startIdx;
   while (i < lines.length && isListLine(lines[i]!)) {
     const parsed = classifyListLine(lines[i]!);
     if (parsed === null) break;
     rawItems.push(parsed);
+    const itemIdx = rawItems.length - 1;
     i++;
+    // Peek for indented code fences belonging to this list item. A code fence
+    // is considered part of the list item when it is indented at least as far
+    // as the item's content start (indent + marker width, approximated as
+    // indent + 2 so "- " items pick up 2-space-indented fences).
+    const contentIndent = parsed.indent + 2;
+    while (i < lines.length) {
+      // Skip blank lines between the list item and a potential code fence
+      let peek = i;
+      while (peek < lines.length && lines[peek]!.trim().length === 0) peek++;
+      if (peek >= lines.length) break;
+      const peekLine = lines[peek]!;
+      const peekLineIndent = (peekLine.match(/^(\s*)/) ?? ["", ""])[1]!.length;
+      const peekTrimmed = peekLine.trim();
+      const fenceMatch = /^(`{3,}|~{3,})(.*)$/.exec(peekTrimmed);
+      if (!fenceMatch || peekLineIndent < contentIndent) break;
+      // Consume the indented code fence
+      const fenceChar = fenceMatch[1]![0]!;
+      const fenceLen = fenceMatch[1]!.length;
+      const lang = fenceMatch[2]!.trim();
+      const closePat = fenceChar === "`"
+        ? new RegExp(`^\`{${fenceLen},}\\s*$`)
+        : new RegExp(`^~{${fenceLen},}\\s*$`);
+      const codeLines: string[] = [];
+      i = peek + 1;
+      while (i < lines.length && !closePat.test(lines[i]!.trim())) {
+        // Strip up to contentIndent spaces of leading indentation from code body
+        const codeLine = lines[i]!;
+        const stripped = codeLine.length > contentIndent && /^\s+/.test(codeLine)
+          ? codeLine.slice(Math.min(contentIndent, (codeLine.match(/^(\s*)/)![1]!.length)))
+          : codeLine;
+        codeLines.push(stripped);
+        i++;
+      }
+      if (i < lines.length) i++; // consume closing fence
+      const blocks = trailingBlocksMap.get(itemIdx) ?? [];
+      blocks.push(makeCodeBlock(codeLines.join("\n"), lang));
+      trailingBlocksMap.set(itemIdx, blocks);
+    }
   }
-  const tree = capListDepth(buildListTree(rawItems));
+  const { items: tree, flattened } = capListDepth(buildListTree(rawItems, trailingBlocksMap));
+  if (flattened > 0 && warnHandler) {
+    warnHandler(
+      `notionctl: ${flattened} list item${flattened === 1 ? "" : "s"} deeper than 2 levels were promoted to the maximum allowed depth. Notion's API supports at most 2 levels of nested children.`,
+    );
+  }
   return { blocks: tree.map(listItemToBlock), nextIdx: i };
 }
 
-function classifyListLine(line: string): Omit<ListItem, "children"> | null {
+function classifyListLine(line: string): Omit<ListItem, "children" | "trailingBlocks"> | null {
   const indent = (line.match(/^(\s*)/) ?? ["", ""])[1]!.length;
   const trimmed = line.trim();
-  const todoMatch = /^-\s+\[([ xX])\]\s+(.*)$/.exec(trimmed);
+  // Allow empty to-do bodies (`- [ ]` with no trailing text). The previous
+  // regex required at least one whitespace + content, which silently
+  // demoted bare checkboxes to bulleted list items containing "[x]".
+  const todoMatch = /^-\s+\[([ xX])\](?:\s+(.*))?$/.exec(trimmed);
   if (todoMatch) {
-    return { indent, type: "todo", text: todoMatch[2]!, checked: todoMatch[1]!.toLowerCase() === "x" };
+    return { indent, type: "todo", text: todoMatch[2] ?? "", checked: todoMatch[1]!.toLowerCase() === "x" };
+  }
+  // Empty-body bullet (`- `, `*\t`, `+  `) — isListLine() on the untrimmed
+  // line already confirmed it looks like a bullet, so accept it as an empty
+  // item instead of returning null. Returning null used to leave the main
+  // loop stuck at the same index because isListLine kept matching, producing
+  // an infinite loop on innocuous input like "- \n- real".
+  const emptyBulletMatch = /^[-*+]$/.exec(trimmed);
+  if (emptyBulletMatch) {
+    return { indent, type: "bulleted", text: "", checked: false };
   }
   const bulletMatch = /^[-*+]\s+(.*)$/.exec(trimmed);
   if (bulletMatch) {
     return { indent, type: "bulleted", text: bulletMatch[1]!, checked: false };
+  }
+  // Same guard for numbered lists: `1.` with no body needs to be accepted as
+  // an empty item rather than dropped to null.
+  const emptyNumMatch = /^\d+\.$/.exec(trimmed);
+  if (emptyNumMatch) {
+    return { indent, type: "numbered", text: "", checked: false };
   }
   const numMatch = /^\d+\.\s+(.*)$/.exec(trimmed);
   if (numMatch) {
@@ -560,11 +764,12 @@ function classifyListLine(line: string): Omit<ListItem, "children"> | null {
   return null;
 }
 
-function buildListTree(flat: Omit<ListItem, "children">[]): ListItem[] {
+function buildListTree(flat: Omit<ListItem, "children" | "trailingBlocks">[], trailingBlocksMap?: Map<number, Block[]>): ListItem[] {
   const roots: ListItem[] = [];
   const stack: ListItem[] = [];
-  for (const raw of flat) {
-    const item: ListItem = { ...raw, children: [] };
+  for (let idx = 0; idx < flat.length; idx++) {
+    const raw = flat[idx]!;
+    const item: ListItem = { ...raw, children: [], trailingBlocks: trailingBlocksMap?.get(idx) ?? [] };
     while (stack.length > 0 && stack[stack.length - 1]!.indent >= item.indent) {
       stack.pop();
     }
@@ -585,19 +790,32 @@ function buildListTree(flat: Omit<ListItem, "children">[]): ListItem[] {
  */
 const MAX_CHILD_DEPTH = 2;
 
-function capListDepth(items: ListItem[], depth: number = 0): ListItem[] {
+/**
+ * Set by the CLI entry so write.ts can warn about list depth flattening
+ * without importing process.stderr directly. Tests leave it unset so test
+ * output stays clean.
+ */
+let warnHandler: ((msg: string) => void) | null = null;
+export function setMarkdownWarnHandler(fn: ((msg: string) => void) | null): void {
+  warnHandler = fn;
+}
+
+function capListDepth(items: ListItem[], depth: number = 0): { items: ListItem[]; flattened: number } {
   const result: ListItem[] = [];
+  let flattened = 0;
   for (const item of items) {
     if (depth + 1 >= MAX_CHILD_DEPTH) {
-      // This item's children would exceed the limit. Promote all
-      // descendants to be siblings of this item (at the same level).
       result.push({ ...item, children: [] });
-      result.push(...collectDescendants(item.children).map((c) => ({ ...c, children: [] })));
+      const descendants = collectDescendants(item.children);
+      if (descendants.length > 0) flattened += descendants.length;
+      result.push(...descendants.map((c) => ({ ...c, children: [] })));
     } else {
-      result.push({ ...item, children: capListDepth(item.children, depth + 1) });
+      const capped = capListDepth(item.children, depth + 1);
+      flattened += capped.flattened;
+      result.push({ ...item, children: capped.items });
     }
   }
-  return result;
+  return { items: result, flattened };
 }
 
 function collectDescendants(items: ListItem[]): ListItem[] {
@@ -610,7 +828,7 @@ function collectDescendants(items: ListItem[]): ListItem[] {
 }
 
 function listItemToBlock(item: ListItem): Block {
-  const childBlocks = item.children.map(listItemToBlock);
+  const childBlocks = [...item.children.map(listItemToBlock), ...item.trailingBlocks];
   if (item.type === "todo") {
     const body: any = {
       rich_text: markdownToRichText(item.text),
@@ -649,21 +867,6 @@ function listItemToBlock(item: ListItem): Block {
     has_children: childBlocks.length > 0,
     numbered_list_item: body,
   } as unknown as Block;
-}
-
-function makeQuoteBlock(richText: RichText[], children: Block[] = []): Block {
-  const quote: { rich_text: RichText[]; color: string; children?: Block[] } = {
-    rich_text: richText,
-    color: "default",
-  };
-  if (children.length > 0) quote.children = children;
-  return {
-    object: "block",
-    id: "",
-    type: "quote",
-    has_children: children.length > 0,
-    quote,
-  } as Block;
 }
 
 const VALID_LANGUAGES = new Set([

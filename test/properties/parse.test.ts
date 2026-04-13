@@ -213,10 +213,81 @@ describe("parseProperty — error cases", () => {
     }
   });
 
+  it("checkbox rejects ambiguous values with a clear error", () => {
+    assert.throws(
+      () => parseProperty(schema, "Done", "maybe"),
+      /checkbox/,
+    );
+  });
+
   it("checkbox with unrecognized string throws", () => {
     assert.throws(
       () => parseProperty(schema, "Done", "banana"),
       /must be true\/false/,
     );
+  });
+});
+
+describe("bug hunt round 4 regressions — properties", () => {
+  it("checkbox accepts True/TRUE/1/yes/on as true", () => {
+    for (const v of ["True", "TRUE", "1", "yes", "YES", "on", "y"]) {
+      assert.deepEqual(parseProperty(schema, "Done", v), { checkbox: true }, `expected ${v} to be true`);
+    }
+  });
+
+  it("checkbox accepts False/FALSE/0/no/off as false", () => {
+    for (const v of ["False", "FALSE", "0", "no", "NO", "off", "n"]) {
+      assert.deepEqual(parseProperty(schema, "Done", v), { checkbox: false }, `expected ${v} to be false`);
+    }
+  });
+
+  it("date range with more than one '..' is rejected", () => {
+    assert.throws(
+      () => parseProperty(schema, "Due", "2026-04-10..2026-04-15..2026-04-20"),
+      /date range/i,
+    );
+  });
+
+  it("empty select value becomes null to clear the property", () => {
+    assert.deepEqual(parseProperty(schema, "Status", ""), { select: null });
+  });
+
+  it("empty date value becomes null to clear the property", () => {
+    assert.deepEqual(parseProperty(schema, "Due", ""), { date: null });
+  });
+
+  it("date range with missing start is rejected", () => {
+    assert.throws(
+      () => parseProperty(schema, "Due", "..2026-04-20"),
+      /needs both start and end/i,
+    );
+  });
+
+  it("date range with missing end is rejected", () => {
+    assert.throws(
+      () => parseProperty(schema, "Due", "2026-04-10.."),
+      /needs both start and end/i,
+    );
+  });
+
+  it("parsePropertyFlag strips quotes from the key", () => {
+    assert.deepEqual(parsePropertyFlag('"Title"=Hello'), { key: "Title", value: "Hello" });
+    assert.deepEqual(parsePropertyFlag("'Title'=Hello"), { key: "Title", value: "Hello" });
+  });
+});
+
+describe("BUG-G regression: files property url: with trailing slash", () => {
+  it("uses 'file' as name when URL ends with /", () => {
+    const result = parseProperty(schema, "Attachment", "url:https://example.com/");
+    assert.deepEqual(result, {
+      files: [{ name: "file", external: { url: "https://example.com/" } }],
+    });
+  });
+
+  it("extracts filename from URL path", () => {
+    const result = parseProperty(schema, "Attachment", "url:https://example.com/doc.pdf");
+    assert.deepEqual(result, {
+      files: [{ name: "doc.pdf", external: { url: "https://example.com/doc.pdf" } }],
+    });
   });
 });

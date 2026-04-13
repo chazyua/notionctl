@@ -14,6 +14,16 @@
 import type { RichText, Annotations, TextRichText } from "./types.js";
 import { DEFAULT_ANNOTATIONS } from "./types.js";
 
+/**
+ * Set by the CLI entry so tokenizer warnings (e.g. dropped link schemes)
+ * surface on stderr without coupling this module to process.stderr.
+ * Tests leave it unset so test output stays clean.
+ */
+let warnHandler: ((msg: string) => void) | null = null;
+export function setTokenizerWarnHandler(fn: ((msg: string) => void) | null): void {
+  warnHandler = fn;
+}
+
 type MarkerKey = "bold" | "italic" | "strikethrough" | "code";
 const MARKER_ORDER: MarkerKey[] = ["bold", "italic", "strikethrough", "code"];
 const MARKERS: Record<MarkerKey, string> = {
@@ -274,19 +284,15 @@ function hasEmphasisUnderscore(s: string): boolean {
   return false;
 }
 
-/** True when the string has 2+ asterisks that could form an emphasis pair. */
+/** True when at least one asterisk could trigger emphasis (not purely between alphanums). */
 function hasEmphasisAsterisk(s: string): boolean {
-  // The write path opens/closes italic * when flanked by non-whitespace.
-  // A single * (e.g. "2*3") is safe — no matching closer. Two+ flanked
-  // asterisks (e.g. "*x*", "5*x*2") can form an open/close pair.
-  let flanked = 0;
   for (let i = 0; i < s.length; i++) {
     if (s[i] !== "*") continue;
     const prev = i > 0 ? s[i - 1]! : "";
     const next = i < s.length - 1 ? s[i + 1]! : "";
-    if ((prev !== "" && /\S/.test(prev)) || (next !== "" && /\S/.test(next))) flanked++;
+    if (!(/[A-Za-z0-9]/.test(prev) && /[A-Za-z0-9]/.test(next))) return true;
   }
-  return flanked >= 2;
+  return false;
 }
 
 function runContent(run: RichText): string {
@@ -366,37 +372,28 @@ export function markdownToRichText(md: string): RichText[] {
       continue;
     }
 
-    // Inline equation $...$  (single $, not $$).
-    // Tight-flanking heuristic (BUG-03): only treat $...$ as an equation when
-    // the opener is followed by non-whitespace non-digit, and the closer is
-    // preceded by non-whitespace. This avoids mangling currency like "$100".
-    if (
-      c === "$" &&
-      next !== undefined &&
-      next !== "$" &&
-      /\S/.test(next) &&
-      !/[0-9]/.test(next)
-    ) {
-      let end = -1;
-      for (let j = i + 1; j < md.length; j++) {
-        if (md[j] === "\\") { j++; continue; }
-        if (md[j] === "$" && j > i + 1 && /\S/.test(md[j - 1]!)) {
-          end = j;
-          break;
+    // Inline equation $...$  (single $, not $$)
+    // Uses a pandoc-style tightness rule so currency like "$5 and $10" is not
+    // misparsed: the opening $ must be followed by non-whitespace, the closing
+    // $ must be preceded by non-whitespace, and the closing $ must not be
+    // followed by an alphanumeric (so "$5$45" isn't two concatenated "equations").
+    if (c === "$" && next !== "$" && next !== undefined && !/\s/.test(next)) {
+      const end = md.indexOf("$", i + 1);
+      if (end !== -1 && end > i + 1 && !/\s/.test(md[end - 1]!)) {
+        const afterClose = md[end + 1];
+        if (afterClose === undefined || !/[A-Za-z0-9]/.test(afterClose)) {
+          flush();
+          const expr = md.slice(i + 1, end);
+          runs.push({
+            type: "equation",
+            equation: { expression: expr },
+            annotations: { ...DEFAULT_ANNOTATIONS },
+            plain_text: `$${expr}$`,
+            href: null,
+          } as unknown as RichText);
+          i = end + 1;
+          continue;
         }
-      }
-      if (end !== -1) {
-        flush();
-        const expr = md.slice(i + 1, end);
-        runs.push({
-          type: "equation",
-          equation: { expression: expr },
-          annotations: { ...DEFAULT_ANNOTATIONS },
-          plain_text: `$${expr}$`,
-          href: null,
-        } as unknown as RichText);
-        i = end + 1;
-        continue;
       }
     }
 
@@ -423,44 +420,20 @@ export function markdownToRichText(md: string): RichText[] {
     }
 
     // Italic * (single asterisk — checked after ** so bold is consumed first).
-    // Lightweight CommonMark flanking (BUG-02): the opener must be followed by
-    // non-whitespace, and there must be a matching closer preceded by
-    // non-whitespace. Otherwise emit as literal — this keeps things like
-    // "1 * 2", "int *ptr", and "foo*bar" (with no pair) out of italic runs.
-    if (c === "*") {
-      if (state.italic) {
-        const prev = md[i - 1];
-        if (prev !== undefined && /\S/.test(prev)) {
-          flush();
-          state.italic = false;
-          i += 1;
-          continue;
-        }
-      } else if (next !== undefined && /\S/.test(next) && next !== "*") {
-        let foundCloser = false;
-        for (let j = i + 1; j < md.length; j++) {
-          if (md[j] === "\\") { j++; continue; }
-          if (md[j] === "`") {
-            const codeEnd = md.indexOf("`", j + 1);
-            if (codeEnd === -1) break;
-            j = codeEnd;
-            continue;
-          }
-          if (md[j] === "*" && /\S/.test(md[j - 1] ?? "")) {
-            foundCloser = true;
-            break;
-          }
-        }
-        if (foundCloser) {
-          flush();
-          state.italic = true;
-          i += 1;
-          continue;
-        }
-      }
-      // Fall-through: treat the * as literal.
-      buffer += c;
+    // Pragmatic rule: a lone * toggles italic only when it sits at a word
+    // boundary or inside an existing bold span. This preserves literals like
+    // "2*3", "*.md", and "$5 * $10" without requiring escapes, while still
+    // parsing proper "*word*" emphasis and "**word*italic***" nesting.
+    if (c === "*" && isAsteriskEmphasis(md, i, state)) {
+      flush();
+      state.italic = !state.italic;
       i += 1;
+      continue;
+    }
+    if (c === "*") {
+      // Not an emphasis delimiter — treat as literal text.
+      buffer += c;
+      i++;
       continue;
     }
 
@@ -480,7 +453,9 @@ export function markdownToRichText(md: string): RichText[] {
       continue;
     }
 
-    // Link [text](url)
+    // Link [text](url) — CommonMark also supports [text](url "title") where
+    // the title is surrounded by double-quotes, single-quotes, or parens.
+    // Notion's API doesn't have a title field on links, so we strip it.
     if (c === "[") {
       flush();
       const linkEnd = findLinkEnd(md, i);
@@ -490,7 +465,12 @@ export function markdownToRichText(md: string): RichText[] {
         const urlStart = linkEnd.urlStart;
         const urlEnd = linkEnd.urlEnd;
         const label = md.slice(labelStart, labelEnd);
-        const url = md.slice(urlStart, urlEnd);
+        const url = stripLinkTitle(md.slice(urlStart, urlEnd));
+        if (url.length > 0 && !isAllowedLinkUrl(url) && warnHandler) {
+          warnHandler(
+            `notionctl: link URL '${url}' has an unsupported scheme — kept label '${label}' as plain text. Notion accepts: https, http, mailto, tel, notion, ftp, sms.`,
+          );
+        }
         runs.push(makeRun(label, state, url));
         i = urlEnd + 1;
         continue;
@@ -502,7 +482,39 @@ export function markdownToRichText(md: string): RichText[] {
   }
 
   flush();
+
+  // If the entire input was consumed by unmatched markers with no actual text
+  // content, emit the raw input as literal text rather than returning empty.
+  if (runs.length === 0 && md.length > 0) {
+    runs.push(makeRun(md, { bold: false, italic: false, strikethrough: false, code: false }, null));
+  }
+
   return splitLongRuns(runs);
+}
+
+/**
+ * Strip an optional CommonMark link title from the raw URL portion of a
+ * `[text](url "title")` construct. The title can be wrapped in `"..."`,
+ * `'...'`, or `(...)`. We trim trailing whitespace + the title if present,
+ * returning just the URL.
+ */
+function stripLinkTitle(raw: string): string {
+  const trimmed = raw.trimEnd();
+  if (trimmed.length === 0) return raw;
+  const last = trimmed[trimmed.length - 1]!;
+  if (last === '"' || last === "'") {
+    const open = trimmed.lastIndexOf(last, trimmed.length - 2);
+    if (open > 0 && /\s/.test(trimmed[open - 1]!)) {
+      return trimmed.slice(0, open).trimEnd();
+    }
+  }
+  if (last === ")") {
+    const open = trimmed.lastIndexOf("(", trimmed.length - 2);
+    if (open > 0 && /\s/.test(trimmed[open - 1]!) && !trimmed.slice(open + 1, -1).includes("(")) {
+      return trimmed.slice(0, open).trimEnd();
+    }
+  }
+  return raw;
 }
 
 function isMarkerChar(c: string): boolean {
@@ -514,6 +526,53 @@ function isIntraword(md: string, idx: number): boolean {
   const prev = idx > 0 ? md[idx - 1]! : "";
   const next = idx < md.length - 1 ? md[idx + 1]! : "";
   return /\w/.test(prev) && /\w/.test(next);
+}
+
+/**
+ * Word-boundary rule for * emphasis. We apply it asymmetrically:
+ *   - Closing (italic currently open): accept any *. Once italic is open,
+ *     the next * closes it — matching CommonMark's balancing behavior and
+ *     keeping ***bold italic*** working.
+ *   - Inside bold (state.bold true): accept any *. The surrounding ** already
+ *     establishes emphasis context, so nested "word*italic*" is fine.
+ *   - Otherwise (italic closed, bold closed): require a non-alphanumeric
+ *     before and an alphanumeric after — the classic word-boundary opener
+ *     that rejects 2*3, *.md, $5 * $10.
+ */
+function isAsteriskEmphasis(md: string, idx: number, state: ScannerState): boolean {
+  if (state.italic) return true;
+  if (state.bold) return true;
+  const prev = idx > 0 ? md[idx - 1]! : "";
+  const next = idx < md.length - 1 ? md[idx + 1]! : "";
+  if (!/[A-Za-z0-9]/.test(prev) && /[A-Za-z0-9]/.test(next)) {
+    // Verify a matching closer exists — without this, "int *ptr = NULL;"
+    // would open italic with no closer, mangling the output.
+    for (let j = idx + 1; j < md.length; j++) {
+      if (md[j] === "\\") { j++; continue; }
+      if (md[j] === "`") {
+        const codeEnd = md.indexOf("`", j + 1);
+        if (codeEnd === -1) break;
+        j = codeEnd;
+        continue;
+      }
+      if (md[j] === "*" && /\S/.test(md[j - 1] ?? "")) return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Link URL safelist for rich-text conversion. Notion's API only accepts a
+ * small set of URL schemes in `text.link.url`; anything else is rejected at
+ * write time with "Invalid URL for link". The schemes below are the ones
+ * verified to work against the live API. Fragment-only (#anchor) and
+ * relative (/path) URLs are NOT in this list — Notion rejects both — so
+ * those links degrade gracefully to plain text.
+ */
+const ALLOWED_LINK_SCHEMES = /^(https?|mailto|tel|notion|ftp|sms):/i;
+function isAllowedLinkUrl(url: string): boolean {
+  if (url.length === 0) return false;
+  return ALLOWED_LINK_SCHEMES.test(url);
 }
 
 function findLinkEnd(md: string, startIdx: number): { labelEnd: number; urlStart: number; urlEnd: number } | null {
@@ -590,14 +649,12 @@ function splitLongRuns(runs: RichText[]): RichText[] {
   return result;
 }
 
-const LINK_SCHEME_RE = /^(https?:\/\/|notion:\/\/|mailto:|tel:)/i;
-
 function makeRun(content: string, state: ScannerState, linkUrl: string | null): TextRichText {
   return {
     type: "text",
     text: {
       content,
-      link: linkUrl && LINK_SCHEME_RE.test(linkUrl) ? { url: linkUrl } : null,
+      link: linkUrl && isAllowedLinkUrl(linkUrl) ? { url: linkUrl } : null,
     },
     annotations: {
       ...DEFAULT_ANNOTATIONS,
