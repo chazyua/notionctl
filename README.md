@@ -1,5 +1,11 @@
 # notionctl
 
+[![CI](https://github.com/chazyua/notionctl/actions/workflows/ci.yml/badge.svg)](https://github.com/chazyua/notionctl/actions/workflows/ci.yml)
+[![npm](https://img.shields.io/npm/v/notionctl)](https://www.npmjs.com/package/notionctl)
+[![license](https://img.shields.io/npm/l/notionctl)](LICENSE)
+[![node](https://img.shields.io/node/v/notionctl)](package.json)
+![dependencies](https://img.shields.io/badge/dependencies-0-brightgreen)
+
 **The security-first CLI for Notion.** Zero dependencies. Fully auditable. Built for AI agents and humans alike.
 
 ```sh
