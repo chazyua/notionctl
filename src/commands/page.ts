@@ -11,7 +11,7 @@ import { writeFile, rename, realpath } from "node:fs/promises";
 import { resolve, sep } from "node:path";
 import { execFile } from "node:child_process";
 import { extractFrontmatter, reinsertFrontmatter } from "../sync/frontmatter.js";
-import { classifySyncState, computeContentHash, SyncState } from "../sync/sync.js";
+import { classifySyncState, computeContentHash, SyncState, RESERVED_FRONTMATTER_KEYS } from "../sync/sync.js";
 import { notionRequest, appendBlocksChunked } from "../http.js";
 import { blocksToMarkdown, markdownToBlocks } from "../markdown/index.js";
 import type { Block } from "../markdown/index.js";
@@ -63,6 +63,11 @@ export async function pageGetCommand(ctx: { args: string[] }): Promise<string> {
   };
   if (isDbRow) {
     for (const [name, value] of Object.entries(page.properties)) {
+      // Internal sync metadata keys are reserved — a DB column named
+      // `notion_id` (or hash/synced_at) must not clobber them. Doing so
+      // would let a workspace owner redirect the sync target to an
+      // attacker-controlled page on the next `page sync`.
+      if (RESERVED_FRONTMATTER_KEYS.has(name)) continue;
       const rendered = renderProperty(value);
       if (rendered !== null && rendered !== undefined) {
         frontmatter[name] = rendered;

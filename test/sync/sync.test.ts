@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { computeContentHash, classifySyncState, SyncState } from "../../src/sync/sync.js";
+import { computeContentHash, classifySyncState, SyncState, RESERVED_FRONTMATTER_KEYS } from "../../src/sync/sync.js";
 
 describe("computeContentHash", () => {
   it("produces deterministic sha256 prefixed hash", () => {
@@ -121,5 +121,18 @@ describe("classifySyncState", () => {
       remoteEditedAt: "2026-04-01T10:05:00.000Z",
     });
     assert.equal(state, SyncState.CHANGED);
+  });
+});
+
+describe("RESERVED_FRONTMATTER_KEYS", () => {
+  it("contains all three sync metadata keys", () => {
+    assert.ok(RESERVED_FRONTMATTER_KEYS.has("notion_id"));
+    assert.ok(RESERVED_FRONTMATTER_KEYS.has("notion_hash"));
+    assert.ok(RESERVED_FRONTMATTER_KEYS.has("notion_synced_at"));
+  });
+
+  it("does not leak unrelated keys", () => {
+    assert.equal(RESERVED_FRONTMATTER_KEYS.has("title"), false);
+    assert.equal(RESERVED_FRONTMATTER_KEYS.has("status"), false);
   });
 });

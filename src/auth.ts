@@ -11,7 +11,7 @@
  *   - Token source preference: env var > config file > error
  */
 
-import { writeFile, mkdir, rm, chmod, open } from "node:fs/promises";
+import { mkdir, rm, chmod, open, rename } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { NotionCliError, ErrorCode } from "./errors.js";
@@ -199,8 +199,25 @@ export async function saveToken(token: string): Promise<void> {
   await chmod(dir, 0o700).catch(() => undefined);
 
   const body = JSON.stringify({ token } satisfies ConfigFile, null, 2) + "\n";
-  await writeFile(path, body, { encoding: "utf8", mode: 0o600 });
-  await chmod(path, 0o600);
+  // Write-then-rename. `writeFile(path, ...)` follows symlinks, so if a
+  // same-UID process has planted a symlink at `path` pointing at e.g.
+  // ~/.ssh/authorized_keys the token JSON would clobber it. `rename`
+  // replaces the directory entry atomically and `wx` on the temp path
+  // refuses to open through an existing symlink.
+  const tmp = `${path}.tmp-${process.pid}`;
+  const fh = await open(tmp, "wx", 0o600);
+  try {
+    await fh.writeFile(body, "utf8");
+    await fh.chmod(0o600);
+  } finally {
+    await fh.close();
+  }
+  try {
+    await rename(tmp, path);
+  } catch (err) {
+    await rm(tmp, { force: true });
+    throw err;
+  }
 }
 
 export async function clearToken(): Promise<void> {

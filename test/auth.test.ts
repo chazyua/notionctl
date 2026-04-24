@@ -1,6 +1,6 @@
 import { describe, it, before, after, beforeEach } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, chmod, rm, stat } from "node:fs/promises";
+import { mkdtemp, chmod, rm, stat, lstat, readFile, writeFile, symlink, mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
@@ -106,6 +106,37 @@ describe("auth", () => {
     } finally {
       delete process.env.XDG_CONFIG_HOME;
     }
+  });
+
+  it("saveToken does not follow a symlink planted at the config path", async () => {
+    // Regression for the symlink-follow issue: a same-UID attacker who
+    // pre-plants a symlink at the config path (e.g. → ~/.ssh/authorized_keys)
+    // used to get that file overwritten with the token JSON. The atomic
+    // rename + exclusive-open pattern must replace the symlink with a
+    // regular file and leave the original target untouched.
+    const victimTarget = join(testHome, "victim.txt");
+    const victimContent = "important user data — do not overwrite\n";
+    await writeFile(victimTarget, victimContent, "utf8");
+
+    const configDir = join(testHome, ".config", "notion-cli");
+    await mkdir(configDir, { recursive: true, mode: 0o700 });
+    const configPath = getConfigPath();
+    await symlink(victimTarget, configPath);
+
+    await saveToken("ntn_symlink_test_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx");
+
+    // The victim's file must be unchanged
+    const afterVictim = await readFile(victimTarget, "utf8");
+    assert.equal(afterVictim, victimContent, "symlink target must not be overwritten");
+
+    // The config path must now be a regular file (not a symlink)
+    const st = await lstat(configPath);
+    assert.equal(st.isSymbolicLink(), false, "config path must be a regular file, not a symlink");
+    assert.equal(st.mode & 0o777, 0o600);
+
+    // And it must contain the token we just saved
+    const fresh = await loadToken();
+    assert.equal(fresh.token, "ntn_symlink_test_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx");
   });
 
   it("ignores config file with permissive mode (security guard)", async () => {

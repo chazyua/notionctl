@@ -25,6 +25,18 @@ export enum SyncState {
   DRIFT = "DRIFT",
 }
 
+/**
+ * Frontmatter keys owned by the sync engine. A Notion DB property with the
+ * same name must not overwrite these on the read path, otherwise a
+ * workspace peer could redirect the sync target (`notion_id`) or suppress
+ * drift detection (`notion_synced_at`) on the victim's next `page sync`.
+ */
+export const RESERVED_FRONTMATTER_KEYS: ReadonlySet<string> = new Set([
+  "notion_id",
+  "notion_hash",
+  "notion_synced_at",
+]);
+
 export function computeContentHash(body: string): string {
   const h = createHash("sha256");
   h.update(body, "utf8");

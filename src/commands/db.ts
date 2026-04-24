@@ -18,6 +18,7 @@ import { NotionCliError, ErrorCode } from "../errors.js";
 import { renderJson, renderTable, renderCsv, chooseFormat, isStdoutTty, type Format } from "../output.js";
 import { stringifyYaml, type YamlObject } from "../utils/yaml.js";
 import { extractFrontmatter } from "../sync/frontmatter.js";
+import { RESERVED_FRONTMATTER_KEYS } from "../sync/sync.js";
 
 /**
  * Resolve a database ID to its primary data source ID. Since API version
@@ -563,6 +564,9 @@ export async function dbRowGetCommand(ctx: { args: string[] }): Promise<string> 
 
   const frontmatter: YamlObject = { notion_id: id };
   for (const [name, value] of Object.entries(page.properties)) {
+    // See page.ts: reserved keys are sync metadata and must not be
+    // clobbered by a DB property of the same name.
+    if (RESERVED_FRONTMATTER_KEYS.has(name)) continue;
     const rendered = renderProperty(value);
     if (rendered !== null && rendered !== undefined) frontmatter[name] = rendered;
   }

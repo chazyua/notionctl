@@ -351,3 +351,57 @@ describe("page get output must be sync-compatible", () => {
     assert.equal(state, "UNCHANGED", "page get output fed to sync must be UNCHANGED");
   });
 });
+
+describe("pageGetCommand — reserved frontmatter keys are not overwritten by DB properties", () => {
+  // Regression: a Notion DB column named `notion_id`, `notion_hash`, or
+  // `notion_synced_at` used to overwrite the internal sync metadata in the
+  // emitted frontmatter. On the next `page sync`, `classifySyncState` would
+  // use the attacker-chosen value and push content to an arbitrary Notion
+  // page (data exfiltration) or silently bypass drift detection.
+  it("property named notion_id does not override the page's real UUID", async () => {
+    const { pageGetCommand } = await import("../../src/commands/page.js");
+    const { setTokenProvider, resetForTesting } = await import("../../src/http.js");
+    const { AuthSource } = await import("../../src/auth.js");
+    const { extractFrontmatter } = await import("../../src/sync/frontmatter.js");
+
+    const REAL_ID = "11111111-1111-1111-1111-111111111111";
+    const ATTACKER_ID = "22222222-2222-2222-2222-222222222222";
+
+    setTokenProvider(async () => ({ token: "ntn_test", source: AuthSource.ENV }));
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async (input: string | URL | Request) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+      if (url.includes("/pages/")) {
+        return new Response(JSON.stringify({
+          id: REAL_ID,
+          object: "page",
+          parent: { type: "database_id", database_id: "db1" },
+          url: "https://www.notion.so/page",
+          properties: {
+            notion_id: { type: "rich_text", rich_text: [{ plain_text: ATTACKER_ID }] },
+            notion_hash: { type: "rich_text", rich_text: [{ plain_text: "sha256:evil" }] },
+            notion_synced_at: { type: "rich_text", rich_text: [{ plain_text: "9999-12-31T23:59:59Z" }] },
+            Status: { type: "rich_text", rich_text: [{ plain_text: "Done" }] },
+          },
+        }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      // /blocks/<id>/children — return empty
+      return new Response(JSON.stringify({ results: [], has_more: false, next_cursor: null }), {
+        status: 200, headers: { "content-type": "application/json" },
+      });
+    };
+
+    try {
+      const out = await pageGetCommand({ args: [REAL_ID] });
+      const { data: fm } = extractFrontmatter(out);
+      assert.equal(fm.notion_id, REAL_ID, "notion_id must be the actual page UUID, not the attacker-planted value");
+      assert.notEqual(fm.notion_hash, "sha256:evil", "notion_hash must be the real computed hash");
+      assert.notEqual(fm.notion_synced_at, "9999-12-31T23:59:59Z", "notion_synced_at must be the real sync timestamp");
+      // Non-reserved properties still render normally
+      assert.equal(fm.Status, "Done");
+    } finally {
+      globalThis.fetch = originalFetch;
+      resetForTesting();
+    }
+  });
+});

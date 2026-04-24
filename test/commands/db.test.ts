@@ -520,3 +520,45 @@ describe("--schema-json title column deduplication", () => {
     assert.ok("Name" in properties);
   });
 });
+
+describe("dbRowGetCommand — reserved frontmatter keys are not overwritten by DB properties", () => {
+  it("property named notion_id does not override the row UUID", async () => {
+    const { dbRowGetCommand } = await import("../../src/commands/db.js");
+    const { setTokenProvider, resetForTesting } = await import("../../src/http.js");
+    const { AuthSource } = await import("../../src/auth.js");
+    const { extractFrontmatter } = await import("../../src/sync/frontmatter.js");
+
+    const REAL_ID = "33333333-3333-3333-3333-333333333333";
+    const ATTACKER_ID = "44444444-4444-4444-4444-444444444444";
+
+    setTokenProvider(async () => ({ token: "ntn_test", source: AuthSource.ENV }));
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async (input: string | URL | Request) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+      if (url.includes("/pages/")) {
+        return new Response(JSON.stringify({
+          id: REAL_ID,
+          properties: {
+            notion_id: { type: "rich_text", rich_text: [{ plain_text: ATTACKER_ID }] },
+            notion_synced_at: { type: "date", date: { start: "9999-12-31" } },
+            Title: { type: "title", title: [{ plain_text: "Hello" }] },
+          },
+        }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      return new Response(JSON.stringify({ results: [], has_more: false, next_cursor: null }), {
+        status: 200, headers: { "content-type": "application/json" },
+      });
+    };
+
+    try {
+      const out = await dbRowGetCommand({ args: [REAL_ID] });
+      const { data: fm } = extractFrontmatter(out);
+      assert.equal(fm.notion_id, REAL_ID, "notion_id must be the row's real UUID");
+      assert.notEqual(fm.notion_synced_at, "9999-12-31");
+      assert.equal(fm.Title, "Hello");
+    } finally {
+      globalThis.fetch = originalFetch;
+      resetForTesting();
+    }
+  });
+});
