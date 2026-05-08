@@ -5,6 +5,30 @@ All notable changes to `notionctl` will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.4] — 2026-04-24
+
+### Security
+- **Confused-deputy via property-name collision in sync metadata** (high): a
+  Notion DB column named `notion_id`, `notion_hash`, or `notion_synced_at`
+  could overwrite the corresponding sync-metadata frontmatter key emitted by
+  `page get` / `db row get`. A subsequent `page sync` would then push the
+  local body to whichever page id the attacker placed in the column,
+  enabling cross-workspace exfiltration or drift-check bypass between
+  collaborators with shared write access. Fix: `RESERVED_FRONTMATTER_KEYS`
+  is now applied when projecting Notion properties into frontmatter, so a
+  colliding property is dropped instead of overwriting sync state.
+- **Symlink-follow in `notionctl auth set`** (low): `saveToken` used
+  `writeFile`, which follows symlinks. A same-UID local process that
+  pre-planted a symlink at `~/.config/notion-cli/config.json` pointing at,
+  e.g., `~/.ssh/authorized_keys` would have that file overwritten with the
+  token JSON. Fix: atomic write-then-rename using `open(..., "wx", 0o600)`
+  on a temp file and `rename` into place. Refuses to write through an
+  existing symlink at the destination.
+
+### Added
+- 5 regression tests covering the reserved-keys guard and the symlink case
+  (731 → 736).
+
 ## [0.1.3] — 2026-04-12
 
 ### Fixed
