@@ -69,6 +69,28 @@ notionctl was designed so that a security team can audit the entire tool in an a
 - **Content-hashed sync.** `page sync` uses SHA-256 frontmatter hashing with drift detection to prevent accidental overwrites.
 - **No telemetry.** Zero outbound traffic beyond `api.notion.com`. Provable: `grep -r "https://" src/`.
 
+### What about sandboxing and approvals?
+
+notionctl deliberately implements neither. Both already exist one layer up, and the CLI shape is what lets you use them.
+
+**Approvals belong to the agent harness.** Every operation is a single shell command, so your harness's existing permission rules apply per operation. In Claude Code, allowlist the reads and let the writes prompt:
+
+```json
+{
+  "permissions": {
+    "allow": ["Bash(notionctl page get:*)", "Bash(notionctl db query:*)"]
+  }
+}
+```
+
+Anything not listed still prompts, so writes stay gated without an explicit rule.
+
+With an MCP server you approve the tool once, not the operation.
+
+**Sandboxing belongs to the OS.** notionctl is a short-lived subprocess with no listening port and no state between runs, so whatever you already confine your agents with (Seatbelt, a container, a restricted user) applies to it unchanged.
+
+**Blast radius belongs to Notion.** An integration only sees the pages explicitly shared with it, so scope the integration and the token can't reach the rest of your workspace. Pair that with `--dry-run` before any write, and `page sync`'s content hashing to catch pages that changed underneath you.
+
 ## Command Surface
 
 39 commands across 8 categories. Full reference: [docs/COMMANDS.md](docs/COMMANDS.md).
