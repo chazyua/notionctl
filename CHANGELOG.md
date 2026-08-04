@@ -88,6 +88,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   additionally created a duplicate page on every retry.
 - `block append` omitted the guidance about connecting the integration that
   other commands show for the same error.
+- A write that failed after Notion had already received it — a 5xx, a dropped
+  connection, or a client-side timeout — was retried up to five times, so
+  `page create`, `comment add`, `db row create` and block appends could create
+  the same page, comment or blocks repeatedly while reporting a single success.
+  Notion offers no way to deduplicate a repeated write, so these are no longer
+  retried automatically, and the error now states that the request may already
+  have been applied. Rate-limit (429) retries are unchanged, as are retries for
+  reads, property and schema updates, and deletes.
 
 ### Added
 - Test coverage for each fix above, alongside the module it exercises.

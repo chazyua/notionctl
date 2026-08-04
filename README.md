@@ -150,6 +150,11 @@ notionctl api GET /users/me
 notionctl api POST /databases/<id>/query --body @filter.json
 ```
 
+Reads and idempotent writes retry on transient failures. Endpoints that create
+something are retried only on rate limits, since Notion cannot deduplicate a
+repeated write — any other failure reports that the request may already have
+been applied, rather than risking a duplicate.
+
 ## Markdown Engine
 
 Bidirectional Markdown conversion with full fidelity:

@@ -33,6 +33,30 @@ function shouldRetry(status: number): boolean {
   return status === 429 || (status >= 500 && status < 600);
 }
 
+/**
+ * Notion publishes no idempotency-key header, so a write repeated after an
+ * ambiguous failure lands twice and the CLI reports one success.
+ *
+ * Classification is per endpoint, not per method: POST /search and
+ * POST /{databases,data_sources}/{id}/query are reads that must keep retrying,
+ * while PATCH /blocks/{id}/children appends rather than sets. Unknown POST
+ * paths (reachable via `notionctl api`) are treated as writes.
+ *
+ * Exported for unit testing.
+ */
+export function isNonIdempotent(method: string, path: string): boolean {
+  if (method === "POST") {
+    return !/^\/(?:search|(?:databases|data_sources)\/[^/?#]+\/query)(?:[?#]|$)/.test(path);
+  }
+  if (method === "PATCH") {
+    return /\/(?:children|send)(?:[?#]|$)/.test(path);
+  }
+  return false;
+}
+
+const NO_RETRY_HINT =
+  "Check whether it was applied before running the command again — Notion cannot deduplicate a repeated write, so notionctl does not retry this automatically.";
+
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -116,6 +140,7 @@ async function notionRequestSingle<T = unknown>(
 
   let response: Response | undefined;
   let lastError: Error | undefined;
+  const unsafeToRepeat = isNonIdempotent(method, path);
 
   for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
     const controller = new AbortController();
@@ -132,7 +157,19 @@ async function notionRequestSingle<T = unknown>(
     } catch (err) {
       clearTimeout(timer);
       lastError = err as Error;
-      if ((err as Error).name === "AbortError") {
+      const timedOut = (err as Error).name === "AbortError";
+
+      // No response arrived, so whether Notion applied the write is unknowable.
+      // Retrying here is what silently creates the duplicate.
+      if (unsafeToRepeat) {
+        throw new NotionCliError(
+          ErrorCode.NETWORK_ERROR,
+          `${method} ${path} ${timedOut ? `timed out after ${timeoutMs}ms` : `failed: ${(err as Error).message}`} before a response arrived. The request may still have been applied.`,
+          { suggestions: [NO_RETRY_HINT], ...(timedOut ? {} : { cause: err }) },
+        );
+      }
+
+      if (timedOut) {
         if (attempt === MAX_ATTEMPTS - 1) {
           throw new NotionCliError(
             ErrorCode.NETWORK_ERROR,
@@ -177,6 +214,12 @@ async function notionRequestSingle<T = unknown>(
       return parseResponse<T>(response, path);
     }
 
+    // A 5xx (or 529 service_overload) means Notion received the request; whether
+    // it applied it before failing is unknowable, unlike a 429 rejection.
+    if (unsafeToRepeat && response.status !== 429) {
+      return parseResponse<T>(response, path, [NO_RETRY_HINT]);
+    }
+
     if (attempt === MAX_ATTEMPTS - 1) {
       return parseResponse<T>(response, path);
     }
@@ -202,7 +245,7 @@ async function notionRequestSingle<T = unknown>(
   );
 }
 
-async function parseResponse<T>(response: Response, path: string): Promise<T> {
+async function parseResponse<T>(response: Response, path: string, suggestions?: string[]): Promise<T> {
   if (response.ok) {
     return (await response.json()) as T;
   }
@@ -216,7 +259,7 @@ async function parseResponse<T>(response: Response, path: string): Promise<T> {
   }
 
   const code = mapStatusToErrorCode(response.status);
-  throw new NotionCliError(code, `${path}: ${apiMessage}`);
+  throw new NotionCliError(code, `${path}: ${apiMessage}`, suggestions ? { suggestions } : undefined);
 }
 
 function mapStatusToErrorCode(status: number): ErrorCode {
@@ -394,21 +437,21 @@ export async function notionUploadFile(
       });
     } catch (err) {
       clearTimeout(timer);
-      if (attempt === MAX_ATTEMPTS - 1) {
-        throw new NotionCliError(
-          ErrorCode.NETWORK_ERROR,
-          `File upload failed: ${(err as Error).message}`,
-        );
-      }
-      await sleep(BACKOFF_MS[attempt] ?? 4000);
-      continue;
+      // Sending file data is not idempotent and no response arrived, so the part
+      // may already be stored. Fail rather than risk sending it twice.
+      throw new NotionCliError(
+        ErrorCode.NETWORK_ERROR,
+        `File upload to /file_uploads/${session.id}/send failed: ${(err as Error).message}. The upload may have partially completed.`,
+        { suggestions: [NO_RETRY_HINT] },
+      );
     } finally {
       clearTimeout(timer);
     }
 
     if (response.ok) break;
 
-    if (!shouldRetry(response.status) || attempt === MAX_ATTEMPTS - 1) {
+    // Same reasoning as notionRequestSingle: only a 429 is provably safe to repeat.
+    if (response.status !== 429 || attempt === MAX_ATTEMPTS - 1) {
       let message = `HTTP ${response.status}`;
       try {
         const errBody = (await response.json()) as { message?: string };

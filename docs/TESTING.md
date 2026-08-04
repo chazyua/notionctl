@@ -365,7 +365,14 @@ Comprehensive test scenarios for notionctl. Use this for manual dogfooding, regr
 
 - [A] All requests go to `https://api.notion.com/v1` with Bearer token and Notion-Version header
 - [A] 429 rate limiting retried with exponential backoff
-- [A] 5xx server errors retried up to 5 times
+- [A] 5xx server errors retried up to 5 times on reads and idempotent writes
+- [A] 5xx, dropped connection, or client timeout on a creating endpoint
+      (`page create`, `comment add`, block append, file send) is NOT retried,
+      and the error says the request may already have been applied
+- [A] 429 on a creating endpoint is still retried — it is rejected before
+      Notion processes it
+- [A] `POST /search` and `POST /{databases,data_sources}/{id}/query` keep
+      retrying: they are reads despite the method
 - [A] 4xx client errors (except 429) fail immediately
 - [A] Retry-After header respected
 - [A] Auto-pagination for list endpoints (`has_more` + `next_cursor`)
