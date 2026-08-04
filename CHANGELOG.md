@@ -28,6 +28,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Number properties could not be cleared: `--prop Points=` wrote `0` over the
   existing value. An empty value now clears the property, matching `select`,
   `status`, and `date`.
+- Prose that began with a Markdown marker was rewritten into that block on the
+  next sync. A paragraph reading `---` came back as a divider with its text
+  gone; `# note` became a heading, `- note` a bullet, `> note` a quote; quote
+  and callout bodies beginning with a marker lost their text entirely. This
+  fired on any `page sync` of a page containing such text, even one nobody had
+  edited. Those lines now carry a backslash in the Markdown, removed again on
+  the way back, so both the text and the block type survive. In a hand-written
+  file, a line such as `\---` is now read as the text `---` rather than as a
+  literal backslash followed by three dashes.
+- Text containing a literal `$$` was rewritten into a rendered equation: `a $$x$$ b`
+  became `a $` + an inline equation + `$ b`. The second `$` of a `$$` pair no
+  longer opens an inline equation. Genuine `$x$` equations and currency amounts
+  such as `$5 and $10` are unaffected.
 
 **Write-safety flags**
 - `--profile` with no value consumed the following flag as its value, so

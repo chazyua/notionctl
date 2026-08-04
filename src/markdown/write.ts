@@ -619,7 +619,13 @@ function parseImageLine(line: string): { alt: string; url: string } | null {
   return { alt, url };
 }
 
-function isBlockStart(line: string): boolean {
+/**
+ * True when a line would be parsed as the start of a block rather than prose.
+ * Exported so the read path can shield paragraph text that happens to look like
+ * a marker — the two sides must agree on this set or round-trips silently
+ * change block types.
+ */
+export function isBlockStart(line: string): boolean {
   const t = line.trim();
   return (
     /^#{1,6}\s/.test(t) ||
@@ -636,13 +642,26 @@ function isBlockStart(line: string): boolean {
   );
 }
 
+/**
+ * Undo the line-start shielding the read path applies (see `escapeBlockStarts`
+ * in read.ts). Only a backslash that actually shields a marker is removed, so
+ * text legitimately beginning with a backslash survives — `\\# foo` keeps its
+ * backslash because `\# foo` is not itself a block start.
+ */
+function unescapeBlockStarts(text: string): string {
+  return text
+    .split("\n")
+    .map((l) => (l.startsWith("\\") && isBlockStart(l.slice(1)) ? l.slice(1) : l))
+    .join("\n");
+}
+
 function makeParagraphBlock(text: string): Block {
   return {
     object: "block",
     id: "",
     type: "paragraph",
     has_children: false,
-    paragraph: { rich_text: markdownToRichText(text), color: "default" },
+    paragraph: { rich_text: markdownToRichText(unescapeBlockStarts(text)), color: "default" },
   } as Block;
 }
 

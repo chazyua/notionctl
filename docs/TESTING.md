@@ -334,6 +334,13 @@ Comprehensive test scenarios for notionctl. Use this for manual dogfooding, regr
 - [A] Synced blocks, column lists, unknown types pass through as HTML comments
 - [A] Adjacent list items grouped without extra blank lines
 - [A] Round-trip: blocks→markdown→blocks preserves types, annotations, nesting, and content
+- [A] Prose beginning with a block marker (`---`, `# `, `- `, `> `, `1. `, `$$`,
+      `<details>`) is shielded with a backslash and comes back as the same
+      paragraph with the same text — including quote and callout bodies
+- [A] Shielding is idempotent: repeated syncs do not accrete backslashes, and
+      text that legitimately starts with a backslash keeps it
+- [M] A page with a paragraph reading exactly `---` survives `page get` →
+      `page sync` without becoming a divider
 
 ### 9.2 Write: Markdown to Notion
 - [A] All block types above, reverse direction

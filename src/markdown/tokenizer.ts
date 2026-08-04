@@ -378,7 +378,9 @@ export function markdownToRichText(md: string): RichText[] {
     // misparsed: the opening $ must be followed by non-whitespace, the closing
     // $ must be preceded by non-whitespace, and the closing $ must not be
     // followed by an alphanumeric (so "$5$45" isn't two concatenated "equations").
-    if (c === "$" && next !== "$" && next !== undefined && !/\s/.test(next)) {
+    // The preceding character must not be `$` either, or the second `$` of a
+    // literal `$$x$$` opens an equation and rewrites the text as text+equation+text.
+    if (c === "$" && next !== "$" && md[i - 1] !== "$" && next !== undefined && !/\s/.test(next)) {
       const end = md.indexOf("$", i + 1);
       if (end !== -1 && end > i + 1 && !/\s/.test(md[end - 1]!)) {
         const afterClose = md[end + 1];

@@ -300,3 +300,109 @@ describe("Markdown string round-trip (md → blocks → md)", () => {
     assert.ok(dividerIdx < quoteIdx, "divider before quote");
   });
 });
+
+describe("prose that looks like a block marker", () => {
+  const ANN = { bold: false, italic: false, strikethrough: false, underline: false, code: false, color: "default" };
+  const runs = (t: string) => [{ type: "text", text: { content: t, link: null }, plain_text: t, href: null, annotations: ANN }];
+  const para = (t: string) => ({ id: "1", type: "paragraph", has_children: false, paragraph: { rich_text: runs(t) } });
+
+  /** Text of the first block, whatever its type. */
+  function firstText(blocks: unknown[]): string {
+    const b = blocks[0] as any;
+    return (b?.[b?.type]?.rich_text ?? []).map((r: any) => r.text?.content ?? r.plain_text ?? "").join("");
+  }
+
+  // Each of these was silently re-typed on write-back. `---` was the worst:
+  // it became a divider and the text was discarded entirely.
+  // One entry per distinct code path. `* star`, `***`, "```" and `___` look
+  // redundant next to `- note`/`---` but are not: the inline escaper already
+  // shields those characters, so they prove we do not add a second backslash.
+  const MARKERS = [
+    "---", "# not a heading", "- note", "* star", "> quoted", ">", "1. first",
+    "$$x$$", "<details>", "| a | b |", "```", "***", "___", "  # indented",
+  ];
+
+  for (const text of MARKERS) {
+    it(`keeps ${JSON.stringify(text)} as a paragraph with its text intact`, () => {
+      const result = roundTrip([para(text)]);
+      assert.equal(result.length, 1, "must stay a single block");
+      assert.equal((result[0] as any).type, "paragraph", `${JSON.stringify(text)} was re-typed`);
+      assert.equal(firstText(result), text, "text must survive verbatim");
+      // Concatenated text alone hides re-typing *within* the paragraph: `$$x$$`
+      // used to come back as text+equation+text, which reassembles to the right
+      // string while having silently become a rendered equation in Notion.
+      const runs = (result[0] as any).paragraph.rich_text;
+      assert.equal(runs.length, 1, `${JSON.stringify(text)} was split into ${runs.length} runs`);
+      assert.equal(runs[0].type, "text", `${JSON.stringify(text)} became a ${runs[0].type} run`);
+    });
+  }
+
+  it("does not turn a literal $$ into an inline equation mid-line either", () => {
+    // The same defect away from line start, where no shielding is involved.
+    const result = roundTrip([para("a $$x$$ b")]);
+    const runs = (result[0] as any).paragraph.rich_text;
+    assert.equal(runs.length, 1, "literal $$ must not open an equation");
+    assert.equal(runs[0].text.content, "a $$x$$ b");
+  });
+
+  it("still parses a genuine single-dollar inline equation", () => {
+    const blocks = markdownToBlocks("a $x^2$ b");
+    const runs = (blocks[0] as any).paragraph.rich_text;
+    assert.ok(runs.some((r: any) => r.type === "equation"), "real inline equations must still work");
+  });
+
+  it("does not touch prose that only resembles a marker mid-line", () => {
+    for (const text of ["normal text", "a - dash", "5 items", "#hashtag", "-5 degrees", "x > y"]) {
+      const md = blocksToMarkdown([para(text)] as any);
+      assert.equal(md, text, `${JSON.stringify(text)} must not be escaped`);
+    }
+  });
+
+  it("shields a marker on any line, not just the first", () => {
+    const result = roundTrip([para("intro\n# second\ntail")]);
+    assert.equal(result.length, 1, "a later marker line must not split the paragraph");
+    assert.equal(firstText(result), "intro\n# second\ntail");
+  });
+
+  it("keeps quote text that starts with a marker", () => {
+    const blocks = [{ id: "1", type: "quote", has_children: false, quote: { rich_text: runs("# inside quote") } }];
+    const result = roundTrip(blocks);
+    assert.equal((result[0] as any).type, "quote");
+    assert.equal(firstText(result), "# inside quote", "quote text was dropped");
+  });
+
+  it("keeps callout text that starts with a marker", () => {
+    const blocks = [{
+      id: "1", type: "callout", has_children: false,
+      callout: { rich_text: runs("- inside callout"), icon: { type: "emoji", emoji: "\u{1F4A1}" }, color: "default" },
+    }];
+    const result = roundTrip(blocks);
+    assert.equal((result[0] as any).type, "callout");
+    assert.equal(firstText(result), "- inside callout", "callout text was dropped");
+  });
+
+  it("leaves a literal leading backslash alone", () => {
+    // `\# foo` is prose starting with a backslash, not a shielded heading — the
+    // shield must not be stripped off it on the way back in.
+    const result = roundTrip([para("\\# foo")]);
+    assert.equal((result[0] as any).type, "paragraph");
+    assert.equal(firstText(result), "\\# foo");
+  });
+
+  it("is idempotent — repeated syncs do not accrete backslashes", () => {
+    for (const text of ["---", "# heading-ish", "\\# literal", "| a | b |"]) {
+      const md1 = blocksToMarkdown([para(text)] as any);
+      const md2 = blocksToMarkdown(markdownToBlocks(md1) as any);
+      const md3 = blocksToMarkdown(markdownToBlocks(md2) as any);
+      assert.equal(md2, md1, `${JSON.stringify(text)} drifted on the second sync`);
+      assert.equal(md3, md2, `${JSON.stringify(text)} drifted on the third sync`);
+    }
+  });
+
+  it("still lets real markers build real blocks", () => {
+    // The shield must only apply to text that came from Notion prose. A user
+    // authoring markdown by hand still gets real headings, lists and dividers.
+    const result = markdownToBlocks("# Real heading\n\n- real item\n\n---");
+    assert.deepEqual(result.map((b: any) => b.type), ["heading_1", "bulleted_list_item", "divider"]);
+  });
+});

@@ -163,6 +163,11 @@ Bidirectional Markdown conversion with full fidelity:
 
 **Write:** all of the above. Nested lists use 2-space indentation and produce the corresponding nested block tree in Notion.
 
+Notion text that begins with a Markdown marker is written out with a leading
+backslash — a paragraph reading `---` becomes `\---` in the file. That shield is
+removed when the file is read back, so the paragraph stays a paragraph instead of
+turning into a divider. Leave the backslash in place when editing.
+
 ## Sync with Drift Detection
 
 ```sh

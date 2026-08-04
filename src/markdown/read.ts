@@ -12,6 +12,7 @@
  */
 
 import { richTextToMarkdown } from "./tokenizer.js";
+import { isBlockStart } from "./write.js";
 import type { Block, RichText } from "./types.js";
 
 const EMOJI_TO_ALERT_TYPE: Record<string, string> = {
@@ -87,12 +88,29 @@ function renderNestedList(blocks: Block[], depth: number): string {
   return lines.join("\n");
 }
 
+/**
+ * Prose that happens to begin with a block marker would be re-read as that block
+ * on the next write: a paragraph reading `---` came back as a divider with the
+ * text gone, `# note` became a heading, `- note` became a bullet. Shield each
+ * such line with a backslash; write.ts strips it back off.
+ *
+ * Applied to the already inline-escaped rendering, so markers the inline escaper
+ * covers (`*`, `_`, backtick) are no longer block starts by the time we look and
+ * never pick up a second, redundant backslash.
+ */
+function escapeBlockStarts(text: string): string {
+  return text
+    .split("\n")
+    .map((l) => (isBlockStart(l) ? `\\${l}` : l))
+    .join("\n");
+}
+
 function renderBlock(block: Block, depth: number, numberedIndex: number): string | null {
   const indent = "  ".repeat(depth);
   switch (block.type) {
     case "paragraph": {
       const body = block.paragraph;
-      const text = richTextToMarkdown(body.rich_text);
+      const text = escapeBlockStarts(richTextToMarkdown(body.rich_text));
       return appendChildBlocks(text, block);
     }
     case "heading_1":
@@ -118,7 +136,7 @@ function renderBlock(block: Block, depth: number, numberedIndex: number): string
       return nested && nested.length > 0 ? `${text}\n${renderNestedList(nested, depth + 1)}` : text;
     }
     case "quote": {
-      const quoteText = richTextToMarkdown(block.quote.rich_text);
+      const quoteText = escapeBlockStarts(richTextToMarkdown(block.quote.rich_text));
       const quoteChildren = (block as any)._children as Block[] | undefined;
       const quotePrefixed = quoteText.split("\n").map((l) => `> ${l}`).join("\n");
       if (quoteChildren && quoteChildren.length > 0) {
@@ -150,7 +168,7 @@ function renderBlock(block: Block, depth: number, numberedIndex: number): string
     case "divider":
       return "---";
     case "callout": {
-      const text = richTextToMarkdown(block.callout.rich_text);
+      const text = escapeBlockStarts(richTextToMarkdown(block.callout.rich_text));
       const icon = block.callout.icon;
       const emoji = icon?.type === "emoji" ? icon.emoji : "";
       const alertType = EMOJI_TO_ALERT_TYPE[emoji] ?? colorToAlertType(block.callout.color) ?? "NOTE";
