@@ -550,3 +550,104 @@ describe("pageGetCommand — reserved frontmatter keys are not overwritten by DB
     }
   });
 });
+
+
+describe("pageSyncCommand — malformed front-matter is refused, not treated as a new page", () => {
+  it("refuses instead of classifying CREATE and orphaning the linked page", async () => {
+    const { pageSyncCommand } = await import("../../src/commands/page.js");
+    const { writeFile, mkdir, rm } = await import("node:fs/promises");
+    const { join } = await import("node:path");
+    const { NotionCliError, ErrorCode } = await import("../../src/errors.js");
+
+    // page sync refuses files outside the working directory, so stage it in temp/.
+    const dir = join(process.cwd(), "temp");
+    await mkdir(dir, { recursive: true });
+    const file = join(dir, `broken-fm-${process.pid}.md`);
+    await writeFile(
+      file,
+      ['---', 'notion_id: "3b2944f0-98c0-8183-9921-d7b2405d0ab3"', "no colon on this line", "---", "", "Body"].join("\n"),
+    );
+
+    const originalFetch = globalThis.fetch;
+    let requests = 0;
+    globalThis.fetch = (async () => {
+      requests++;
+      return new Response("{}", { status: 200, headers: { "content-type": "application/json" } });
+    }) as typeof globalThis.fetch;
+
+    try {
+      // --parent matters: without it the CREATE path stops at its own
+      // "requires --parent" guard, so requests===0 would prove nothing.
+      await assert.rejects(
+        () => pageSyncCommand({ args: [file, "--parent", "33e944f0-98c0-8148-84ee-f6d15234a203"] }),
+        (err: unknown) => {
+          assert.ok(err instanceof NotionCliError);
+          assert.equal(err.code, ErrorCode.USAGE);
+          assert.match(err.message, /not valid YAML/);
+          assert.match(err.suggestions.join(" "), /orphaned/);
+          return true;
+        },
+      );
+      assert.equal(requests, 0, "nothing may be created before the file is understood");
+    } finally {
+      globalThis.fetch = originalFetch;
+      await rm(file, { force: true });
+    }
+  });
+});
+
+
+describe("pageSyncCommand — an unusable notion_id is refused, not treated as a new page", () => {
+  // parseYaml only throws on a line with no colon, so `notion_id:` (blank),
+  // `null`, `~` and numbers all parse cleanly — and classifySyncState reads a
+  // non-string id as absent, silently creating a duplicate and orphaning the
+  // page the file already tracked.
+  const BAD_IDS = ["notion_id:", "notion_id: null", "notion_id: ~", "notion_id: 123", 'notion_id: ""'];
+
+  for (const line of BAD_IDS) {
+    it(`refuses ${JSON.stringify(line)}`, async () => {
+      const { pageSyncCommand } = await import("../../src/commands/page.js");
+      const { writeFile, mkdir, rm } = await import("node:fs/promises");
+      const { join } = await import("node:path");
+      const { NotionCliError, ErrorCode } = await import("../../src/errors.js");
+
+      const dir = join(process.cwd(), "temp");
+      await mkdir(dir, { recursive: true });
+      const file = join(dir, `bad-id-${process.pid}-${BAD_IDS.indexOf(line)}.md`);
+      await writeFile(file, ["---", line, "---", "", "Body"].join("\n"));
+
+      const originalFetch = globalThis.fetch;
+      let requests = 0;
+      globalThis.fetch = (async () => {
+        requests++;
+        return new Response("{}", { status: 200, headers: { "content-type": "application/json" } });
+      }) as typeof globalThis.fetch;
+
+      try {
+        await assert.rejects(
+          () => pageSyncCommand({ args: [file] }),
+          (err: unknown) => {
+            assert.ok(err instanceof NotionCliError);
+            assert.equal(err.code, ErrorCode.USAGE);
+            assert.match(err.message, /notion_id with no usable value/);
+            return true;
+          },
+        );
+        assert.equal(requests, 0, "nothing may be created for a file with a broken id");
+      } finally {
+        globalThis.fetch = originalFetch;
+        await rm(file, { force: true });
+      }
+    });
+  }
+
+  it("still creates when the notion_id key is absent entirely", async () => {
+    const { classifySyncState, SyncState } = await import("../../src/sync/sync.js");
+    // The guard keys off the presence of the key, so a genuine first sync —
+    // no key at all — must still classify as CREATE.
+    assert.equal(
+      classifySyncState({ frontmatter: { title: "x" }, localBody: "b", remoteEditedAt: undefined }),
+      SyncState.CREATE,
+    );
+  });
+});

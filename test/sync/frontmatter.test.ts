@@ -5,9 +5,10 @@ import { extractFrontmatter, reinsertFrontmatter } from "../../src/sync/frontmat
 describe("extractFrontmatter", () => {
   it("extracts YAML delimited by triple-dashes", () => {
     const input = "---\ntitle: Hello\ncount: 3\n---\n\n# Body\n\nContent";
-    const { data, body } = extractFrontmatter(input);
+    const { data, body, malformed } = extractFrontmatter(input);
     assert.deepEqual(data, { title: "Hello", count: 3 });
     assert.equal(body, "# Body\n\nContent");
+    assert.equal(malformed, undefined, "valid front-matter must not be flagged");
   });
 
   it("returns empty data when no front-matter", () => {
@@ -46,5 +47,63 @@ describe("reinsertFrontmatter", () => {
     const reinserted = reinsertFrontmatter(input, "Body");
     const { data } = extractFrontmatter(reinserted);
     assert.deepEqual(data, input);
+  });
+});
+
+
+describe("extractFrontmatter — malformed blocks are distinguishable", () => {
+  it("reports a block whose delimiters are present but whose YAML is invalid", () => {
+    const input = [
+      "---",
+      'notion_id: "abc"',
+      "this line has no colon",
+      "---",
+      "",
+      "Body",
+    ].join("\n");
+    const { data, body, malformed } = extractFrontmatter(input);
+    assert.ok(malformed, "a broken block must be reported, not silently swallowed");
+    assert.match(malformed, /no key/);
+    // The body is still the whole input so nothing is lost if a caller ignores it.
+    assert.deepEqual(data, {});
+    assert.equal(body, input);
+  });
+
+  it("does not flag a file that simply has no front-matter", () => {
+    const { malformed } = extractFrontmatter("# Title\n\nJust prose.\n");
+    assert.equal(malformed, undefined, "a first sync must stay legitimate");
+  });
+
+  it("does not flag an unclosed opening delimiter", () => {
+    // Matches Jekyll/Hugo: without a closing delimiter there is no front-matter,
+    // and the leading --- is just the document's first line.
+    const { malformed } = extractFrontmatter("---\n\nprose with no closing rule\n");
+    assert.equal(malformed, undefined);
+  });
+
+  it("reads front-matter that sits behind a UTF-8 BOM", () => {
+    // PowerShell and some Windows editors write a BOM by default. Without
+    // stripping it the opening delimiter never matches, valid front-matter
+    // reads as none, and page sync creates a duplicate page.
+    const input = '\uFEFF---\nnotion_id: "abc"\n---\n\nBody\n';
+    const { data, body, malformed } = extractFrontmatter(input);
+    assert.equal(malformed, undefined);
+    assert.equal(data.notion_id, "abc", "a BOM must not hide the front-matter");
+    assert.equal(body, "Body\n");
+  });
+
+  it("strips a BOM from the body when there is no front-matter", () => {
+    const { data, body } = extractFrontmatter("\uFEFF# Title\n");
+    assert.deepEqual(data, {});
+    assert.equal(body, "# Title\n", "a BOM must not leak into page content");
+  });
+
+  it("flags a divider-first document, because it is indistinguishable from broken front-matter", () => {
+    // Deliberate: the leading --- is a front-matter delimiter in every major
+    // static-site generator, and the sync path cannot tell this apart from a
+    // corrupted block that still carries notion_id. page sync refuses and tells
+    // the user to write the rule as *** instead.
+    const { malformed } = extractFrontmatter("---\n\nprose\n\n---\n\nmore\n");
+    assert.ok(malformed);
   });
 });

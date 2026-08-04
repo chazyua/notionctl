@@ -37,6 +37,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the way back, so both the text and the block type survive. In a hand-written
   file, a line such as `\---` is now read as the text `---` rather than as a
   literal backslash followed by three dashes.
+- `page sync` treated a file whose front-matter failed to parse as a file that
+  had none: it ignored `notion_id`, created a second page, left the original
+  orphaned, and wrote the old YAML into the new page as visible text. A single
+  line missing its colon was enough. Such a file is now refused, with the parse
+  error and the offending line. Files with no front-matter, or with an unclosed
+  `---` opener, still create as before. A `notion_id` that is present but
+  unusable — blank, `null`, `~`, or a number — is refused for the same reason;
+  it too was read as "no id" and created a duplicate. **Note:** a file that opens
+  with a `---` horizontal rule is indistinguishable from a broken front-matter
+  block and is now refused — write the rule as `***`.
+- A file saved with a UTF-8 byte-order mark — the default for PowerShell and
+  several Windows editors — had its front-matter ignored entirely, because the
+  mark sits in front of the opening `---`. `page sync` read the file as new,
+  created a duplicate page, orphaned the original, and wrote the raw YAML onto
+  the new page as text. The mark is now stripped before the front-matter is
+  matched, and no longer leaks into page content.
 - Text containing a literal `$$` was rewritten into a rendered equation: `a $$x$$ b`
   became `a $` + an inline equation + `$ b`. The second `$` of a `$$` pair no
   longer opens an inline equation. Genuine `$x$` equations and currency amounts

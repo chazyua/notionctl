@@ -932,7 +932,42 @@ export async function pageSyncCommand(ctx: { args: string[] }): Promise<string> 
     // ENOENT is fine — the file may not exist yet on first sync.
   }
   const source = await readFileText(file, "sync file");
-  const { data: frontmatter, body } = extractFrontmatter(source);
+  const { data: frontmatter, body, malformed } = extractFrontmatter(source);
+  // Falling through here would read as "no front-matter", classify as CREATE,
+  // and make a second page while the original keeps the id nobody can now find.
+  // No --force override: there is no safe reading of a broken block.
+  if (malformed) {
+    throw new NotionCliError(
+      ErrorCode.USAGE,
+      `Front-matter in ${file} is not valid YAML: ${malformed}`,
+      {
+        suggestions: [
+          "If this is front-matter, fix the offending line. Syncing while it cannot be parsed would ignore notion_id, create a second page, and leave the existing one orphaned.",
+          "notionctl reads a flat subset of YAML: no block sequences (- item), nested maps, or multi-line strings (| and >). A list must be written inline as [a, b] — this is the usual cause when importing files from Jekyll or Hugo.",
+          "If the file was meant to open with a horizontal rule, write it as *** instead — a leading --- is read as a front-matter delimiter, and a blank line above it does not change that.",
+        ],
+      },
+    );
+  }
+  // A key that is present but unusable (blank, null, a number) is the same
+  // orphaning hazard as a block that will not parse: classifySyncState reads a
+  // non-string id as absent and creates a second page. An absent key is fine —
+  // that is a first sync.
+  if ("notion_id" in frontmatter) {
+    const rawId = frontmatter.notion_id;
+    if (typeof rawId !== "string" || rawId.trim().length === 0) {
+      throw new NotionCliError(
+        ErrorCode.USAGE,
+        `Front-matter in ${file} has a notion_id with no usable value (${JSON.stringify(rawId)})`,
+        {
+          suggestions: [
+            "Restore the page id to keep syncing to the page this file already tracks.",
+            "Or delete the notion_id line entirely to deliberately create a new page. Leaving it blank would create one anyway and orphan the page it pointed at.",
+          ],
+        },
+      );
+    }
+  }
 
   // Fetch remote page metadata for drift detection when notion_id exists
   let remoteEditedAt: string | undefined;

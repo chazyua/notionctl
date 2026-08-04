@@ -115,6 +115,13 @@ Comprehensive test scenarios for notionctl. Use this for manual dogfooding, regr
 - [M] `notion_synced_at` timestamp updated after each sync
 - [M] First sync without `--parent` produces USAGE error
 - [M] Trashed page produces clear error with recovery instructions
+- [A] Front-matter that fails to parse is refused, not treated as a new file —
+      no duplicate page is created and the original keeps its `notion_id`
+- [A] A file with no front-matter, or an unclosed `---` opener, still creates
+- [A] A `notion_id` that is blank, `null`, `~` or a number is refused, not
+      treated as a first sync
+- [A] Front-matter behind a UTF-8 BOM is read normally, not ignored
+- [M] A file opening with a `---` horizontal rule is refused; `***` works instead
 - [M] `--dry-run` shows sync state without modifying
 
 ### 2.6 page find-replace
