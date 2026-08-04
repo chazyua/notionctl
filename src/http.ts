@@ -159,7 +159,18 @@ async function notionRequestSingle<T = unknown>(
     }
 
     if (response.ok) {
-      return (await response.json()) as T;
+      // A 200 carrying a non-JSON body means something between us and Notion
+      // answered instead (an intercepting proxy, a captive portal). Without
+      // this guard the raw SyntaxError escaped as "Internal error: Unexpected
+      // token '<'", which reads like a notionctl bug rather than a network one.
+      try {
+        return (await response.json()) as T;
+      } catch {
+        throw new NotionCliError(
+          ErrorCode.NETWORK_ERROR,
+          `Notion returned a non-JSON response for ${path} (HTTP ${response.status}). A proxy or captive portal may be intercepting the request.`,
+        );
+      }
     }
 
     if (!shouldRetry(response.status)) {
@@ -176,6 +187,11 @@ async function notionRequestSingle<T = unknown>(
     const backoff = retryAfterMs && Number.isFinite(retryAfterMs)
       ? Math.min(retryAfterMs, MAX_RETRY_AFTER_MS)
       : (BACKOFF_MS[attempt] ?? 4000);
+    // Announce waits the user would otherwise experience as a frozen terminal.
+    // Rate-limit backoff can legitimately run to a minute per attempt.
+    if (backoff >= 1000) {
+      process.stderr.write(`notionctl: rate limited or transient error — retrying in ${Math.round(backoff / 1000)}s\n`);
+    }
     await sleep(backoff);
   }
 
@@ -269,6 +285,22 @@ export async function notionRequest<T = unknown>(
     allResults.push(...next.results);
     cursor = next.has_more ? next.next_cursor : null;
     page++;
+  }
+
+  // If the loop stopped because it hit the page cap while Notion still had
+  // more, say so instead of reporting a complete result set. Claiming
+  // has_more:false here made a truncated read look authoritative, so a caller
+  // processing a large database silently acted on partial data.
+  if (cursor) {
+    // Only warn when the cap was ours. A caller that asked for a bounded probe
+    // (auth doctor requests a single page) already knows the result is partial,
+    // and warning there is just noise on a healthy run.
+    if (opts.maxPages === undefined) {
+      process.stderr.write(
+        `notionctl: results truncated at ${allResults.length} items (${maxPages}-page limit) — more remain. Narrow the query with a filter to see the rest.\n`,
+      );
+    }
+    return { ...first, results: allResults, has_more: true, next_cursor: cursor } as T;
   }
 
   return { ...first, results: allResults, has_more: false, next_cursor: null } as T;
@@ -394,6 +426,11 @@ export async function notionUploadFile(
     const backoff = retryAfterMs && Number.isFinite(retryAfterMs)
       ? Math.min(retryAfterMs, MAX_RETRY_AFTER_MS)
       : (BACKOFF_MS[attempt] ?? 4000);
+    // Announce waits the user would otherwise experience as a frozen terminal.
+    // Rate-limit backoff can legitimately run to a minute per attempt.
+    if (backoff >= 1000) {
+      process.stderr.write(`notionctl: rate limited or transient error — retrying in ${Math.round(backoff / 1000)}s\n`);
+    }
     await sleep(backoff);
   }
 

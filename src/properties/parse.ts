@@ -104,6 +104,11 @@ export function parseProperty(
     case "rich_text":
       return { rich_text: [{ type: "text", text: { content: value, link: null } }] };
     case "number": {
+      // Empty value clears the property, same contract as select/status/date.
+      // Number("") is 0, so without this an attempt to clear a number silently
+      // overwrote the real value with 0 — and there was no way to clear one at
+      // all through --prop.
+      if (value.length === 0) return { number: null };
       const n = Number(value);
       if (!Number.isFinite(n)) {
         throw new NotionCliError(ErrorCode.INVALID_PROPERTY, `Property '${key}' must be a number, got: ${value}`);

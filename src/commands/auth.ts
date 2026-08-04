@@ -17,8 +17,29 @@ import { NotionCliError, ErrorCode } from "../errors.js";
 import { renderJson } from "../output.js";
 
 async function readStdinToken(): Promise<string> {
+  // Interactive: resolve on Enter. readStdinBounded only settles on stream
+  // end, so at a real terminal the prompt sat there after the user pressed
+  // Enter and only completed on Ctrl-D — indistinguishable from a hang.
+  // Piped input still goes through the bounded full-stream reader.
   if (process.stdin.isTTY) {
     process.stderr.write("Paste your Notion integration token (ntn_...): ");
+    const { createInterface } = await import("node:readline");
+    const rl = createInterface({ input: process.stdin, terminal: true });
+    try {
+      const line = await new Promise<string>((resolve) => {
+        rl.once("line", resolve);
+        rl.once("close", () => resolve(""));
+      });
+      process.stderr.write("\n");
+      // Same bound the piped path enforces — an accidental huge paste should
+      // not be buffered unchecked just because it arrived interactively.
+      if (Buffer.byteLength(line, "utf8") > MAX_STDIN_TOKEN_BYTES) {
+        throw new NotionCliError(ErrorCode.USAGE, "Token input is too large — did you paste the wrong thing?");
+      }
+      return line.trim();
+    } finally {
+      rl.close();
+    }
   }
   const raw = await readStdinBounded(MAX_STDIN_TOKEN_BYTES);
   return raw.trim().split(/\r?\n/)[0] ?? "";
@@ -181,6 +202,15 @@ export async function authClearCommand(ctx: { args: string[] }): Promise<string>
     return renderJson({ action: "auth clear", wouldClear: true });
   }
   await clearToken();
+  // NOTION_TOKEN outranks the config file, so with it exported the user is
+  // still fully authenticated after this. Reporting a bare `cleared: true`
+  // read as "logged out" when it wasn't.
+  if (process.env.NOTION_TOKEN) {
+    return renderJson({
+      cleared: true,
+      warning: "NOTION_TOKEN is still set in this environment and takes precedence — you remain authenticated. Run `unset NOTION_TOKEN` to finish logging out.",
+    });
+  }
   return renderJson({ cleared: true });
 }
 

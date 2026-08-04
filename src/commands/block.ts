@@ -26,7 +26,18 @@ export async function blockGetCommand(ctx: { args: string[] }): Promise<string> 
     isTty: isStdoutTty(),
     defaultFormat: "json",
   });
-  if (format === "md") return blocksToMarkdown([block as Block]);
+  if (format === "md") {
+    // A single-block GET never inlines children. For container blocks whose
+    // content lives entirely in their children — a table is the sharp case,
+    // it renders to the empty string — that silently looked like an empty
+    // block. Fetch the subtree so the markdown reflects what is actually there.
+    const b = block as Block;
+    if ((b as { has_children?: boolean }).has_children) {
+      const tree = await fetchWith404Hint(() => fetchBlockTree(id, "all"), `Block ${id}`);
+      return blocksToMarkdown([{ ...b, _children: tree } as Block]);
+    }
+    return blocksToMarkdown([b]);
+  }
   if (format !== "json") {
     throw new NotionCliError(ErrorCode.USAGE, `block get does not support --format ${format}. Use json or md.`);
   }
@@ -90,7 +101,10 @@ export async function blockAppendCommand(ctx: { args: string[] }): Promise<strin
   if (getBooleanFlag(flags, "dry-run")) {
     return renderJson({ action: "block append", id, blocks, after: afterId ?? null });
   }
-  const res = await appendBlocksChunked(id, blocks, { after: afterId });
+  const res = await fetchWith404Hint(
+    () => appendBlocksChunked(id, blocks, { after: afterId }),
+    `Block ${id}`,
+  );
   return renderJson(res);
 }
 

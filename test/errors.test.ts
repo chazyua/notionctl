@@ -6,7 +6,26 @@ import {
   EXIT_CODES,
   formatErrorJson,
   formatErrorHuman,
+  scrub,
 } from "../src/errors.js";
+
+describe("scrub", () => {
+  it("redacts tokens", () => {
+    assert.match(scrub(`token ntn_${"a".repeat(43)} here`), /ntn_\*\*\*/);
+  });
+
+  it("strips terminal control sequences", () => {
+    // Error text carries remote data (page titles, API messages), so without
+    // this a hostile workspace could clear the operator's screen or forge a
+    // convincing extra line of CLI output.
+    assert.equal(scrub("title\x1b[2Jforged\x07"), "title[2Jforged");
+    assert.equal(scrub("a\rb"), "ab");
+  });
+
+  it("keeps tabs and newlines, which are legitimate in messages", () => {
+    assert.equal(scrub("line one\nline\ttwo"), "line one\nline\ttwo");
+  });
+});
 
 describe("NotionCliError", () => {
   it("constructs with code and message", () => {

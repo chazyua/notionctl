@@ -94,8 +94,20 @@ export class NotionCliError extends Error {
 const TOKEN_PATTERN = /ntn_[a-zA-Z0-9]{10,}/g;
 const LEGACY_SECRET_PATTERN = /secret_[a-zA-Z0-9]{30,}/g;
 
+/**
+ * Control characters (ESC, CR, backspace, …) reaching an interactive terminal
+ * are executed, not printed. Error text routinely carries remote data — a page
+ * title, a Notion API message, a URL — so a hostile workspace could otherwise
+ * clear the screen or forge a convincing `notionctl:` line in the operator's
+ * output. Tabs and newlines are legitimate in messages and are kept.
+ */
+const CONTROL_CHARS = /[\x00-\x08\x0B-\x1F\x7F]/g;
+
 export function scrub(text: string): string {
-  return text.replace(TOKEN_PATTERN, "ntn_***").replace(LEGACY_SECRET_PATTERN, "secret_***");
+  return text
+    .replace(TOKEN_PATTERN, "ntn_***")
+    .replace(LEGACY_SECRET_PATTERN, "secret_***")
+    .replace(CONTROL_CHARS, "");
 }
 
 export function formatErrorJson(err: NotionCliError): string {

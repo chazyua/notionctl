@@ -1,8 +1,59 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { extractSyncTitle, stripLeadingTitleHeading, stripLeadingTitleH1, replaceInRichText } from "../../src/commands/page.js";
+import {
+  extractSyncTitle,
+  stripLeadingTitleHeading,
+  stripLeadingTitleH1,
+  replaceInRichText,
+  pageGetCommand,
+  pageUpdateCommand,
+} from "../../src/commands/page.js";
 import { fetchWith404Hint, parseFlags } from "../../src/commands/shared.js";
+import { setTokenProvider, resetForTesting } from "../../src/http.js";
+import { AuthSource } from "../../src/auth.js";
 import { NotionCliError, ErrorCode } from "../../src/errors.js";
+
+const STUB_PAGE_ID = "11111111-1111-1111-1111-111111111111";
+
+/**
+ * Run `fn` against a stubbed Notion API. The handler receives the method and
+ * path and returns the response body; returning undefined produces a 400 so a
+ * test can simulate a rejected request.
+ */
+async function withStubbedNotion<T>(
+  handler: (method: string, path: string) => unknown,
+  fn: () => Promise<T>,
+): Promise<T> {
+  const originalFetch = globalThis.fetch;
+  setTokenProvider(async () => ({ token: "ntn_test", source: AuthSource.ENV }));
+  globalThis.fetch = async (input: string | URL | Request, init?: RequestInit) => {
+    const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+    const method = (init?.method ?? "GET").toUpperCase();
+    const path = url.replace("https://api.notion.com/v1", "").split("?")[0]!;
+    const body = handler(method, path);
+    return new Response(JSON.stringify(body ?? { message: "stub rejected" }), {
+      status: body === undefined ? 400 : 200,
+      headers: { "content-type": "application/json" },
+    });
+  };
+  try {
+    return await fn();
+  } finally {
+    globalThis.fetch = originalFetch;
+    resetForTesting();
+  }
+}
+
+const stubParagraph = (id: string, text: string) => ({
+  id,
+  type: "paragraph",
+  has_children: false,
+  paragraph: {
+    rich_text: text
+      ? [{ type: "text", text: { content: text }, plain_text: text, annotations: {} }]
+      : [],
+  },
+});
 
 describe("extractSyncTitle", () => {
   it("uses frontmatter title when present", () => {
@@ -312,43 +363,137 @@ describe("page delete --yes must be checked before --dry-run", () => {
 });
 
 describe("page get output must be sync-compatible", () => {
-  it("page get frontmatter hash matches what extractFrontmatter+classifySyncState would compute", async () => {
-    // Simulate what page get now produces: frontmatter with notion_hash
-    // and notion_synced_at. When this output is saved to a file and fed
-    // to page sync, the sync state should be UNCHANGED.
+  // Drives the real pageGetCommand rather than reconstructing its output, so
+  // the assertion covers the actual bytes written to disk. `page get` used to
+  // append one more newline than it hashed, which made an untouched file
+  // re-read as CHANGED — and CHANGED deletes and recreates every block,
+  // destroying Notion-hosted media that markdown cannot rebuild.
+  const classifyAfterGet = async (blocks: unknown[]): Promise<string> => {
     const { extractFrontmatter } = await import("../../src/sync/frontmatter.js");
-    const { computeContentHash, classifySyncState } = await import("../../src/sync/sync.js");
+    const { classifySyncState } = await import("../../src/sync/sync.js");
 
-    // Simulate page get output format
-    const body = "# My Page\n\nSome content.\n";
-    const hash = computeContentHash(body);
-    const syncedAt = new Date().toISOString();
+    const output = await withStubbedNotion(
+      (method, path) =>
+        method === "GET" && path === `/pages/${STUB_PAGE_ID}`
+          ? {
+              id: STUB_PAGE_ID,
+              object: "page",
+              parent: { type: "page_id" },
+              url: "https://notion.so/page",
+              properties: { title: { type: "title", title: [{ plain_text: "My Page" }] } },
+            }
+          : { results: blocks, has_more: false, next_cursor: null },
+      () => pageGetCommand({ args: [STUB_PAGE_ID, "--format", "md"] }),
+    );
 
-    const output = [
-      "---",
-      `notion_id: "test-id-123"`,
-      `notion_hash: "${hash}"`,
-      `notion_synced_at: "${syncedAt}"`,
-      "---",
-      "",
-      body,
-    ].join("\n");
+    const { data, body } = extractFrontmatter(output);
+    assert.ok(typeof data.notion_hash === "string", "page get must emit a notion_hash");
+    return classifySyncState({ frontmatter: data, localBody: body, remoteEditedAt: undefined });
+  };
 
-    const { data: fm, body: extractedBody } = extractFrontmatter(output);
-    assert.equal(fm.notion_id, "test-id-123");
-    assert.equal(fm.notion_hash, hash);
+  it("is UNCHANGED for a page whose content does not end in a blank block", async () => {
+    assert.equal(await classifyAfterGet([stubParagraph("b1", "Some content.")]), "UNCHANGED");
+  });
 
-    // The extracted body should hash to the same value
-    const recomputedHash = computeContentHash(extractedBody);
-    assert.equal(recomputedHash, hash, "hash of extracted body must match stored hash");
+  it("is UNCHANGED for a page ending in a trailing blank paragraph", async () => {
+    // Notion leaves one of these behind whenever the cursor rests on an empty
+    // last line, so this is the common page shape, not an exotic one.
+    assert.equal(
+      await classifyAfterGet([stubParagraph("b1", "See screenshot below."), stubParagraph("b2", "")]),
+      "UNCHANGED",
+    );
+  });
 
-    // classifySyncState should return UNCHANGED
+  it("is UNCHANGED for a title-only page with no content blocks", async () => {
+    assert.equal(await classifyAfterGet([]), "UNCHANGED");
+  });
+
+  it("still reports CHANGED once the local body is genuinely edited", async () => {
+    const { extractFrontmatter } = await import("../../src/sync/frontmatter.js");
+    const { classifySyncState } = await import("../../src/sync/sync.js");
+
+    const output = await withStubbedNotion(
+      (method, path) =>
+        method === "GET" && path === `/pages/${STUB_PAGE_ID}`
+          ? {
+              id: STUB_PAGE_ID,
+              object: "page",
+              parent: { type: "page_id" },
+              url: "https://notion.so/page",
+              properties: { title: { type: "title", title: [{ plain_text: "My Page" }] } },
+            }
+          : { results: [stubParagraph("b1", "Some content.")], has_more: false, next_cursor: null },
+      () => pageGetCommand({ args: [STUB_PAGE_ID, "--format", "md"] }),
+    );
+
+    const { data, body } = extractFrontmatter(output);
     const state = classifySyncState({
-      frontmatter: fm,
-      localBody: extractedBody,
-      remoteEditedAt: syncedAt,
+      frontmatter: data,
+      localBody: body + "\nA new line the user typed.\n",
+      remoteEditedAt: undefined,
     });
-    assert.equal(state, "UNCHANGED", "page get output fed to sync must be UNCHANGED");
+    assert.equal(state, "CHANGED");
+  });
+});
+
+describe("page update replaces content without ever emptying the page", () => {
+  // Deleting the old blocks before writing the new ones meant any failure in
+  // the append — a block Notion rejects, a dropped connection, exhausted
+  // retries — left the page empty with the original content already gone.
+  const runUpdate = async (opts: { failAppend: boolean }): Promise<{ calls: string[]; threw: boolean }> => {
+    const { mkdtemp, writeFile } = await import("node:fs/promises");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+
+    const dir = await mkdtemp(join(tmpdir(), "notionctl-page-update-"));
+    const mdPath = join(dir, "body.md");
+    await writeFile(mdPath, "New body text.\n", "utf8");
+
+    const calls: string[] = [];
+    let threw = false;
+    await withStubbedNotion(
+      (method, path) => {
+        calls.push(`${method} ${path}`);
+        if (method === "GET" && path === `/blocks/${STUB_PAGE_ID}/children`) {
+          return {
+            results: [stubParagraph("old-1", "Original one."), stubParagraph("old-2", "Original two.")],
+            has_more: false,
+            next_cursor: null,
+          };
+        }
+        if (method === "PATCH" && path === `/blocks/${STUB_PAGE_ID}/children`) {
+          return opts.failAppend ? undefined : { results: [] };
+        }
+        return { id: STUB_PAGE_ID, results: [] };
+      },
+      async () => {
+        try {
+          await pageUpdateCommand({ args: [STUB_PAGE_ID, "--from", mdPath] });
+        } catch {
+          threw = true;
+        }
+      },
+    );
+    return { calls, threw };
+  };
+
+  it("appends the new content before deleting the old blocks", async () => {
+    const { calls } = await runUpdate({ failAppend: false });
+    const appendIdx = calls.indexOf(`PATCH /blocks/${STUB_PAGE_ID}/children`);
+    const firstDeleteIdx = calls.findIndex((c) => c.startsWith("DELETE /blocks/old-"));
+    assert.ok(appendIdx !== -1, `expected an append call, got: ${calls.join(", ")}`);
+    assert.ok(firstDeleteIdx !== -1, `expected delete calls, got: ${calls.join(", ")}`);
+    assert.ok(
+      appendIdx < firstDeleteIdx,
+      `append must precede delete so a failure cannot empty the page — got: ${calls.join(", ")}`,
+    );
+  });
+
+  it("leaves the original blocks intact when the append fails", async () => {
+    const { calls, threw } = await runUpdate({ failAppend: true });
+    assert.ok(threw, "a failing append should surface as an error");
+    const deletes = calls.filter((c) => c.startsWith("DELETE /blocks/old-"));
+    assert.equal(deletes.length, 0, `no original block may be deleted when the append failed — got: ${calls.join(", ")}`);
   });
 });
 

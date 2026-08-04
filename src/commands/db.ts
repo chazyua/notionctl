@@ -7,7 +7,7 @@
  * invocation and used to type-check property flags.
  */
 
-import { notionRequest } from "../http.js";
+import { notionRequest, appendBlocksChunked } from "../http.js";
 import { parseProperty, parsePropertyFlag, type PropertySchema } from "../properties/parse.js";
 import { renderProperty } from "../properties/render.js";
 import { resolvePageId, parseFlags, getBooleanFlag, fetchWith404Hint, parseJsonObject, readStdinBounded, readFileText } from "./shared.js";
@@ -177,6 +177,12 @@ export function parseSimpleFilter(expr: string, schema: Record<string, PropertyS
       return { property: key, checkbox: { equals: truthy.has(v) } };
     }
     case "number": {
+      // Number("") is 0 and passes isFinite, so an empty value would silently
+      // become a "equals 0" filter and return the wrong rows — most likely via
+      // an unset shell variable in `--filter "Count=$VAR"`.
+      if (value.trim().length === 0) {
+        throw new NotionCliError(ErrorCode.USAGE, `Filter on number property '${key}' needs a value (got an empty one)`);
+      }
       const n = Number(value);
       if (!Number.isFinite(n)) {
         throw new NotionCliError(ErrorCode.USAGE, `Invalid number in filter: ${value}`);
@@ -248,11 +254,23 @@ export async function dbQueryCommand(ctx: { args: string[] }): Promise<string> {
     throw new NotionCliError(ErrorCode.USAGE, "Usage: notionctl db query <id> [--filter ...] [--sort ...]");
   }
   const id = resolvePageId(positional[0]!);
+
+  const filterFlags = repeated.get("filter") ?? [];
+  const filterJsonFlag = flags.get("filter-json");
+  // Checked before the schema fetch so a usage error costs no API call.
+  // Previously --filter was silently dropped whenever --filter-json was also
+  // given, so the query ran with a filter the user never asked for.
+  if (filterJsonFlag && filterFlags.length > 0) {
+    throw new NotionCliError(
+      ErrorCode.USAGE,
+      "Cannot combine --filter and --filter-json. Use one or the other.",
+      { suggestions: ["Express the whole query in --filter-json, or drop it and use repeated --filter flags (they AND together)."] },
+    );
+  }
+
   const { schema, dataSourceId } = await fetchSchema(id);
 
   const body: Record<string, unknown> = {};
-  const filterFlags = repeated.get("filter") ?? [];
-  const filterJsonFlag = flags.get("filter-json");
   if (filterJsonFlag) {
     const raw = filterJsonFlag.startsWith("@")
       ? await readFileText(filterJsonFlag.slice(1), "filter JSON")
@@ -307,7 +325,10 @@ function parseOptionList(raw: string, propName: string): Array<{ name: string }>
   if (!raw) return [];
   const seen = new Set<string>();
   const out: Array<{ name: string }> = [];
-  for (const part of raw.split(",")) {
+  // Quote-aware split, matching what multi_select filter values already accept,
+  // so an option name containing a comma (`"Bug, Regression"`) stays one option
+  // instead of being torn into two garbage options with stray quote characters.
+  for (const part of splitQuotedCsv(raw)) {
     const name = part.trim();
     if (name.length === 0) continue;
     if (seen.has(name)) {
@@ -604,16 +625,40 @@ export async function dbRowCreateCommand(ctx: { args: string[] }): Promise<strin
     children = markdownToBlocks(body);
   }
 
+  // Notion accepts at most 100 children per request, so anything beyond the
+  // first chunk goes in a follow-up append — same split `page create` does.
+  // Sending the whole array made the API reject the request outright, so a
+  // >100-block file created no row at all.
+  const firstChunk = children ? children.slice(0, 100) : undefined;
+  const overflow = children ? children.slice(100) : [];
+
   const payload: Record<string, unknown> = {
     parent: { database_id: dbId },
     properties,
   };
-  if (children) payload.children = children;
+  if (firstChunk) payload.children = firstChunk;
 
   if (getBooleanFlag(flags, "dry-run")) {
-    return renderJson({ action: "db row create", payload });
+    return renderJson({ action: "db row create", payload: { ...payload, ...(children ? { children } : {}) } });
   }
   const created = await notionRequest<{ id: string; url: string }>("POST", "/pages", payload);
+  if (overflow.length > 0) {
+    try {
+      await appendBlocksChunked(created.id, overflow);
+    } catch (err) {
+      const detail = err instanceof NotionCliError ? err.message : String(err);
+      throw new NotionCliError(
+        ErrorCode.API_ERROR,
+        `Row was created but only the first ${firstChunk!.length} blocks were written: ${detail}`,
+        {
+          suggestions: [
+            `The partially-written row is ${created.url} (id ${created.id}).`,
+            "Re-run `page update` against that id to replace its content, or delete the row and retry.",
+          ],
+        },
+      );
+    }
+  }
   return renderJson({ id: created.id, url: created.url });
 }
 

@@ -256,6 +256,16 @@ describe("property parsing edge cases", () => {
     assert.deepEqual(parseProperty(schema, "Due", ""), { date: null });
   });
 
+  it("empty number value becomes null to clear the property", () => {
+    // Number("") is 0 and passes isFinite, so this used to overwrite the real
+    // value with 0 — and left no way to clear a number at all.
+    assert.deepEqual(parseProperty(schema, "Points", ""), { number: null });
+  });
+
+  it("number still parses zero as a real value", () => {
+    assert.deepEqual(parseProperty(schema, "Points", "0"), { number: 0 });
+  });
+
   it("date range with missing start is rejected", () => {
     assert.throws(
       () => parseProperty(schema, "Due", "..2026-04-20"),

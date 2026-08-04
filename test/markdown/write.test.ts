@@ -576,7 +576,7 @@ describe("markdownToBlocks — callout child blocks", () => {
   });
 });
 
-describe("markdownToBlocks — code language validation (BH2-1)", () => {
+describe("markdownToBlocks — code language validation", () => {
   it("unknown language falls back to plain text", () => {
     const blocks = markdownToBlocks("```unknownlang\ncode\n```");
     assert.equal(blocks.length, 1);
@@ -590,7 +590,7 @@ describe("markdownToBlocks — code language validation (BH2-1)", () => {
   });
 });
 
-describe("markdownToBlocks — nested details toggles (BH2-2)", () => {
+describe("markdownToBlocks — nested details toggles", () => {
   it("nested details blocks are preserved", () => {
     const md = "<details><summary>Outer</summary>\n\n<details><summary>Inner</summary>\nInner content\n</details>\n\nAfter inner\n\n</details>";
     const blocks = markdownToBlocks(md);
@@ -607,7 +607,7 @@ describe("markdownToBlocks — nested details toggles (BH2-2)", () => {
   });
 });
 
-describe("markdownToBlocks — callout sidecar color and icon (BH2-4)", () => {
+describe("markdownToBlocks — callout sidecar color and icon", () => {
   it("callout preserves sidecar color and icon on round-trip", () => {
     const md = "> [!NOTE]\n<!-- color: orange_background -->\n<!-- icon: 🎨 -->\n> Custom callout";
     const blocks = markdownToBlocks(md);
@@ -625,7 +625,7 @@ describe("markdownToBlocks — callout sidecar color and icon (BH2-4)", () => {
   });
 });
 
-describe("markdownToBlocks — H4/H5/H6 headings downgraded to H3 (BH2-5)", () => {
+describe("markdownToBlocks — H4/H5/H6 headings downgraded to H3", () => {
   it("writes a stderr warning on downgrade", () => {
     const captured: string[] = [];
     const origWrite = process.stderr.write.bind(process.stderr);

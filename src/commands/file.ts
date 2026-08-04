@@ -188,24 +188,39 @@ export async function fileUploadCommand(ctx: { args: string[] }): Promise<string
   // The per-workspace limit is authoritative — the CLI hard cap is
   // just a safety net. Fetch the real limit from /users/me so a user on a
   // 5 MiB workspace gets a clean pre-flight error instead of a mid-upload failure.
+  //
+  // Skipped under --dry-run: the fetched value never appears in the preview,
+  // and on a blackholed connection this one call rides the full retry ladder,
+  // so a supposedly offline preview could sit silently for minutes.
   const CLI_MAX_UPLOAD_BYTES = 20 * 1024 * 1024;
+  const dryRun = getBooleanFlag(flags, "dry-run");
   let workspaceLimit = CLI_MAX_UPLOAD_BYTES;
-  try {
-    const me = await notionRequest<{ bot?: { workspace_limits?: { max_file_upload_size_in_bytes?: number } } }>(
-      "GET",
-      "/users/me",
-    );
-    const wsCap = me.bot?.workspace_limits?.max_file_upload_size_in_bytes;
-    if (typeof wsCap === "number" && wsCap > 0) workspaceLimit = wsCap;
-  } catch {
-    // Network failure here is non-fatal — fall back to the CLI cap.
+  if (!dryRun) {
+    try {
+      const me = await notionRequest<{ bot?: { workspace_limits?: { max_file_upload_size_in_bytes?: number } } }>(
+        "GET",
+        "/users/me",
+      );
+      const wsCap = me.bot?.workspace_limits?.max_file_upload_size_in_bytes;
+      if (typeof wsCap === "number" && wsCap > 0) workspaceLimit = wsCap;
+    } catch {
+      // Network failure here is non-fatal — fall back to the CLI cap.
+    }
   }
   const effectiveLimit = Math.min(CLI_MAX_UPLOAD_BYTES, workspaceLimit);
   if (fileSize > effectiveLimit) {
     const mib = (n: number): string => `${(n / (1024 * 1024)).toFixed(1)} MiB`;
+    // Name whichever cap actually bound. Blaming "the workspace limit" for the
+    // CLI's own ceiling sent users to their Notion admin for a limit that was
+    // never the constraint.
+    // effectiveLimit is min(cli, workspace), so equality with the CLI cap
+    // already implies the CLI is the binding constraint.
+    const reason = effectiveLimit === CLI_MAX_UPLOAD_BYTES
+      ? `notionctl's ${mib(CLI_MAX_UPLOAD_BYTES)} upload limit (multi-part upload is not implemented yet)`
+      : `your workspace's ${mib(effectiveLimit)} upload limit`;
     throw new NotionCliError(
       ErrorCode.USAGE,
-      `File too large: ${mib(fileSize)} exceeds the workspace limit of ${mib(effectiveLimit)}`,
+      `File too large: ${mib(fileSize)} exceeds ${reason}`,
     );
   }
 
@@ -215,7 +230,7 @@ export async function fileUploadCommand(ctx: { args: string[] }): Promise<string
     );
   }
 
-  if (getBooleanFlag(flags, "dry-run")) {
+  if (dryRun) {
     return renderJson({
       action: "file upload",
       file: filePath,
@@ -254,9 +269,28 @@ export async function fileUploadCommand(ctx: { args: string[] }): Promise<string
       },
     };
 
-    await notionRequest("PATCH", `/blocks/${parentId}/children`, {
-      children: [blockBody],
-    });
+    try {
+      await notionRequest("PATCH", `/blocks/${parentId}/children`, {
+        children: [blockBody],
+      });
+    } catch (err) {
+      // The file is already on Notion's CDN at this point. Letting the attach
+      // error propagate bare discarded the upload id, leaving the user with no
+      // reference to what succeeded — usually after a simple wrong/unshared
+      // --parent, where re-uploading is pure waste.
+      const detail = err instanceof NotionCliError ? err.message : String(err);
+      throw new NotionCliError(
+        ErrorCode.API_ERROR,
+        `File uploaded successfully but could not be attached to ${parentId}: ${detail}`,
+        {
+          suggestions: [
+            `The upload id is ${uploaded.id} — reference it directly instead of re-uploading.`,
+            "Check the --parent id, and that the page is shared with your integration via ··· → Connections.",
+            "Unattached uploads expire on Notion's side after about an hour.",
+          ],
+        },
+      );
+    }
     result.block = "created";
     result.blockType = blockType;
     result.parentId = parentId;

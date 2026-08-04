@@ -94,7 +94,12 @@ export async function pageGetCommand(ctx: { args: string[] }): Promise<string> {
   frontmatter.notion_hash = computeContentHash(bodyForHash);
   frontmatter.notion_synced_at = new Date().toISOString();
   const yaml = stringifyYaml(frontmatter);
-  return `---\n${yaml}\n---\n\n${fullBody}\n`;
+  // Emit exactly the bytes that were hashed. Appending another "\n" here when
+  // fullBody already ended in one made the written body differ from the hashed
+  // body, so the next `page sync` recomputed a different hash and classified an
+  // untouched file as CHANGED — which deletes and recreates every block,
+  // destroying Notion-hosted media that markdown cannot reconstruct.
+  return `---\n${yaml}\n---\n\n${bodyForHash}`;
 }
 
 /**
@@ -152,6 +157,41 @@ export function stripLeadingTitleHeading(body: string, title: string): string {
   return remaining.replace(/^[\n\r]+/, "");
 }
 
+/**
+ * Warn before a replace-style write deletes blocks that markdown cannot
+ * reconstruct.
+ *
+ * Two distinct hazards, both reported from the flat top-level child list:
+ *   - Notion-hosted media (uploaded files/images/videos/pdfs) render to
+ *     markdown as a placeholder, so re-pushing that markdown loses the file.
+ *   - Container blocks with children. Deleting a container deletes its whole
+ *     subtree, and we do not inspect it — so hosted media nested inside a
+ *     toggle/callout/column disappears too. Previously the absence of a
+ *     warning in exactly that case read as "nothing to lose", which is worse
+ *     than no warning at all. Counting `has_children` costs no extra API
+ *     calls, unlike walking the tree.
+ */
+function warnAboutDestructiveReplace(action: string, existing: Block[]): void {
+  const hostedMedia = existing.filter((b) => {
+    const t = b.type;
+    if (t !== "image" && t !== "video" && t !== "file" && t !== "pdf") return false;
+    const media = (b as any)[t];
+    if (!media) return false;
+    return media.type === "file" || media.type === "file_upload";
+  });
+  if (hostedMedia.length > 0) {
+    process.stderr.write(
+      `notionctl: ${action} will DELETE ${hostedMedia.length} Notion-hosted media block(s) (uploaded files/images/videos/pdfs). These cannot be recreated from markdown and will need to be re-uploaded manually. Use 'notionctl file upload' after the update, or use 'page append' for additive edits that preserve existing attachments.\n`,
+    );
+  }
+  const withChildren = existing.filter((b) => (b as any).has_children === true);
+  if (withChildren.length > 0) {
+    process.stderr.write(
+      `notionctl: ${action} will DELETE ${withChildren.length} block(s) that have nested children (toggles, callouts, columns, list items). Their entire subtree goes with them — including any Notion-hosted media inside, which is not counted above and cannot be recreated from markdown.\n`,
+    );
+  }
+}
+
 export async function pageCreateCommand(ctx: { args: string[] }): Promise<string> {
   const { flags } = parseFlags(ctx.args);
   const parent = flags.get("parent");
@@ -194,9 +234,27 @@ export async function pageCreateCommand(ctx: { args: string[] }): Promise<string
 
   const created = await notionRequest<{ id: string; url: string }>("POST", "/pages", payload);
   if (overflow.length > 0) {
-    await appendBlocksChunked(created.id, overflow);
+    try {
+      await appendBlocksChunked(created.id, overflow);
+    } catch (err) {
+      // The page exists but is incomplete. Without the id in the error the
+      // user has no way to find or clean up what was just created.
+      const detail = err instanceof NotionCliError ? err.message : String(err);
+      throw new NotionCliError(
+        ErrorCode.API_ERROR,
+        `Page was created but only the first ${firstChunk.length} blocks were written: ${detail}`,
+        {
+          suggestions: [
+            `The partially-written page is ${created.url} (id ${created.id}).`,
+            "Re-run with `page update` against that id to replace its content, or delete it and retry.",
+          ],
+        },
+      );
+    }
   }
-  return renderJson({ id: created.id, url: created.url });
+  const out: Record<string, unknown> = { id: created.id, url: created.url };
+  if (blocks.length === 0) out["warning"] = "no blocks parsed from input";
+  return renderJson(out);
 }
 
 export async function pageAppendCommand(ctx: { args: string[] }): Promise<string> {
@@ -280,28 +338,18 @@ export async function pageUpdateCommand(ctx: { args: string[] }): Promise<string
 
   if (newBlocks !== null) {
     const existing = await notionRequest<{ results: Block[] }>("GET", `/blocks/${id}/children`);
-    // Warn loudly if we're about to delete Notion-hosted media blocks that
-    // cannot be recreated from the markdown representation. The user either
-    // re-uploads the files themselves or uses `page append` for additive
-    // changes that don't rewrite the page.
-    // Note: only top-level hosted media blocks are detected; nested blocks
-    // (inside toggles, callouts, columns) are deleted without this warning.
-    const hostedMedia = existing.results.filter((b) => {
-      const t = b.type;
-      if (t !== "image" && t !== "video" && t !== "file" && t !== "pdf") return false;
-      const media = (b as any)[t];
-      if (!media) return false;
-      return media.type === "file" || media.type === "file_upload";
-    });
-    if (hostedMedia.length > 0) {
-      process.stderr.write(
-        `notionctl: page update will DELETE ${hostedMedia.length} Notion-hosted media block(s) (uploaded files/images/videos/pdfs). These cannot be recreated from markdown and will need to be re-uploaded manually. Use 'notionctl file upload' after the update, or use 'page append' for additive edits that preserve existing attachments.\n`,
-      );
-    }
+    warnAboutDestructiveReplace("page update", existing.results);
+    // Append the replacement content BEFORE deleting the old blocks. Deleting
+    // first meant any failure in the append (a block Notion rejects, a dropped
+    // connection, exhausted retries) left the page empty with the original
+    // content already gone. Appending first costs nothing on the happy path —
+    // the old blocks are deleted by id straight after, so the final block set
+    // and its order are identical — and a mid-flight failure now leaves the
+    // user's original content intact rather than destroyed.
+    await appendBlocksChunked(id, newBlocks);
     for (const b of existing.results) {
       await notionRequest("DELETE", `/blocks/${b.id}`);
     }
-    await appendBlocksChunked(id, newBlocks);
     result["deletedBlocks"] = existing.results.length;
     result["appendedBlocks"] = newBlocks.length;
   }
@@ -742,11 +790,14 @@ export async function pageFindReplaceCommand(ctx: { args: string[] }): Promise<s
 }
 
 export async function pageRestoreCommand(ctx: { args: string[] }): Promise<string> {
-  const { positional } = parseFlags(ctx.args);
+  const { flags, positional } = parseFlags(ctx.args);
   if (positional.length === 0) {
     throw new NotionCliError(ErrorCode.USAGE, "Usage: notionctl page restore <id>");
   }
   const id = resolvePageId(positional[0]!);
+  if (getBooleanFlag(flags, "dry-run")) {
+    return renderJson({ action: "page restore", pageId: id, wouldRestore: true });
+  }
   const res = await fetchWith404Hint(
     () => notionRequest<{ id: string; url: string }>("PATCH", `/pages/${id}`, { in_trash: false }),
     `Page ${id}`,
@@ -957,10 +1008,23 @@ export async function pageSyncCommand(ctx: { args: string[] }): Promise<string> 
       properties: titleProp,
       children: firstChunk,
     });
+    // Record the new page id before writing the remaining blocks. If the
+    // overflow append then fails, the file still points at the page that was
+    // created, so the next sync classifies as CHANGED and updates it — rather
+    // than seeing no notion_id, re-entering CREATE, and minting a duplicate
+    // page on every retry. The hash is deliberately left unset until the whole
+    // body has landed, so a partial write can never look UNCHANGED.
+    frontmatter.notion_id = created.id;
     if (overflow.length > 0) {
+      // Drop any hash carried over from a previous sync of this file. It
+      // describes content on a *different* page, and leaving it would let the
+      // next run classify the new, still-incomplete page as UNCHANGED and
+      // never finish writing the overflow.
+      delete frontmatter.notion_hash;
+      delete frontmatter.notion_synced_at;
+      await atomicWriteFile(file, reinsertFrontmatter(frontmatter, body));
       await appendBlocksChunked(created.id, overflow);
     }
-    frontmatter.notion_id = created.id;
     frontmatter.notion_hash = computeContentHash(body);
     frontmatter.notion_synced_at = new Date().toISOString();
     await atomicWriteFile(file, reinsertFrontmatter(frontmatter, body));
@@ -984,18 +1048,7 @@ export async function pageSyncCommand(ctx: { args: string[] }): Promise<string> 
       throw err;
     }
     const newBlocks = markdownToBlocks(syncBody);
-    const hostedMedia = existing.results.filter((b) => {
-      const t = b.type;
-      if (t !== "image" && t !== "video" && t !== "file" && t !== "pdf") return false;
-      const media = (b as any)[t];
-      if (!media) return false;
-      return media.type === "file" || media.type === "file_upload";
-    });
-    if (hostedMedia.length > 0) {
-      process.stderr.write(
-        `notionctl: page sync will DELETE ${hostedMedia.length} Notion-hosted media block(s) (uploaded files/images/videos/pdfs). These cannot be recreated from markdown and will need to be re-uploaded manually. Use 'notionctl file upload' after the sync.\n`,
-      );
-    }
+    warnAboutDestructiveReplace("page sync", existing.results);
     // Only PATCH the title when the file explicitly specifies one (via
     // frontmatter `title:` or a leading `# H1`). Otherwise, a DB row or
     // regular page keeps its existing name — otherwise files without a
@@ -1005,10 +1058,12 @@ export async function pageSyncCommand(ctx: { args: string[] }): Promise<string> 
         properties: { title: { title: [{ type: "text", text: { content: title, link: null } }] } },
       });
     }
+    // Append before delete — see pageUpdateCommand. A failure partway through
+    // must not leave the user's page empty.
+    await appendBlocksChunked(pageId, newBlocks);
     for (const b of existing.results) {
       await notionRequest("DELETE", `/blocks/${b.id}`);
     }
-    await appendBlocksChunked(pageId, newBlocks);
     frontmatter.notion_hash = computeContentHash(body);
     frontmatter.notion_synced_at = new Date().toISOString();
     await atomicWriteFile(file, reinsertFrontmatter(frontmatter, body));

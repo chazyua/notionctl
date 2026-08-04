@@ -202,26 +202,69 @@ See https://github.com/chazyua/notionctl for full documentation.
 `;
 }
 
+/**
+ * `head`, `less`, and friends close the pipe as soon as they have what they
+ * want. Because we now await the write callback, that EPIPE has time to reach
+ * the stream as an 'error' event — with no listener it would crash the process
+ * with a stack trace. A reader leaving early is a normal way to end a
+ * pipeline, so treat it as a clean exit.
+ */
+function ignoreEpipe(stream: NodeJS.WriteStream): void {
+  stream.on("error", (err: NodeJS.ErrnoException) => {
+    if (err.code === "EPIPE") process.exit(0);
+  });
+}
+
+/**
+ * Write to a stream and wait until the data has actually been handed to the
+ * OS before resolving. `process.exit()` discards whatever is still buffered,
+ * and writes to a pipe are asynchronous — so exiting straight after a write
+ * silently truncated any output larger than the 64 KB pipe buffer while still
+ * reporting exit 0. Every exit path flushes through this first.
+ */
+function writeFlushed(stream: NodeJS.WriteStream, data: string): Promise<void> {
+  return new Promise((resolve) => {
+    stream.write(data, () => resolve());
+  });
+}
+
+async function exitAfter(stream: NodeJS.WriteStream, data: string, code: number): Promise<never> {
+  await writeFlushed(stream, data);
+  process.exit(code);
+}
+
 async function main(): Promise<void> {
+  ignoreEpipe(process.stdout);
+  ignoreEpipe(process.stderr);
   setMarkdownWarnHandler((msg) => process.stderr.write(msg + "\n"));
   setTokenizerWarnHandler((msg) => process.stderr.write(msg + "\n"));
   const argv = process.argv.slice(2);
 
   if (argv.length === 0 || argv[0] === "--help" || argv[0] === "-h") {
-    process.stdout.write(printHelp());
-    process.exit(0);
+    await exitAfter(process.stdout, printHelp(), 0);
   }
 
   if (argv[0] === "--version" || argv[0] === "-v") {
-    process.stdout.write(`notionctl ${VERSION}\n`);
-    process.exit(0);
+    await exitAfter(process.stdout, `notionctl ${VERSION}\n`, 0);
   }
 
   // Extract --profile before command parsing (global flag). Accept both
   // `--profile name` and `--profile=name` forms.
+  //
+  // The value must not itself look like a flag: `--profile --dry-run` would
+  // otherwise consume `--dry-run` as the profile name and silently strip the
+  // safety flag the user typed, turning a preview into a real write. Mirrors
+  // the same guard parseFlags applies to every other value-taking flag.
   const profileSpaceIdx = argv.indexOf("--profile");
-  if (profileSpaceIdx !== -1 && argv[profileSpaceIdx + 1]) {
-    setActiveProfile(argv[profileSpaceIdx + 1]!);
+  if (profileSpaceIdx !== -1) {
+    const value = argv[profileSpaceIdx + 1];
+    if (value === undefined || value.startsWith("--")) {
+      throw new NotionCliError(
+        ErrorCode.USAGE,
+        "Flag --profile requires a value. If the value itself starts with '--', use --profile=<value> instead.",
+      );
+    }
+    setActiveProfile(value);
     argv.splice(profileSpaceIdx, 2);
   } else {
     const profileEqIdx = argv.findIndex((a) => a.startsWith("--profile="));
@@ -241,12 +284,10 @@ async function main(): Promise<void> {
   const HEAD_HELP = new Set(["--help", "-h"]);
   const HEAD_VERSION = new Set(["--version", "-v"]);
   if (argv.length > 0 && (HEAD_HELP.has(argv[0]!) || (argv.length > 1 && HEAD_HELP.has(argv[1]!)))) {
-    process.stdout.write(printHelp());
-    process.exit(0);
+    await exitAfter(process.stdout, printHelp(), 0);
   }
   if (argv.length > 0 && (HEAD_VERSION.has(argv[0]!) || (argv.length > 1 && HEAD_VERSION.has(argv[1]!)))) {
-    process.stdout.write(`notionctl ${VERSION}\n`);
-    process.exit(0);
+    await exitAfter(process.stdout, `notionctl ${VERSION}\n`, 0);
   }
 
   const noun = argv[0]!;
@@ -255,8 +296,7 @@ async function main(): Promise<void> {
   // discover the available subcommands instead of seeing "Unknown verb: undefined".
   const NOUNS_WITH_VERBS = new Set(["page", "db", "block", "file", "comment", "user", "auth"]);
   if (NOUNS_WITH_VERBS.has(noun) && verb === undefined) {
-    process.stdout.write(printHelp());
-    process.exit(0);
+    await exitAfter(process.stdout, printHelp(), 0);
   }
   // Strip a single `--help`/`-h` that appears anywhere in the remaining args
   // (e.g. `notionctl page get --help`) so subcommand help still works without
@@ -264,8 +304,7 @@ async function main(): Promise<void> {
   const restArgv = verb !== undefined ? argv.slice(2) : argv.slice(1);
   const helpIdx = restArgv.findIndex((a) => HEAD_HELP.has(a));
   if (helpIdx !== -1) {
-    process.stdout.write(printHelp());
-    process.exit(0);
+    await exitAfter(process.stdout, printHelp(), 0);
   }
   const rest = restArgv;
 
@@ -274,35 +313,37 @@ async function main(): Promise<void> {
   if (rest.includes("--verbose")) setVerboseMode(true);
   if (rest.includes("--debug")) setDebugMode(true);
   const quiet = rest.includes("--quiet");
-  const noColor = rest.includes("--no-color");
   if (quiet) {
     setMarkdownWarnHandler(null);
     setTokenizerWarnHandler(null);
   }
 
-  try {
-    const handler = await loadCommand(noun, verb);
-    const output = await handler({ args: rest });
-    if (output && output.length > 0) {
-      process.stdout.write(output + (output.endsWith("\n") ? "" : "\n"));
-    }
-    if (getRequestCount() > 0 && isVerboseMode() && !quiet) {
-      process.stderr.write(`notionctl: ${getRequestCount()} API request(s)\n`);
-    }
-    process.exit(0);
-  } catch (err) {
-    if (err instanceof NotionCliError) {
-      const color = isStdoutTty() && !noColor;
-      if (!process.stdout.isTTY) {
-        process.stderr.write(formatErrorJson(err) + "\n");
-      } else {
-        process.stderr.write(formatErrorHuman(err, { color }) + "\n");
-      }
-      process.exit(err.exitCode);
-    }
-    process.stderr.write(`Internal error: ${scrub((err as Error).message)}\n`);
-    process.exit(1);
+  const handler = await loadCommand(noun, verb);
+  const output = await handler({ args: rest });
+  if (output && output.length > 0) {
+    await writeFlushed(process.stdout, output + (output.endsWith("\n") ? "" : "\n"));
   }
+  if (getRequestCount() > 0 && isVerboseMode() && !quiet) {
+    await writeFlushed(process.stderr, `notionctl: ${getRequestCount()} API request(s)\n`);
+  }
+  process.exit(0);
 }
 
-main();
+/**
+ * Single fatal-error exit path. Attached to main() rather than wrapped around
+ * only the dispatch call so that failures raised while parsing global flags
+ * (e.g. a malformed --profile) surface as a clean typed error with the right
+ * exit code, instead of escaping as an unhandled rejection.
+ */
+async function fail(err: unknown): Promise<never> {
+  if (err instanceof NotionCliError) {
+    const color = isStdoutTty() && !process.argv.includes("--no-color");
+    const message = !process.stdout.isTTY
+      ? formatErrorJson(err)
+      : formatErrorHuman(err, { color });
+    return exitAfter(process.stderr, message + "\n", err.exitCode);
+  }
+  return exitAfter(process.stderr, `Internal error: ${scrub((err as Error).message)}\n`, 1);
+}
+
+main().catch(fail);

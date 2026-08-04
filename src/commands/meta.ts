@@ -160,6 +160,14 @@ export async function apiCommand(ctx: CommandContext): Promise<string> {
       throw new NotionCliError(ErrorCode.USAGE, `--body is not valid JSON`);
     }
   }
-  const result = await notionRequest(method as "GET" | "POST" | "PATCH" | "DELETE", path.startsWith("/") ? path : `/${path}`, body);
+  const requestPath = path.startsWith("/") ? path : `/${path}`;
+
+  // `api` is the raw escape hatch, but it is still a write command — honour
+  // --dry-run like every other one. GET is a read, so the flag is a no-op there.
+  if (method !== "GET" && getBooleanFlag(flags, "dry-run")) {
+    return renderJson({ action: "api", method, path: requestPath, body: body ?? null });
+  }
+
+  const result = await notionRequest(method as "GET" | "POST" | "PATCH" | "DELETE", requestPath, body);
   return renderJson(result);
 }

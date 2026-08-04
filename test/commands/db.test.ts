@@ -2,6 +2,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { parseSimpleFilter, parseColumnSpec, parseSimpleSort } from "../../src/commands/db.js";
 import type { PropertySchema } from "../../src/properties/parse.js";
+import { NotionCliError, ErrorCode } from "../../src/errors.js";
 
 function schema(overrides: Record<string, Partial<PropertySchema>>): Record<string, PropertySchema> {
   const out: Record<string, PropertySchema> = {};
@@ -26,6 +27,15 @@ describe("parseSimpleFilter — number comparisons", () => {
       property: "Count",
       number: { greater_than: 5 },
     });
+  });
+
+  it("rejects an empty value instead of filtering for zero", () => {
+    // Number("") is 0 and passes isFinite, so `--filter "Count=$UNSET_VAR"`
+    // used to silently return the rows where Count == 0.
+    assert.throws(
+      () => parseSimpleFilter("Count=", s),
+      (err: unknown) => err instanceof NotionCliError && err.code === ErrorCode.USAGE,
+    );
   });
 
   it("< becomes less_than", () => {
@@ -204,6 +214,16 @@ describe("parseColumnSpec", () => {
       name: "Due",
       schema: { date: {} },
     });
+  });
+
+  it("keeps a quoted comma inside a single option name", () => {
+    // A bare split(",") tore `"Bug, Regression"` into two malformed options
+    // that still carried stray quote characters, corrupting the schema.
+    const result = parseColumnSpec('Severity=select:"Bug, Regression",Feature');
+    assert.deepEqual((result.schema as any).select.options, [
+      { name: "Bug, Regression" },
+      { name: "Feature" },
+    ]);
   });
 
   it("parses select with options", () => {

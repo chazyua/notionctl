@@ -48,24 +48,36 @@ export function getConfigDir(): string {
   return resolved;
 }
 
-export function setActiveProfile(name: string): void {
+/**
+ * "default" is the label `auth list` prints for the unprefixed config file, so
+ * accepting it as an explicit profile name created a second, distinct
+ * `config-default.json` that every unflagged command ignored — while `auth list`
+ * showed an indistinguishable "default" entry. Reject it rather than silently
+ * building that split-brain state.
+ */
+function assertUsableProfileName(name: string): void {
   if (!/^[a-zA-Z0-9_-]{1,64}$/.test(name)) {
     throw new NotionCliError(
       ErrorCode.USAGE,
       `Invalid profile name: '${name}'. Use only letters, digits, hyphens, and underscores.`,
     );
   }
+  if (name === "default") {
+    throw new NotionCliError(
+      ErrorCode.USAGE,
+      "'default' is reserved — omit --profile (and NOTION_PROFILE) to use the default profile.",
+    );
+  }
+}
+
+export function setActiveProfile(name: string): void {
+  assertUsableProfileName(name);
   activeProfile = name;
 }
 
 function resolveProfile(): string | undefined {
   const name = activeProfile ?? process.env[PROFILE_ENV_VAR] ?? undefined;
-  if (name !== undefined && !/^[a-zA-Z0-9_-]{1,64}$/.test(name)) {
-    throw new NotionCliError(
-      ErrorCode.USAGE,
-      `Invalid profile name: '${name}'. Use only letters, digits, hyphens, and underscores.`,
-    );
-  }
+  if (name !== undefined) assertUsableProfileName(name);
   return name;
 }
 

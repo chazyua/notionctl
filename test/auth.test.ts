@@ -8,9 +8,38 @@ import {
   saveToken,
   clearToken,
   getConfigPath,
+  setActiveProfile,
   AuthSource,
 } from "../src/auth.js";
 import { NotionCliError, ErrorCode } from "../src/errors.js";
+
+describe("profile names", () => {
+  it("rejects 'default', which would shadow the unflagged config file", () => {
+    // `--profile default` wrote config-default.json — a different file from the
+    // unflagged config.json — while `auth list` displayed both as "default".
+    // The token looked saved but no plain command could see it.
+    assert.throws(
+      () => setActiveProfile("default"),
+      (err: unknown) => err instanceof NotionCliError && err.code === ErrorCode.USAGE,
+    );
+  });
+
+  it("rejects a name that could escape the config directory", () => {
+    for (const bad of ["../evil", "a/b", "with space", ""]) {
+      assert.throws(
+        () => setActiveProfile(bad),
+        (err: unknown) => err instanceof NotionCliError && err.code === ErrorCode.USAGE,
+        `expected '${bad}' to be rejected`,
+      );
+    }
+  });
+
+  it("accepts ordinary names", () => {
+    for (const ok of ["staging", "work_2", "my-profile"]) {
+      assert.doesNotThrow(() => setActiveProfile(ok));
+    }
+  });
+});
 
 describe("auth", () => {
   let testHome: string;
