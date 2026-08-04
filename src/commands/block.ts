@@ -8,7 +8,7 @@ import { blocksToMarkdown, markdownToBlocks } from "../markdown/index.js";
 import type { Block } from "../markdown/index.js";
 import { fetchBlockTree } from "../blocks.js";
 import { extractFrontmatter } from "../sync/frontmatter.js";
-import { resolvePageId, parseFlags, getBooleanFlag, fetchWith404Hint, parseJsonObject, readStdinBounded, readFileText } from "./shared.js";
+import { resolvePageId, parseFlags, getBooleanFlag, fetchWith404Hint, parseJsonObject, readStdinBounded, readFileText, rejectExtraPositionals } from "./shared.js";
 import { NotionCliError, ErrorCode } from "../errors.js";
 import { renderJson, chooseFormat, isStdoutTty, type Format } from "../output.js";
 
@@ -131,6 +131,7 @@ export async function blockDeleteCommand(ctx: { args: string[] }): Promise<strin
   if (positional.length === 0) {
     throw new NotionCliError(ErrorCode.USAGE, "Usage: notionctl block delete <id> --yes");
   }
+  rejectExtraPositionals(positional, 1);
   if (!getBooleanFlag(flags, "yes")) {
     throw new NotionCliError(ErrorCode.USAGE, "Refusing to delete without --yes");
   }

@@ -46,6 +46,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `--profile` with no value consumed the following flag as its value, so
   `page delete <id> --profile --dry-run --yes` performed a real delete. A value
   that looks like a flag is now rejected.
+- Writing `--yes false` to decline a confirmation did the opposite: boolean
+  flags take no value, so `--yes` was set and `false` was silently discarded as
+  an unused argument. `page delete <id> --yes false`, `block delete`,
+  `api DELETE` and `db update --remove-prop` all performed the destructive
+  action. Those commands now reject any argument they have no use for, so the
+  stray value is a usage error instead. Use `--yes` alone to confirm, omit it to
+  decline, or write `--yes=false` to be explicit.
 - `api POST|PATCH|DELETE` ignored `--dry-run` and performed the request.
 - `page restore` ignored `--dry-run` and performed the request.
 - `db update` removed database properties without any confirmation. Removing a

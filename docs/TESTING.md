@@ -153,6 +153,12 @@ Comprehensive test scenarios for notionctl. Use this for manual dogfooding, regr
 ### 2.11 page delete
 - [M] Archives page (soft delete) with `--yes`
 - [M] Refuses without `--yes`
+- [A] `--yes false` is a usage error, not a confirmation — same for
+      `block delete`, `api DELETE`, `db row delete`, `db update --remove-prop`
+      and `auth clear`
+- [A] Any unexpected extra argument is refused, not just boolean-looking ones
+- [A] `--yes=false` declines; `--yes` alone still confirms
+- [A] Free-text positionals after a boolean flag still work (`search --verbose n`)
 
 ---
 

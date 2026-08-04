@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { writeFile, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { parseFlags, resolvePageId, getBooleanFlag, readFileText, parseJsonObject } from "../../src/commands/shared.js";
+import { parseFlags, resolvePageId, getBooleanFlag, readFileText, parseJsonObject, rejectExtraPositionals } from "../../src/commands/shared.js";
 import { NotionCliError, ErrorCode } from "../../src/errors.js";
 
 describe("parseFlags", () => {
@@ -223,5 +223,87 @@ describe("parseJsonObject prototype-pollution guard", () => {
     assert.throws(() => parseJsonObject("[]", "--x"), /must be a JSON object/);
     assert.throws(() => parseJsonObject('"s"', "--x"), /must be a JSON object/);
     assert.throws(() => parseJsonObject("null", "--x"), /must be a JSON object/);
+  });
+});
+
+
+describe("rejectExtraPositionals", () => {
+  // `page delete <id> --yes false` parsed as yes=true plus an unread "false"
+  // positional and archived the page — the opposite of what the caller asked.
+  // Verified against page delete, block delete, api DELETE and db update.
+  it("refuses a stray argument left over by a boolean flag", () => {
+    assert.throws(
+      () => rejectExtraPositionals(["abc123", "false"], 1),
+      (err: unknown) => {
+        assert.ok(err instanceof NotionCliError);
+        assert.equal(err.code, ErrorCode.USAGE);
+        assert.match(err.message, /Unexpected argument: false/);
+        assert.match(err.message, /Boolean flags take no value/, "should explain where it came from");
+        return true;
+      },
+    );
+  });
+
+  it("refuses any stray argument, not just boolean-looking ones", () => {
+    // The whole point of checking arity rather than value: `--yes maybe`
+    // bypassed a value-matching guard, but has no slot here either.
+    for (const extra of ["maybe", "-0", "fa\u0142se", " 0", "whatever"]) {
+      assert.throws(
+        () => rejectExtraPositionals(["abc123", extra], 1),
+        NotionCliError,
+        `${JSON.stringify(extra)} must be refused`,
+      );
+    }
+  });
+
+  it("omits the boolean hint for an ordinary stray argument", () => {
+    assert.throws(
+      () => rejectExtraPositionals(["abc123", "extra.md"], 1),
+      (err: unknown) => {
+        assert.match((err as Error).message, /Unexpected argument: extra\.md/);
+        assert.doesNotMatch((err as Error).message, /Boolean flags/);
+        return true;
+      },
+    );
+  });
+
+  it("allows exactly the expected number of positionals", () => {
+    assert.doesNotThrow(() => rejectExtraPositionals([], 0));
+    assert.doesNotThrow(() => rejectExtraPositionals(["abc"], 1));
+    assert.doesNotThrow(() => rejectExtraPositionals(["DELETE", "/blocks/x"], 2));
+    assert.doesNotThrow(() => rejectExtraPositionals(["abc"], 2), "fewer than expected is another command's error");
+  });
+
+  it("reports the first unexpected argument", () => {
+    assert.throws(
+      () => rejectExtraPositionals(["abc", "first", "second"], 1),
+      (err: unknown) => {
+        assert.match((err as Error).message, /Unexpected argument: first/);
+        return true;
+      },
+    );
+  });
+});
+
+describe("boolean flags keep their parser semantics", () => {
+  it("does not consume a following token", () => {
+    // Deliberately unchanged: catching this in the parser broke free-text
+    // positionals such as `search --verbose n`. Arity is the command's business.
+    const { flags, positional } = parseFlags(["--yes", "false"]);
+    assert.equal(getBooleanFlag(flags, "yes"), true);
+    assert.deepEqual(positional, ["false"], "the value stays a positional for the command to reject");
+  });
+
+  it("leaves free-text positionals after a boolean flag alone", () => {
+    const { flags, positional } = parseFlags(["--verbose", "n"]);
+    assert.equal(getBooleanFlag(flags, "verbose"), true);
+    assert.deepEqual(positional, ["n"], "search --verbose n must still work");
+  });
+
+  it("still accepts a bare boolean flag and the explicit = form", () => {
+    assert.equal(getBooleanFlag(parseFlags(["abc", "--yes"]).flags, "yes"), true);
+    assert.equal(getBooleanFlag(parseFlags(["--yes=false"]).flags, "yes"), false);
+    assert.equal(getBooleanFlag(parseFlags(["--yes=true"]).flags, "yes"), true);
+    assert.equal(getBooleanFlag(parseFlags(["--yes", "--dry-run"]).flags, "dry-run"), true);
   });
 });

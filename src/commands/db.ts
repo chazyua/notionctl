@@ -10,7 +10,7 @@
 import { notionRequest, appendBlocksChunked } from "../http.js";
 import { parseProperty, parsePropertyFlag, type PropertySchema } from "../properties/parse.js";
 import { renderProperty } from "../properties/render.js";
-import { resolvePageId, parseFlags, getBooleanFlag, fetchWith404Hint, parseJsonObject, readStdinBounded, readFileText } from "./shared.js";
+import { resolvePageId, parseFlags, getBooleanFlag, fetchWith404Hint, parseJsonObject, readStdinBounded, readFileText, rejectExtraPositionals } from "./shared.js";
 import { markdownToBlocks, blocksToMarkdown } from "../markdown/index.js";
 import type { Block } from "../markdown/index.js";
 import { fetchBlockTree } from "../blocks.js";
@@ -489,6 +489,7 @@ export async function dbUpdateCommand(ctx: { args: string[] }): Promise<string> 
       "Usage: notionctl db update <id> [--title X] [--add-prop Name=type[:opts] ...] [--remove-prop Name --yes ...] [--rename-prop Old=New ...] [--schema-json '...']",
     );
   }
+  rejectExtraPositionals(positional, 1);
   const id = resolvePageId(positional[0]!);
 
   const payload: Record<string, unknown> = {};
@@ -718,6 +719,7 @@ export async function dbRowDeleteCommand(ctx: { args: string[] }): Promise<strin
   if (positional.length === 0) {
     throw new NotionCliError(ErrorCode.USAGE, "Usage: notionctl db row delete <page-id> --yes");
   }
+  rejectExtraPositionals(positional, 1);
   if (!getBooleanFlag(flags, "yes")) {
     throw new NotionCliError(ErrorCode.USAGE, "Refusing to archive without --yes");
   }

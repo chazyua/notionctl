@@ -12,7 +12,7 @@ import { randomBytes } from "node:crypto";
 import { execFile } from "node:child_process";
 import { notionRequest, exchangeOAuthCode } from "../http.js";
 import { saveToken, clearToken, loadToken, getConfigPath, getConfigDir, listProfiles, AuthSource } from "../auth.js";
-import { parseFlags, getBooleanFlag, readStdinBounded, MAX_STDIN_TOKEN_BYTES } from "./shared.js";
+import { parseFlags, getBooleanFlag, readStdinBounded, MAX_STDIN_TOKEN_BYTES, rejectExtraPositionals } from "./shared.js";
 import { NotionCliError, ErrorCode } from "../errors.js";
 import { renderJson } from "../output.js";
 
@@ -194,7 +194,8 @@ export async function authListCommand(_ctx: { args: string[] }): Promise<string>
 }
 
 export async function authClearCommand(ctx: { args: string[] }): Promise<string> {
-  const { flags } = parseFlags(ctx.args);
+  const { flags, positional } = parseFlags(ctx.args);
+  rejectExtraPositionals(positional, 0);
   if (!getBooleanFlag(flags, "yes")) {
     throw new NotionCliError(ErrorCode.USAGE, "auth clear requires --yes");
   }

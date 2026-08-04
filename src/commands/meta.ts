@@ -9,7 +9,7 @@
 
 import { notionRequest } from "../http.js";
 import { renderJson, renderTable, renderCsv, chooseFormat, isStdoutTty, type Format } from "../output.js";
-import { resolvePageId, parseFlags, readFileText, getBooleanFlag } from "./shared.js";
+import { resolvePageId, parseFlags, readFileText, getBooleanFlag, rejectExtraPositionals } from "./shared.js";
 import { NotionCliError, ErrorCode } from "../errors.js";
 
 export interface CommandContext {
@@ -118,6 +118,7 @@ export async function apiCommand(ctx: CommandContext): Promise<string> {
   if (positional.length < 2) {
     throw new NotionCliError(ErrorCode.USAGE, "Usage: notionctl api <METHOD> <path> [--body @file.json]");
   }
+  rejectExtraPositionals(positional, 2);
   const VALID_METHODS = new Set(["GET", "POST", "PATCH", "DELETE"]);
   const method = positional[0]!.toUpperCase();
   if (!VALID_METHODS.has(method)) {

@@ -76,6 +76,29 @@ const BOOLEAN_FLAGS = new Set([
   "recursive",
 ]);
 
+const BOOLEAN_LITERALS = new Set([
+  "true", "false", "1", "0", "yes", "no", "y", "n", "on", "off",
+]);
+
+/**
+ * Refuse an argument the command has no slot for.
+ *
+ * Boolean flags never consume a following token, so `page delete <id> --yes false`
+ * parsed as yes=true plus an unread `"false"` positional and archived the page —
+ * the opposite of what the caller asked for. Catching that in the flag parser
+ * would break commands whose positionals are free text (`search --verbose n`),
+ * so the arity check belongs here, in the commands that actually have a fixed
+ * shape. Any stray token is refused, not just boolean-looking ones.
+ */
+export function rejectExtraPositionals(positional: string[], expected: number): void {
+  if (positional.length <= expected) return;
+  const extra = positional[expected]!;
+  const hint = BOOLEAN_LITERALS.has(extra.toLowerCase())
+    ? " Boolean flags take no value — pass the flag on its own, or write it as --flag=value."
+    : "";
+  throw new NotionCliError(ErrorCode.USAGE, `Unexpected argument: ${extra}.${hint}`);
+}
+
 const REPEATABLE_FLAGS = new Set([
   "prop",
   "sort",

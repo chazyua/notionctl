@@ -17,7 +17,7 @@ import { blocksToMarkdown, markdownToBlocks } from "../markdown/index.js";
 import type { Block } from "../markdown/index.js";
 import { renderProperty } from "../properties/render.js";
 import { stringifyYaml, type YamlObject } from "../utils/yaml.js";
-import { resolvePageId, parseFlags, getBooleanFlag, fetchWith404Hint, readStdinBounded, readFileText } from "./shared.js";
+import { resolvePageId, parseFlags, getBooleanFlag, fetchWith404Hint, readStdinBounded, readFileText, rejectExtraPositionals } from "./shared.js";
 import { fetchBlockTree } from "../blocks.js";
 import { NotionCliError, ErrorCode } from "../errors.js";
 import { renderJson, chooseFormat, isStdoutTty, type Format } from "../output.js";
@@ -810,6 +810,7 @@ export async function pageDeleteCommand(ctx: { args: string[] }): Promise<string
   if (positional.length === 0) {
     throw new NotionCliError(ErrorCode.USAGE, "Usage: notionctl page delete <id> --yes");
   }
+  rejectExtraPositionals(positional, 1);
   const id = resolvePageId(positional[0]!);
   if (!getBooleanFlag(flags, "yes")) {
     throw new NotionCliError(
