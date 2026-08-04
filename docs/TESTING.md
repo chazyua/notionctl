@@ -169,7 +169,10 @@ Comprehensive test scenarios for notionctl. Use this for manual dogfooding, regr
 ### 3.2 db update
 - [M] `--title` renames the database
 - [M] `--add-prop Name=type` adds a column
-- [M] `--remove-prop Name` removes a column
+- [M] `--remove-prop Name --yes` removes a column
+- [M] `--remove-prop Name` without `--yes` is refused, and the column survives
+- [M] `--schema-json` containing a `null` without `--yes` is refused
+- [M] `--dry-run` does not bypass the `--yes` requirement
 - [M] `--rename-prop Old=New` renames a column
 - [M] Multiple operations in one command
 - [M] No flags produces USAGE error

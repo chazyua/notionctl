@@ -486,7 +486,7 @@ export async function dbUpdateCommand(ctx: { args: string[] }): Promise<string> 
   if (positional.length === 0) {
     throw new NotionCliError(
       ErrorCode.USAGE,
-      "Usage: notionctl db update <id> [--title X] [--add-prop Name=type[:opts] ...] [--remove-prop Name ...] [--rename-prop Old=New ...] [--schema-json '...']",
+      "Usage: notionctl db update <id> [--title X] [--add-prop Name=type[:opts] ...] [--remove-prop Name --yes ...] [--rename-prop Old=New ...] [--schema-json '...']",
     );
   }
   const id = resolvePageId(positional[0]!);
@@ -536,6 +536,17 @@ export async function dbUpdateCommand(ctx: { args: string[] }): Promise<string> 
     throw new NotionCliError(
       ErrorCode.USAGE,
       "Nothing to update. Provide at least one of: --title, --add-prop, --remove-prop, --rename-prop, --schema-json",
+    );
+  }
+
+  // A null property value deletes that column and its data in every row, with no
+  // restore. Reachable via --remove-prop and via nulls inside --schema-json, so gate
+  // on the assembled payload rather than on the flag.
+  const removals = Object.keys(properties).filter((name) => properties[name] === null);
+  if (removals.length > 0 && !getBooleanFlag(flags, "yes")) {
+    throw new NotionCliError(
+      ErrorCode.USAGE,
+      `Refusing to remove database properties without --yes confirmation: ${removals.join(", ")} (deletes their data in every row, cannot be undone)`,
     );
   }
 

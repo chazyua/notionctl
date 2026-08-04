@@ -35,6 +35,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   that looks like a flag is now rejected.
 - `api POST|PATCH|DELETE` ignored `--dry-run` and performed the request.
 - `page restore` ignored `--dry-run` and performed the request.
+- `db update` removed database properties without any confirmation. Removing a
+  property deletes its data in every row and cannot be undone, yet it was the
+  only destructive operation with no `--yes` gate. It now requires `--yes`,
+  whether the removal comes from `--remove-prop` or from a `null` value inside
+  `--schema-json`. **Breaking:** scripts calling `db update --remove-prop`
+  without `--yes` now exit with a usage error instead of deleting the column.
 
 **Silent or misleading output**
 - Output larger than 64 KB was truncated when piped, while still reporting

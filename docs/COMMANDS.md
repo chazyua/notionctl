@@ -158,9 +158,15 @@ Modify a database's title, columns, or schema.
 ```sh
 notionctl db update <id> --title "Sprint Backlog"
 notionctl db update <id> --add-prop Reviewer=people
-notionctl db update <id> --remove-prop OldColumn
+notionctl db update <id> --remove-prop OldColumn --yes
 notionctl db update <id> --rename-prop Status=Stage
 ```
+
+Removing a property deletes its data in every row and cannot be undone, so it
+requires `--yes`. This covers `--remove-prop` and any `null` value passed via
+`--schema-json`; if either is present without `--yes`, the whole command is
+refused and nothing is written. `--title`, `--add-prop`, and `--rename-prop`
+need no confirmation.
 
 ### db query
 

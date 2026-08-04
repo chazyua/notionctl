@@ -541,6 +541,115 @@ describe("--schema-json title column deduplication", () => {
   });
 });
 
+describe("dbUpdateCommand — property removal requires --yes", () => {
+  const DB_ID = "55555555-5555-5555-5555-555555555555";
+  const DS_ID = "66666666-6666-6666-6666-666666666666";
+
+  /** Runs dbUpdateCommand against a stub Notion, returning the PATCH bodies it sent. */
+  async function runUpdate(args: string[]): Promise<{ out: string; patched: Array<Record<string, unknown>> }> {
+    const { dbUpdateCommand } = await import("../../src/commands/db.js");
+    const { setTokenProvider, resetForTesting } = await import("../../src/http.js");
+    const { AuthSource } = await import("../../src/auth.js");
+
+    setTokenProvider(async () => ({ token: "ntn_test", source: AuthSource.ENV }));
+    const originalFetch = globalThis.fetch;
+    const patched: Array<Record<string, unknown>> = [];
+
+    globalThis.fetch = async (input: string | URL | Request, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+      const method = init?.method ?? "GET";
+      if (method === "PATCH") {
+        patched.push(JSON.parse(String(init?.body ?? "{}")));
+        return new Response(JSON.stringify({ id: url.includes("/data_sources/") ? DS_ID : DB_ID }), {
+          status: 200, headers: { "content-type": "application/json" },
+        });
+      }
+      return new Response(JSON.stringify({ id: DB_ID, data_sources: [{ id: DS_ID }] }), {
+        status: 200, headers: { "content-type": "application/json" },
+      });
+    };
+
+    try {
+      return { out: await dbUpdateCommand({ args }), patched };
+    } finally {
+      globalThis.fetch = originalFetch;
+      resetForTesting();
+    }
+  }
+
+  it("refuses --remove-prop without --yes, names each property, and sends no PATCH", async () => {
+    const patched: Array<Record<string, unknown>> = [];
+    await assert.rejects(
+      async () => {
+        const r = await runUpdate([DB_ID, "--remove-prop", "Notes", "--remove-prop", "Owner"]);
+        patched.push(...r.patched);
+      },
+      (err: unknown) => {
+        assert.ok(err instanceof NotionCliError);
+        assert.equal(err.code, ErrorCode.USAGE);
+        assert.match(err.message, /Refusing to remove database properties without --yes/);
+        assert.match(err.message, /Notes/, "message must name every property that would be removed");
+        assert.match(err.message, /Owner/, "message must name every property that would be removed");
+        return true;
+      },
+    );
+    assert.deepEqual(patched, [], "no write may reach Notion when the gate refuses");
+  });
+
+  it("proceeds with --yes and sends the null property", async () => {
+    const { patched } = await runUpdate([DB_ID, "--remove-prop", "Notes", "--yes"]);
+    const schemaPatch = patched.find((b) => "properties" in b);
+    assert.ok(schemaPatch, "a schema PATCH must be sent");
+    assert.deepEqual(schemaPatch.properties, { Notes: null });
+  });
+
+  it("refuses nulls smuggled in via --schema-json", async () => {
+    await assert.rejects(
+      () => runUpdate([DB_ID, "--schema-json", '{"Notes":null}']),
+      (err: unknown) => {
+        assert.equal((err as NotionCliError).code, ErrorCode.USAGE);
+        assert.match((err as Error).message, /Refusing to remove database properties/);
+        return true;
+      },
+    );
+  });
+
+  it("allows --schema-json without nulls and no --yes", async () => {
+    const { patched } = await runUpdate([DB_ID, "--schema-json", '{"Notes":{"number":{}}}']);
+    const schemaPatch = patched.find((b) => "properties" in b);
+    assert.deepEqual(schemaPatch?.properties, { Notes: { number: {} } });
+  });
+
+  it("--dry-run does not bypass the gate", async () => {
+    await assert.rejects(
+      () => runUpdate([DB_ID, "--remove-prop", "Notes", "--dry-run"]),
+      (err: unknown) => {
+        assert.equal((err as NotionCliError).code, ErrorCode.USAGE);
+        assert.match((err as Error).message, /Refusing to remove database properties/);
+        return true;
+      },
+    );
+  });
+
+  it("--dry-run --yes still previews without writing", async () => {
+    const { out, patched } = await runUpdate([DB_ID, "--remove-prop", "Notes", "--yes", "--dry-run"]);
+    assert.deepEqual(patched, [], "dry-run must not write");
+    assert.match(out, /"Notes": null/);
+  });
+
+  it("non-destructive flags still work without --yes", async () => {
+    const { patched } = await runUpdate([
+      DB_ID, "--title", "Renamed", "--add-prop", "Score=number", "--rename-prop", "Old=New",
+    ]);
+    const schemaPatch = patched.find((b) => "properties" in b);
+    assert.ok(schemaPatch, "schema PATCH must be sent without --yes");
+    const props = schemaPatch.properties as Record<string, unknown>;
+    assert.ok("Score" in props, "add-prop must still apply");
+    assert.deepEqual(props.Old, { name: "New" }, "rename-prop must still apply");
+    assert.ok(patched.some((b) => "title" in b), "title PATCH must still be sent");
+  });
+});
+
 describe("dbRowGetCommand — reserved frontmatter keys are not overwritten by DB properties", () => {
   it("property named notion_id does not override the row UUID", async () => {
     const { dbRowGetCommand } = await import("../../src/commands/db.js");
