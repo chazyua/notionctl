@@ -5,6 +5,89 @@ All notable changes to `notionctl` will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+**Content loss**
+- `page update` and `page sync` deleted a page's existing blocks before writing
+  the replacement, so a failure during the write (a block Notion rejected, a
+  dropped connection, exhausted retries) left the page with its original
+  content gone and nothing in its place. The new content is now written first.
+- `page get` followed by `page sync` could delete and recreate every block on a
+  page the user had not touched, permanently losing uploaded images and files.
+  The written file carried one more trailing newline than the content that was
+  hashed, so an unchanged file was misread as edited. This affected any page
+  ending in a blank paragraph, and any page with a title and no content.
+- `page update` and `page sync` now warn when the blocks being replaced contain
+  nested children. The previous warning only inspected top-level blocks, so an
+  image inside a toggle or callout was deleted with no warning at all.
+- `db row create --from` failed outright for files producing more than 100
+  blocks, creating no row. Content beyond the first 100 blocks is now written
+  in a follow-up request.
+- Number properties could not be cleared: `--prop Points=` wrote `0` over the
+  existing value. An empty value now clears the property, matching `select`,
+  `status`, and `date`.
+
+**Write-safety flags**
+- `--profile` with no value consumed the following flag as its value, so
+  `page delete <id> --profile --dry-run --yes` performed a real delete. A value
+  that looks like a flag is now rejected.
+- `api POST|PATCH|DELETE` ignored `--dry-run` and performed the request.
+- `page restore` ignored `--dry-run` and performed the request.
+
+**Silent or misleading output**
+- Output larger than 64 KB was truncated when piped, while still reporting
+  success. Every exit path now flushes before exiting, and a reader that closes
+  early (`| head`) ends the pipeline cleanly.
+- Paginated reads past roughly 10,000 items reported the result as complete.
+  The response now carries the real cursor and a warning is printed.
+- `--filter` was silently ignored when `--filter-json` was also given. Passing
+  both is now a usage error, raised before any request.
+- `--filter Count=` on a number property queried for `Count == 0` instead of
+  reporting an error, so an unset shell variable returned the wrong rows.
+- A quoted comma in a select or multi-select option list silently produced
+  malformed options: `--prop 'Severity=select:"Bug, Regression",Feature'` split
+  into fragments carrying stray quote characters and created them. Option lists
+  now honour quoting, so the value reaches Notion intact and is rejected with a
+  clear message — Notion does not permit commas in option names — instead of
+  corrupting the schema.
+- `block get --format md` returned nothing for a table and other blocks whose
+  content lives in their children. Children are now fetched when present.
+- A response with a non-JSON body — an intercepting proxy or captive portal —
+  surfaced as an internal error rather than a description of the problem.
+- Retry backoff produced no output, so the CLI appeared frozen for up to a
+  minute per attempt. Waits are now reported.
+- Error messages could carry terminal control sequences from remote content.
+
+**Misleading success**
+- `auth clear --yes` reported success while `NOTION_TOKEN` remained set and
+  still authenticated the user. It now says so.
+- `--profile default` wrote a profile that no unflagged command could see,
+  while `auth list` displayed it identically to the real default profile.
+  `default` is now reserved.
+- Interactive `auth set` appeared to hang: it waited for end-of-input, so
+  pressing Enter after pasting a token did nothing. It now accepts the line.
+- `file upload` discarded the upload identifier when attaching the file to a
+  page failed, leaving no way to reference the uploaded file. It is now
+  reported with the error.
+- `file upload --dry-run` made a network request before printing its preview,
+  which could stall for minutes on an unresponsive connection.
+- An upload rejected by notionctl's own 20 MiB limit was reported as exceeding
+  the workspace limit.
+- `page create` reported success without indicating that no content was
+  supplied, unlike `page append`.
+- When writing content beyond the first 100 blocks failed, `page create` and
+  `db row create` gave no way to find the partially-written page. `page sync`
+  additionally created a duplicate page on every retry.
+- `block append` omitted the guidance about connecting the integration that
+  other commands show for the same error.
+
+### Added
+- Test coverage for each fix above, alongside the module it exercises.
+
+
+
 ## [0.1.4] — 2026-04-24
 
 ### Security

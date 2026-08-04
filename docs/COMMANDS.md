@@ -173,6 +173,11 @@ notionctl db query <id> --filter "Priority=P0" --filter "Due<=2026-04-15"
 notionctl db query <id> --filter-json @complex-filter.json
 ```
 
+Repeated `--filter` flags are ANDed. `--filter` and `--filter-json` cannot be
+combined — pick one. Results are paginated automatically up to 100 pages
+(~10,000 rows); past that the response carries a real `next_cursor` and a
+truncation warning is printed to stderr.
+
 **Filter operators by property type:**
 
 | Type | Operators | Example |
@@ -216,7 +221,10 @@ Update properties on an existing row.
 
 ```sh
 notionctl db row update <page-id> --prop "Status=Done" --prop "Priority=P0"
+notionctl db row update <page-id> --prop "Points="          # empty value clears the property
 ```
+
+An empty value clears `number`, `select`, `status`, and `date` properties.
 
 ### db row delete
 
@@ -334,6 +342,8 @@ notionctl auth set --profile staging
 echo "ntn_..." | notionctl auth set
 ```
 
+`default` is reserved — omit `--profile` to use the default profile.
+
 ### auth status
 
 Verify the current token against Notion's API.
@@ -365,6 +375,9 @@ Remove the token file. Requires `--yes`.
 ```sh
 notionctl auth clear --yes
 ```
+
+Removes the config file only. If `NOTION_TOKEN` is exported it still takes
+precedence and you remain authenticated — the command warns when that applies.
 
 ---
 
