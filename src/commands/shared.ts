@@ -57,6 +57,14 @@ export function readStdinBounded(
 
 export { MAX_STDIN_TOKEN_BYTES };
 
+/**
+ * What a command hands back: its output, or that output plus a non-zero exit
+ * code when it must report failure while still printing a full result.
+ * `auth doctor` is the case that needs this — it has to show every check and
+ * still fail the shell, and throwing would replace the report with an error.
+ */
+export type CommandResult = string | { output: string; exitCode: number };
+
 export interface ParsedFlags {
   flags: Map<string, string>;
   repeated: Map<string, string[]>;

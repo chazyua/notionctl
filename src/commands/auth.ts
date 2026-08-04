@@ -12,8 +12,8 @@ import { randomBytes } from "node:crypto";
 import { execFile } from "node:child_process";
 import { notionRequest, exchangeOAuthCode } from "../http.js";
 import { saveToken, clearToken, loadToken, getConfigPath, getConfigDir, listProfiles, AuthSource } from "../auth.js";
-import { parseFlags, getBooleanFlag, readStdinBounded, MAX_STDIN_TOKEN_BYTES, rejectExtraPositionals } from "./shared.js";
-import { NotionCliError, ErrorCode } from "../errors.js";
+import { parseFlags, getBooleanFlag, readStdinBounded, MAX_STDIN_TOKEN_BYTES, rejectExtraPositionals, type CommandResult } from "./shared.js";
+import { NotionCliError, ErrorCode, EXIT_CODES } from "../errors.js";
 import { renderJson } from "../output.js";
 
 async function readStdinToken(): Promise<string> {
@@ -54,16 +54,21 @@ export async function authSetCommand(_ctx: { args: string[] }): Promise<string> 
   return renderJson({ saved: true, path: getConfigPath() });
 }
 
-export async function authStatusCommand(_ctx: { args: string[] }): Promise<string> {
+export async function authStatusCommand(_ctx: { args: string[] }): Promise<CommandResult> {
   try {
     const me = await notionRequest<{ name?: string; bot?: unknown }>("GET", "/users/me");
     return renderJson({ valid: true, name: me.name ?? "(unknown)" });
   } catch (err) {
-    return renderJson({ valid: false, error: (err as Error).message });
+    // The JSON keeps its shape; only the exit code changes, so
+    // `notionctl auth status || notionctl auth login` works as written.
+    return {
+      output: renderJson({ valid: false, error: (err as Error).message }),
+      exitCode: EXIT_CODES.AUTH,
+    };
   }
 }
 
-export async function authDoctorCommand(_ctx: { args: string[] }): Promise<string> {
+export async function authDoctorCommand(_ctx: { args: string[] }): Promise<CommandResult> {
   const checks: Array<{ check: string; status: "pass" | "fail" | "warn"; detail: string }> = [];
 
   // 1. Token source
@@ -182,7 +187,17 @@ export async function authDoctorCommand(_ctx: { args: string[] }): Promise<strin
     lines.push("Run 'notionctl auth set' to configure a valid token.");
   }
 
-  return lines.join("\n");
+  // The whole report still prints — only the exit code reflects the verdict.
+  // Warnings are advisory (an integration with no page connections is a valid
+  // setup), so they do not fail the command.
+  //
+  // One code for every failure, deliberately. A caller writes `auth doctor ||
+  // fix`, and the report already names which check failed and why; mapping the
+  // exit to whichever check happened to fail would need priority rules for the
+  // multi-failure case and tell the caller nothing they cannot read. AUTH over
+  // GENERIC because GENERIC is what an unhandled crash exits with, and "the
+  // diagnostic ran and found problems" should not look like "it fell over".
+  return { output: lines.join("\n"), exitCode: failed > 0 ? EXIT_CODES.AUTH : 0 };
 }
 
 export async function authListCommand(_ctx: { args: string[] }): Promise<string> {

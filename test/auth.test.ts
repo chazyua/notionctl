@@ -361,3 +361,110 @@ describe("config dir permission check uses bitwise mask", () => {
     assert.equal((0o710 & 0o077) === 0, false);
   });
 });
+
+
+describe("auth status / doctor report failure through the exit code", () => {
+  // Both used to catch internally and return a string, so main() fell through to
+  // process.exit(0) — `notionctl auth status || notionctl auth login` never ran
+  // the fallback, and a failing doctor looked like a healthy one to CI.
+  const ANN = { "content-type": "application/json" };
+
+  async function withStubbedNotion<T>(status: number, body: string, fn: () => Promise<T>): Promise<T> {
+    const { setTokenProvider, resetForTesting } = await import("../src/http.js");
+    const { AuthSource } = await import("../src/auth.js");
+    setTokenProvider(async () => ({ token: "ntn_test", source: AuthSource.ENV }));
+    // authDoctorCommand calls loadToken() from auth.js directly rather than the
+    // http token provider, so without this its first check fails for an
+    // unrelated reason and the test would pass without proving anything.
+    const originalEnvToken = process.env.NOTION_TOKEN;
+    process.env.NOTION_TOKEN = "ntn_test";
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async () => new Response(body, { status, headers: ANN })) as typeof globalThis.fetch;
+    try {
+      return await fn();
+    } finally {
+      globalThis.fetch = originalFetch;
+      if (originalEnvToken === undefined) delete process.env.NOTION_TOKEN;
+      else process.env.NOTION_TOKEN = originalEnvToken;
+      resetForTesting();
+    }
+  }
+
+  it("auth status returns a non-zero exit code when the token is rejected", async () => {
+    const { authStatusCommand } = await import("../src/commands/auth.js");
+    const { EXIT_CODES } = await import("../src/errors.js");
+    const result = await withStubbedNotion(401, JSON.stringify({ message: "API token is invalid." }), () =>
+      authStatusCommand({ args: [] }));
+    assert.notEqual(typeof result, "string", "a failing status must carry an exit code");
+    const { output, exitCode } = result as { output: string; exitCode: number };
+    assert.equal(exitCode, EXIT_CODES.AUTH);
+    // The documented JSON shape is preserved — only the exit code changed.
+    const parsed = JSON.parse(output);
+    assert.equal(parsed.valid, false);
+    assert.ok(parsed.error, "the error field must survive");
+  });
+
+  it("auth status stays a plain string (exit 0) when the token works", async () => {
+    const { authStatusCommand } = await import("../src/commands/auth.js");
+    const result = await withStubbedNotion(200, JSON.stringify({ name: "my-integration" }), () =>
+      authStatusCommand({ args: [] }));
+    assert.equal(typeof result, "string", "success must not carry a non-zero code");
+    assert.equal(JSON.parse(result as string).valid, true);
+  });
+
+  it("auth doctor prints its whole report AND fails", async () => {
+    const { authDoctorCommand } = await import("../src/commands/auth.js");
+    const { EXIT_CODES } = await import("../src/errors.js");
+    const result = await withStubbedNotion(401, JSON.stringify({ message: "API token is invalid." }), () =>
+      authDoctorCommand({ args: [] }));
+    const { output, exitCode } = result as { output: string; exitCode: number };
+    assert.equal(exitCode, EXIT_CODES.AUTH, "a failed check must fail the command");
+    assert.match(output, /\[FAIL\]/, "the report must still be printed in full");
+    assert.match(output, /passed, .* failed/, "the summary line must survive");
+    assert.match(output, /notionctl auth set/, "the remediation hint must survive");
+  });
+
+  it("auth doctor succeeds on warnings alone — an integration with no pages is a valid setup", async () => {
+    const { authDoctorCommand } = await import("../src/commands/auth.js");
+    const { setTokenProvider, resetForTesting } = await import("../src/http.js");
+    const { AuthSource } = await import("../src/auth.js");
+    setTokenProvider(async () => ({ token: "ntn_test", source: AuthSource.ENV }));
+    const originalEnvToken = process.env.NOTION_TOKEN;
+    process.env.NOTION_TOKEN = "ntn_test";
+    const originalFetch = globalThis.fetch;
+    // /users/me succeeds, /search returns nothing — the one shape that yields a
+    // warning with no failure. A single-body stub cannot produce it.
+    globalThis.fetch = (async (input: string | URL | Request) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+      const body = url.includes("/search")
+        ? JSON.stringify({ results: [] })
+        : JSON.stringify({ name: "my-integration", bot: { workspace_name: "Space" } });
+      return new Response(body, { status: 200, headers: ANN });
+    }) as typeof globalThis.fetch;
+
+    try {
+      const result = await authDoctorCommand({ args: [] });
+      const { output, exitCode } = result as { output: string; exitCode: number };
+      assert.match(output, /\[WARN\]/, "this fixture must actually produce a warning");
+      assert.doesNotMatch(output, /\[FAIL\]/, "and no failure");
+      assert.equal(exitCode, 0, "warnings alone must not fail the command");
+    } finally {
+      globalThis.fetch = originalFetch;
+      if (originalEnvToken === undefined) delete process.env.NOTION_TOKEN;
+      else process.env.NOTION_TOKEN = originalEnvToken;
+      resetForTesting();
+    }
+  });
+
+  it("auth doctor succeeds when every check passes", async () => {
+    const { authDoctorCommand } = await import("../src/commands/auth.js");
+    const result = await withStubbedNotion(200, JSON.stringify({
+      name: "my-integration",
+      bot: { workspace_name: "Space" },
+      results: [{ id: "x" }],
+    }), () => authDoctorCommand({ args: [] }));
+    const { output, exitCode } = result as { output: string; exitCode: number };
+    assert.equal(exitCode, 0);
+    assert.doesNotMatch(output, /\[FAIL\]/);
+  });
+});

@@ -53,6 +53,9 @@ Comprehensive test scenarios for notionctl. Use this for manual dogfooding, regr
 - [M] Reports page access (at least one page accessible)
 - [M] Warns when integration has no page connections
 - [M] Fails gracefully when token is invalid (shows which checks failed)
+- [A] Exits 3 when any check fails, 0 when all pass; the full report prints either way
+- [A] Warnings alone do not fail the command
+- [A] `auth status` exits 3 on an invalid token and 0 on a valid one, keeping its JSON shape
 
 ### 1.6 Security Invariants
 - [A] Config file with permissive mode (e.g., 0644) is refused

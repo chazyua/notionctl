@@ -103,6 +103,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Error messages could carry terminal control sequences from remote content.
 
 **Misleading success**
+- `auth status` and `auth doctor` exited 0 even when they reported failure, so
+  `notionctl auth status || notionctl auth login` never ran the fallback and a
+  failing check looked healthy to CI. Both now exit 3 on failure. `auth doctor`
+  still prints its complete report first, and warnings alone do not fail it.
+  The JSON shape of `auth status` is unchanged.
 - `auth clear --yes` reported success while `NOTION_TOKEN` remained set and
   still authenticated the user. It now says so.
 - `--profile default` wrote a profile that no unflagged command could see,

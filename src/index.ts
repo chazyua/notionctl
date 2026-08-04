@@ -20,8 +20,9 @@ import { setActiveProfile } from "./auth.js";
 import { setMarkdownWarnHandler } from "./markdown/write.js";
 import { setTokenizerWarnHandler } from "./markdown/tokenizer.js";
 import { setDebugMode, setVerboseMode, isVerboseMode, getRequestCount } from "./http.js";
+import type { CommandResult } from "./commands/shared.js";
 
-type CommandHandler = (ctx: { args: string[] }) => Promise<string>;
+type CommandHandler = (ctx: { args: string[] }) => Promise<CommandResult>;
 
 async function loadCommand(noun: string, verb: string | undefined): Promise<CommandHandler> {
   switch (noun) {
@@ -319,14 +320,15 @@ async function main(): Promise<void> {
   }
 
   const handler = await loadCommand(noun, verb);
-  const output = await handler({ args: rest });
+  const result = await handler({ args: rest });
+  const { output, exitCode } = typeof result === "string" ? { output: result, exitCode: 0 } : result;
   if (output && output.length > 0) {
     await writeFlushed(process.stdout, output + (output.endsWith("\n") ? "" : "\n"));
   }
   if (getRequestCount() > 0 && isVerboseMode() && !quiet) {
     await writeFlushed(process.stderr, `notionctl: ${getRequestCount()} API request(s)\n`);
   }
-  process.exit(0);
+  process.exit(exitCode);
 }
 
 /**

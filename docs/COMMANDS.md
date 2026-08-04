@@ -356,7 +356,11 @@ Verify the current token against Notion's API.
 
 ```sh
 notionctl auth status
+notionctl auth status || notionctl auth login
 ```
+
+Exits 0 when the token works and 3 when it does not, so it can gate a login in a
+script. The JSON always reports `valid`.
 
 ### auth doctor
 
@@ -365,6 +369,10 @@ Run diagnostic checks: token source, file permissions, API connectivity, workspa
 ```sh
 notionctl auth doctor
 ```
+
+Prints every check regardless of outcome, then exits 3 if any check failed and 0
+otherwise. Warnings are advisory — an integration connected to no pages is a
+valid setup — so they do not fail the command.
 
 ### auth list
 
