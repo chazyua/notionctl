@@ -49,7 +49,11 @@ export function isNonIdempotent(method: string, path: string): boolean {
     return !/^\/(?:search|(?:databases|data_sources)\/[^/?#]+\/query)(?:[?#]|$)/.test(path);
   }
   if (method === "PATCH") {
-    return /\/(?:children|send)(?:[?#]|$)/.test(path);
+    // Deliberately unanchored: an unrecognised append endpoint must classify as a
+    // write, since the fallthrough below assumes PATCH sets rather than appends.
+    // The optional trailing slash matters — Notion accepts `/children/` and
+    // appends normally, so missing it would blind-retry a real duplicate.
+    return /\/(?:children|send)\/?(?:[?#]|$)/.test(path);
   }
   return false;
 }
@@ -386,7 +390,7 @@ export async function appendBlocksChunked(
 /**
  * Upload a file to Notion. Two-step process:
  *   1. POST /file_uploads (JSON) — create upload session
- *   2. PATCH /file_uploads/{id}/send (multipart) — send file data
+ *   2. POST /file_uploads/{id}/send (multipart) — send file data
  *
  * This is the only other outbound HTTP function besides notionRequest.
  * Same auth, same URL enforcement, same domain restriction.
@@ -460,6 +464,8 @@ export async function notionUploadFile(
       throw new NotionCliError(
         mapStatusToErrorCode(response.status),
         `/file_uploads/${session.id}/send: ${message}`,
+        // Matches the network-error path above: the send is not repeated, so say so.
+        { suggestions: [NO_RETRY_HINT] },
       );
     }
 

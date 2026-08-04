@@ -263,6 +263,23 @@ describe("isNonIdempotent — endpoint classification", () => {
     assert.equal(isNonIdempotent("GET", "/blocks/abc123/children"), false);
   });
 
+  it("still catches appends when the path carries a trailing slash", () => {
+    // Notion accepts `/children/` and appends normally (verified against the live
+    // API), so a trailing slash must not downgrade the append to "safe to repeat".
+    assert.equal(isNonIdempotent("PATCH", "/blocks/abc123/children/"), true);
+    assert.equal(isNonIdempotent("PATCH", "/file_uploads/abc123/send/"), true);
+    assert.equal(isNonIdempotent("PATCH", "/blocks/abc123/children/?x=1"), true);
+  });
+
+  it("does not mistake a similarly-named path for an append", () => {
+    assert.equal(isNonIdempotent("PATCH", "/blocks/abc123/childrens"), false);
+    assert.equal(isNonIdempotent("PATCH", "/blocks/abc123/sender"), false);
+  });
+
+  it("treats page move as a write — Notion documents no retry safety for it", () => {
+    assert.equal(isNonIdempotent("POST", "/pages/abc123/move"), true);
+  });
+
   it("treats unknown POST paths as writes", () => {
     assert.equal(isNonIdempotent("POST", "/some/future/endpoint"), true);
     assert.equal(isNonIdempotent("POST", "/searchlike"), true, "must not prefix-match /search");
@@ -434,9 +451,20 @@ describe("notionUploadFile — sending file data is not retried blind", () => {
     return () => sends;
   }
 
-  it("does not repeat the send on 5xx", async () => {
+  it("does not repeat the send on 5xx, and surfaces the hint", async () => {
     const sends = stubUpload(async () => new Response("", { status: 503 }));
-    await assert.rejects(async () => notionUploadFile(tmpFile, "probe.txt", "text/plain"));
+    await assert.rejects(
+      async () => notionUploadFile(tmpFile, "probe.txt", "text/plain"),
+      (err: unknown) => {
+        assert.ok(err instanceof NotionCliError);
+        assert.match(
+          err.suggestions.join(" "),
+          /cannot deduplicate a repeated write/,
+          "the 5xx path must carry the same hint as the network-error path",
+        );
+        return true;
+      },
+    );
     assert.equal(sends(), 1, "file data must not be sent twice on a 5xx");
   });
 

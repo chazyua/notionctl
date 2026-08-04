@@ -94,8 +94,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the same page, comment or blocks repeatedly while reporting a single success.
   Notion offers no way to deduplicate a repeated write, so these are no longer
   retried automatically, and the error now states that the request may already
-  have been applied. Rate-limit (429) retries are unchanged, as are retries for
-  reads, property and schema updates, and deletes.
+  have been applied. `page move` is treated the same way, since Notion documents
+  no retry guarantee for it. Rate-limit (429) retries are unchanged, as are
+  retries for reads, property and schema updates, and deletes.
 
 ### Added
 - Test coverage for each fix above, alongside the module it exercises.
