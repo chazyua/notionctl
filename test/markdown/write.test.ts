@@ -1182,3 +1182,38 @@ describe("an unrecognised comment inside a callout", () => {
     assert.equal((blocks[0] as any).callout.rich_text.map((r: any) => r.plain_text).join(""), "body text");
   });
 });
+
+describe("markers and values the parser cannot use", () => {
+  it("a pass-through marker inside a callout is still reported, not silently dropped", () => {
+    const warnings: string[] = [];
+    setMarkdownWarnHandler((m) => warnings.push(m));
+    markdownToBlocks("> [!NOTE]\n> body\n<!-- notion-block: synced_block id=abc123 -->");
+    setMarkdownWarnHandler(null);
+    assert.ok(warnings.some((w) => /synced_block/.test(w)), "dropping a block must stay visible");
+  });
+
+  it("a colour Notion does not know falls back instead of failing the request", () => {
+    const warnings: string[] = [];
+    setMarkdownWarnHandler((m) => warnings.push(m));
+    const blocks = markdownToBlocks("> [!NOTE]\n<!-- color: chartreuse -->\n> body");
+    setMarkdownWarnHandler(null);
+    assert.ok((blocks[0] as any).callout.color !== "chartreuse");
+    assert.equal(warnings.length, 1);
+  });
+
+  it("a non-emoji icon value falls back, including non-English text", () => {
+    for (const value of ["hello", "x", "日本語", "café"]) {
+      const blocks = markdownToBlocks(`> [!NOTE]\n<!-- icon: ${value} -->\n> body`);
+      const icon = (blocks[0] as any).callout.icon;
+      assert.equal(icon.type, "emoji");
+      assert.notEqual(icon.emoji, value, `${value} must not be sent as an emoji`);
+    }
+  });
+
+  it("a real emoji is still accepted", () => {
+    for (const value of ["🚀", "1️⃣", "🇺🇸", "👨‍👩‍👧‍👦"]) {
+      const blocks = markdownToBlocks(`> [!NOTE]\n<!-- icon: ${value} -->\n> body`);
+      assert.equal((blocks[0] as any).callout.icon.emoji, value);
+    }
+  });
+});

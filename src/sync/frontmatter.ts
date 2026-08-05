@@ -7,7 +7,7 @@
  */
 
 import { parseYaml, stringifyYaml, type YamlObject } from "../utils/yaml.js";
-import { NotionCliError, ErrorCode } from "../errors.js";
+import { NotionCliError, ErrorCode, scrub } from "../errors.js";
 
 export interface ExtractedFrontmatter {
   data: YamlObject;
@@ -32,6 +32,12 @@ export function extractFrontmatter(input: string): ExtractedFrontmatter {
   }
 
   const lines = trimmedLeading.split("\n");
+  // A blank line directly under the opener means this is a horizontal rule with
+  // prose beneath it, not front-matter: YAML front-matter starts with a key on
+  // the very next line. Without this, a divider-first page read back through
+  // `block get` had its first section silently deleted whenever that prose
+  // happened to parse as YAML.
+  if ((lines[1] ?? "").trim().length === 0) return { data: {}, body: text };
   const closeIdx = findClosingDelimiter(lines);
   if (closeIdx === -1) return { data: {}, body: text };
 
@@ -61,23 +67,21 @@ export function reinsertFrontmatter(data: YamlObject, body: string): string {
 }
 
 /**
- * The error every command raises for a front-matter block that opens and closes
- * but will not parse. Shared so the refusal reads the same wherever it happens;
- * `firstSuggestion` lets `page sync` lead with the orphaning risk that only
- * applies to it.
+ * The error raised by the commands that refuse a front-matter block which opens
+ * and closes but will not parse — the ones that replace existing content.
+ * `firstSuggestion` names what is at stake, which differs between them.
  */
 export function malformedFrontmatterError(
   source: string,
   reason: string,
-  firstSuggestion?: string,
+  firstSuggestion: string,
 ): NotionCliError {
   return new NotionCliError(
     ErrorCode.USAGE,
     `Front-matter in ${source} is not valid YAML: ${reason}`,
     {
       suggestions: [
-        firstSuggestion
-          ?? "If this is front-matter, fix the offending line. Writing the file as it stands would put the delimiters and every YAML line — notion_id included — onto the page as visible content.",
+        firstSuggestion,
         "notionctl reads a flat subset of YAML: no block sequences (- item), nested maps, or multi-line strings (| and >). A list must be written inline as [a, b] — this is the usual cause when importing files from Jekyll or Hugo.",
         "If the file was meant to open with a horizontal rule, write it as *** instead — a leading --- is read as a front-matter delimiter, and a blank line above it does not change that.",
       ],
@@ -86,24 +90,35 @@ export function malformedFrontmatterError(
 }
 
 /**
- * Body of a file for a command that wants content and nothing else.
+ * Body of a file, with any front-matter removed.
  *
  * A block that opens and closes with `---` but will not parse is genuinely
  * ambiguous: front-matter with one mistyped line, or a horizontal rule above
  * ordinary prose. The second is not hypothetical — it is the shape `block get`
  * emits for a page starting with a divider, and any document whose first
- * heading is underlined with `---`. Refusing broke both, so the file is used as
- * it stands and the parse failure is reported instead. Nothing is lost either
- * way: at worst the YAML shows up as content, which is visible and fixable.
+ * heading is underlined with `---`.
  *
- * `page sync` stays strict, because only it acts on `notion_id` and only there
- * does guessing wrong orphan a page.
+ * Which way to resolve that depends on what the caller does with the result.
+ * A command that *adds* content writes the file as it stands and says so: the
+ * worst case is YAML visible on the page, which the user can see and delete.
+ * A command that *replaces* content refuses, because there the worst case is
+ * the page's existing blocks deleted and overwritten with that YAML — a loss
+ * that lives on the remote side and cannot be undone from the file.
  */
-export function frontmatterBody(input: string, source: string): string {
+export function frontmatterBody(input: string, source: string, replacesContent = false): string {
   const { body, malformed } = extractFrontmatter(input);
   if (malformed) {
+    if (replacesContent) {
+      throw malformedFrontmatterError(
+        source,
+        malformed,
+        "If this is front-matter, fix the offending line. This command replaces the page's existing blocks, so writing the file as it stands would delete them and put the YAML on the page instead.",
+      );
+    }
+    // Remote text can reach this message; scrub it and keep it to one line.
+    const reason = scrub(malformed).replace(/\s+/g, " ").slice(0, 200);
     process.stderr.write(
-      `notionctl: front-matter in ${source} is not valid YAML (${malformed}) — using the file as written, so those lines become page content.\n`
+      `notionctl: front-matter in ${source} is not valid YAML (${reason}) — using the file as written, so those lines become page content.\n`
       + "  If it was meant to be front-matter, fix that line. If it was meant to be a horizontal rule, write it as *** instead.\n",
     );
   }

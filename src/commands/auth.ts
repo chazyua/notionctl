@@ -41,7 +41,12 @@ async function readStdinToken(): Promise<string> {
       rl.close();
     }
   }
-  const raw = await readStdinBounded(MAX_STDIN_TOKEN_BYTES);
+  const raw = await readStdinBounded(
+    MAX_STDIN_TOKEN_BYTES,
+    process.stdin,
+    undefined,
+    "pipe the token in, e.g. `pbpaste | notionctl auth set`, or run it without a pipe to be prompted.",
+  );
   return raw.trim().split(/\r?\n/)[0] ?? "";
 }
 
@@ -85,7 +90,7 @@ export async function authDoctorCommand(_ctx: { args: string[] }): Promise<Comma
     checks.push({
       check: "Token configured",
       status: "fail",
-      detail: (err as Error).message,
+      detail: oneLine((err as Error).message),
     });
   }
 
@@ -167,19 +172,19 @@ export async function authDoctorCommand(_ctx: { args: string[] }): Promise<Comma
       checks.push({
         check: "API reachable",
         status: "pass",
-        detail: `Integration: ${me.name ?? "unknown"}`,
+        detail: oneLine(`Integration: ${me.name ?? "unknown"}`),
       });
       checks.push({
         check: "Workspace",
         status: "pass",
-        detail: me.bot?.workspace_name ?? "unknown",
+        detail: oneLine(me.bot?.workspace_name ?? "unknown"),
       });
     } catch (err) {
       const code = err instanceof NotionCliError ? err.code : "UNKNOWN";
       checks.push({
         check: "API reachable",
         status: "fail",
-        detail: `${code}: ${(err as Error).message}`,
+        detail: oneLine(`${code}: ${(err as Error).message}`),
       });
     }
 
@@ -204,7 +209,7 @@ export async function authDoctorCommand(_ctx: { args: string[] }): Promise<Comma
       checks.push({
         check: "Page access",
         status: "warn",
-        detail: `Could not verify page access — ${code}: ${(err as Error).message}`,
+        detail: oneLine(`Could not verify page access — ${code}: ${(err as Error).message}`),
       });
     }
   }
@@ -237,6 +242,11 @@ export async function authDoctorCommand(_ctx: { args: string[] }): Promise<Comma
   // GENERIC because GENERIC is what an unhandled crash exits with, and "the
   // diagnostic ran and found problems" should not look like "it fell over".
   return { output: scrub(lines.join("\n")), exitCode: failed > 0 ? EXIT_CODES.AUTH : 0 };
+}
+
+/** One check, one line — a remote value must not be able to add lines of its own. */
+function oneLine(text: string): string {
+  return text.replace(/\s*[\r\n]+\s*/g, " ");
 }
 
 export async function authListCommand(_ctx: { args: string[] }): Promise<string> {

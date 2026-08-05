@@ -14,7 +14,7 @@
  * Split across Tasks 19 (basic) and 20 (complex + pass-through).
  */
 
-import { markdownToRichText } from "./tokenizer.js";
+import { markdownToRichText, unescapeLabel } from "./tokenizer.js";
 import type { Block, CalloutIcon, RichText } from "./types.js";
 import { HOSTED_ICON } from "./types.js";
 
@@ -44,15 +44,31 @@ function calloutIcon(value: string | undefined, alertType: string): CalloutIcon 
   if (/^https?:\/\//i.test(value)) return { type: "external", external: { url: value } };
   const builtin = /^notion:([\w-]+):([\w-]+)$/.exec(value);
   if (builtin) return { type: "icon", icon: { name: builtin[1]!, color: builtin[2]! } };
-  // Anything left has to be an emoji. Plain words reach here from a hand-edited
-  // sidecar, and Notion rejects the whole request rather than just the icon.
-  if (/^[\p{ASCII}]{2,}$/u.test(value)) {
+  // Anything left has to be an emoji. A hand-edited sidecar reaches here with
+  // whatever was typed, and Notion rejects the whole request rather than just
+  // the icon, so require an actual pictograph rather than ruling out words.
+  if (!/\p{Extended_Pictographic}|\p{Regional_Indicator}|[\uFE0F\u20E3]/u.test(value)) {
     warnHandler?.(
-      `notionctl: '${value}' is not an emoji, an image URL, or notion:<name>:<colour> — the callout keeps its default icon.`,
+      `notionctl: '${value.replace(/[\p{Cc}\p{Cf}]/gu, "")}' is not an emoji, an image URL, or notion:<name>:<colour> — the callout keeps its default icon.`,
     );
     return fallback;
   }
   return { type: "emoji", emoji: value };
+}
+
+const NOTION_COLORS = new Set([
+  "default", "gray", "brown", "orange", "yellow", "green", "blue", "purple", "pink", "red",
+  "gray_background", "brown_background", "orange_background", "yellow_background",
+  "green_background", "blue_background", "purple_background", "pink_background", "red_background",
+]);
+
+/** A colour Notion does not know fails the whole request, so fall back instead. */
+function calloutColor(value: string | undefined, alertType: string): string {
+  const fallback = ALERT_TYPE_TO_COLOR[alertType] ?? "default";
+  if (value === undefined) return fallback;
+  if (NOTION_COLORS.has(value)) return value;
+  warnHandler?.(`notionctl: '${value}' is not a Notion colour — the callout keeps its default.`);
+  return fallback;
 }
 
 const ALERT_TYPE_TO_COLOR: Record<string, string> = {
@@ -156,14 +172,19 @@ function canNestAt(depth: number): boolean {
  */
 function nestOrPromote(data: { children?: Block[] }, children: Block[], depth: number, ctx: ParseContext): Block[] {
   if (children.length === 0) return [];
-  // A table carries its rows as children, so it needs one more level than a
-  // block that ends at itself — Notion does not even accept `table` as a type
-  // at the deepest level. Promoting cascades: the table ends up one level
-  // shallower, where its rows fit.
-  const reserved = children.some((b) => b.type === "table") ? 1 : 0;
-  if (canNestAt(depth + reserved)) {
-    data.children = children;
-    return [];
+  if (canNestAt(depth)) {
+    // A table carries its rows as children, so it needs one more level than a
+    // block that ends at itself — Notion does not even accept `table` as a type
+    // at the deepest level. Only the table and what follows it move out, which
+    // keeps reading order and leaves siblings that fit where they are.
+    const firstTable = canNestAt(depth + 1) ? -1 : children.findIndex((b) => b.type === "table");
+    if (firstTable === -1) {
+      data.children = children;
+      return [];
+    }
+    if (firstTable > 0) data.children = children.slice(0, firstTable);
+    ctx.promoted = true;
+    return children.slice(firstTable);
   }
   ctx.promoted = true;
   return children;
@@ -238,7 +259,8 @@ function markdownToBlocksInternal(md: string, ctx: ParseContext, depth: number):
       } else {
         i++;
       }
-      const caption = alt ? [{ type: "text", text: { content: alt, link: null }, annotations: { bold: false, italic: false, strikethrough: false, underline: false, code: false, color: "default" }, plain_text: alt, href: null }] : [];
+      const altText = unescapeLabel(alt);
+      const caption = altText ? [{ type: "text", text: { content: altText, link: null }, annotations: { bold: false, italic: false, strikethrough: false, underline: false, code: false, color: "default" }, plain_text: altText, href: null }] : [];
       blocks.push({
         object: "block",
         id: "",
@@ -272,8 +294,9 @@ function markdownToBlocksInternal(md: string, ctx: ParseContext, depth: number):
             } as unknown as Block);
           } else {
             const blockType = sidecar.type as "bookmark" | "link_preview";
-            const captionRuns = parsedLink.label && parsedLink.label !== parsedLink.url
-              ? [{ type: "text", text: { content: parsedLink.label, link: null }, annotations: { bold: false, italic: false, strikethrough: false, underline: false, code: false, color: "default" }, plain_text: parsedLink.label, href: null }]
+            const caption = unescapeLabel(parsedLink.label);
+            const captionRuns = caption && caption !== parsedLink.url
+              ? [{ type: "text", text: { content: caption, link: null }, annotations: { bold: false, italic: false, strikethrough: false, underline: false, code: false, color: "default" }, plain_text: caption, href: null }]
               : [];
             blocks.push({
               object: "block",
@@ -404,8 +427,10 @@ function markdownToBlocksInternal(md: string, ctx: ParseContext, depth: number):
         if (colorComment) { overrideColor = colorComment[1]!; i++; continue; }
         // Any other comment here is not ours — a hand-edited sidecar, a stray
         // HTML comment. Skipping keeps the callout together; falling through to
-        // the break below ended it and left its body as a separate quote.
-        if (/^<!--.*-->$/.test(next)) { i++; continue; }
+        // the break below ended it and left its body as a separate quote. Our
+        // own markers are excluded so they keep reaching the handlers that
+        // warn about them rather than vanishing.
+        if (/^<!--.*-->$/.test(next) && !/^<!--\s*notion-/.test(next)) { i++; continue; }
         if (/^>\s/.test(next)) {
           continuationLines.push(next.slice(2));
           i++;
@@ -445,7 +470,7 @@ function markdownToBlocksInternal(md: string, ctx: ParseContext, depth: number):
       const calloutData: any = {
         rich_text: calloutRichText,
         icon: calloutIcon(overrideIcon, alertType),
-        color: overrideColor ?? ALERT_TYPE_TO_COLOR[alertType] ?? "default",
+        color: calloutColor(overrideColor, alertType),
       };
       const calloutPromoted = nestOrPromote(calloutData, calloutChildren, depth, ctx);
       blocks.push({
@@ -601,7 +626,14 @@ function markdownToBlocksInternal(md: string, ctx: ParseContext, depth: number):
     // Consume it and let the following table inherit has_column_header=false.
     if (/^<!--\s*notion-table:\s*has_column_header=false\s*-->$/.test(trimmed)) {
       const next = nextContentIdx(lines, i + 1);
-      if (next !== -1 && /^\|.*\|$/.test(lines[next]!.trim())) {
+      // Require a real table — a row line followed by a separator row — so a
+      // paragraph that merely looks like a row cannot absorb the marker and
+      // leave it to strip the header off the next table further down.
+      const isTable = next !== -1
+        && /^\|.*\|$/.test(lines[next]!.trim())
+        && next + 1 < lines.length
+        && /^\|\s*:?---/.test(lines[next + 1]!.trim());
+      if (isTable) {
         tableNoHeader = true;
         i = next;
       } else {

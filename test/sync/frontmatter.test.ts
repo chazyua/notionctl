@@ -98,13 +98,28 @@ describe("extractFrontmatter — malformed blocks are distinguishable", () => {
     assert.equal(body, "# Title\n", "a BOM must not leak into page content");
   });
 
-  it("flags a divider-first document, because it is indistinguishable from broken front-matter", () => {
-    // Deliberate: the leading --- is a front-matter delimiter in every major
-    // static-site generator, and the sync path cannot tell this apart from a
-    // corrupted block that still carries notion_id. page sync refuses and tells
-    // the user to write the rule as *** instead.
-    const { malformed } = extractFrontmatter("---\n\nprose\n\n---\n\nmore\n");
-    assert.ok(malformed);
+  it("a divider-first document is not front-matter at all", () => {
+    // YAML front-matter starts with a key on the line after the opener, so a
+    // blank line there means the `---` is a horizontal rule. Without that
+    // distinction a page whose first block is a divider lost its opening
+    // section — silently, whenever the prose happened to parse as YAML.
+    const { data, body, malformed } = extractFrontmatter("---\n\nprose\n\n---\n\nmore\n");
+    assert.equal(malformed, undefined, "not a broken block — not a block at all");
+    assert.deepEqual(data, {});
+    assert.equal(body, "---\n\nprose\n\n---\n\nmore\n", "every line must survive");
+  });
+
+  it("parseable prose under a leading rule is no longer eaten", () => {
+    // The dangerous case: it parses, so nothing was ever reported.
+    const { body } = extractFrontmatter("---\n\nStatus: Done\n\n---\n\nReal content\n");
+    assert.match(body, /Status: Done/);
+    assert.match(body, /Real content/);
+  });
+
+  it("real front-matter still parses", () => {
+    const { data, body } = extractFrontmatter("---\ntitle: X\nnotion_id: abc\n---\n\nBody\n");
+    assert.equal(data.title, "X");
+    assert.equal(body, "Body\n");
   });
 });
 
@@ -137,6 +152,25 @@ describe("frontmatterBody — a block that will not parse is kept, not refused",
     assert.match(warned, /test\.md/);
     assert.match(warned, /broken line without colon/, "names the offending line");
     assert.match(warned, /\*\*\*/, "offers the horizontal-rule workaround");
+  });
+
+  it("refuses for a command that replaces what is already there", () => {
+    // page update deletes every existing block first, so writing an ambiguous
+    // file would destroy remote content that the file cannot restore.
+    assert.throws(
+      () => frontmatterBody(broken, "notes.md", true),
+      (err: any) => {
+        assert.equal(err.code, "USAGE");
+        assert.match(err.message, /not valid YAML/);
+        assert.ok(err.suggestions.some((x: string) => /replaces/.test(x)));
+        return true;
+      },
+    );
+  });
+
+  it("still keeps the file for a command that only adds", () => {
+    const { body } = captureStderr(() => frontmatterBody(dividerFirst, "notes.md", false));
+    assert.equal(body, dividerFirst);
   });
 
   it("never loses content, whichever way the block was meant", () => {

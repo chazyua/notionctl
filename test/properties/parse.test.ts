@@ -365,3 +365,24 @@ describe("quoted list values are not collapsed", () => {
     assert.deepEqual((parseProperty(schema, "Tags", '"a","b"') as any).multi_select, [{ name: "a" }, { name: "b" }]);
   });
 });
+
+describe("a quoted value containing a comma stays one value", () => {
+  const schema: Record<string, PropertySchema> = { Tags: { type: "multi_select" } };
+
+  it("multi_select keeps it whole", () => {
+    // Stripping the surrounding quotes before splitting turned one option into
+    // two — and Notion rejects an option containing a comma anyway, so the
+    // user got a confusing error instead of their value.
+    assert.deepEqual(
+      (parseProperty(schema, "Tags", '"Bug, Regression"') as any).multi_select,
+      [{ name: "Bug, Regression" }],
+    );
+  });
+
+  it("an unquoted comma still separates values", () => {
+    assert.deepEqual(
+      (parseProperty(schema, "Tags", "Bug,Regression") as any).multi_select,
+      [{ name: "Bug" }, { name: "Regression" }],
+    );
+  });
+});

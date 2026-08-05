@@ -230,8 +230,6 @@ notionctl db row update <page-id> --prop "Status=Done" --prop "Priority=P0"
 notionctl db row update <page-id> --prop "Points="          # empty value clears the property
 ```
 
-An empty value clears the property.
-
 **Property value syntax for `--prop Name=value`:**
 
 | Type | Value | Example |
@@ -247,13 +245,15 @@ An empty value clears the property.
 | files | `url:<https-url>` | `--prop "Spec=url:https://example.com/a.pdf"` |
 
 `people` and `relation` take ids, not names — `notionctl user list` prints user
-ids, and a page id may be pasted as a Notion URL. Square brackets are optional:
+ids — a page's id, not its URL. Square brackets are optional:
 `[user:a, user:b]` and `user:a,user:b` mean the same thing. Wrap a value
 containing a comma in quotes.
 
 An empty value clears `number`, `select`, `status`, `date`, `people`, `relation`
 and `multi_select` — `--prop "Assignee="` removes everyone, `--prop "Points="`
-clears the number. Other types have no empty form and report an error.
+clears the number. `title`, `rich_text`, `url`, `email` and `phone_number` accept
+an empty value and store it as empty; `checkbox` and `files` have no empty form
+and report an error.
 
 Quote a value that contains a comma. Quoting each item of a list separately
 (`"user:a","user:b"`) works too.
@@ -472,8 +472,9 @@ all; a file meant to open with a horizontal rule should use `***`.
 **Empty paragraphs are not preserved.** A blank paragraph used as spacing in
 Notion has no Markdown equivalent — a blank line is already how blocks are
 separated — so spacers are dropped on read and not recreated on write. Syncing a
-page back therefore removes its blank spacing. Only spacing is affected: a blank
-paragraph that carries child blocks keeps them. This is stable, not cumulative;
+page back therefore removes its blank spacing. Only content is guaranteed: a blank
+paragraph that carries child blocks keeps the children, though they move up to
+sit beside it rather than under it. This is stable, not cumulative;
 a second sync changes nothing further.
 
 **Mentions.** A person, page or database mention is written as
@@ -510,7 +511,7 @@ back rewrites the heading in Notion to match.
 **Multi-paragraph list items.** Content indented to the item's body column stays
 inside that item:
 
-```markdown
+````markdown
 - Step one
 
   Why step one matters.
@@ -520,7 +521,7 @@ inside that item:
   ```
 
 - Step two
-```
+````
 
 A line wrapped without a blank line above it (`- long item that\n  wraps`) is
 folded into the item's own text, not made a separate block.

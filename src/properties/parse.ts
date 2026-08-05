@@ -97,6 +97,8 @@ export function parseProperty(
   }
 
   const value = stripQuotes(rawValue);
+  // List types keep the raw value: parseList understands quoting, and stripping
+  // an outer pair first turned `"Bug, Regression"` into two options.
 
   switch (propSchema.type) {
     case "title":
@@ -125,7 +127,7 @@ export function parseProperty(
       if (value.length === 0) return { status: null };
       return { status: { name: value } };
     case "multi_select": {
-      const items = parseList(value);
+      const items = parseList(rawValue);
       return { multi_select: items.map((name) => ({ name })) };
     }
     case "date": {
@@ -160,7 +162,7 @@ export function parseProperty(
     case "people": {
       // Brackets are optional, as for multi_select — an unbracketed
       // `user:a,user:b` used to be swallowed into one malformed id.
-      const items = parseList(value);
+      const items = parseList(rawValue);
       return { people: items.map((item) => resolvePersonRef(item, key)) };
     }
     case "files": {
@@ -182,7 +184,7 @@ export function parseProperty(
       );
     }
     case "relation": {
-      const items = parseList(value);
+      const items = parseList(rawValue);
       return { relation: items.map((item) => resolveRelationRef(item, key)) };
     }
     default:

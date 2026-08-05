@@ -11,7 +11,7 @@
  * this file in sequence.
  */
 
-import { richTextToMarkdown } from "./tokenizer.js";
+import { escapeMarkdownContent, richTextToMarkdown } from "./tokenizer.js";
 import { isBlockStart } from "./write.js";
 import type { Block, CalloutIcon, RichText } from "./types.js";
 import { HOSTED_ICON } from "./types.js";
@@ -178,7 +178,10 @@ function escapeSummary(text: string): string {
 /** `<details>` rendering, shared by toggles and toggleable headings. */
 function renderDisclosure(summary: string, children: Block[] | undefined): string {
   const body = children && children.length > 0 ? "\n" + blocksToMarkdown(children) + "\n" : "\n";
-  return `<details><summary>${escapeSummary(summary)}</summary>\n${body}</details>`;
+  // A summary is one line by construction, so a line break inside it has to
+  // collapse here — written out raw it ended the element early and the title
+  // was lost entirely.
+  return `<details><summary>${escapeSummary(singleLine(summary))}</summary>\n${body}</details>`;
 }
 
 function renderBlock(block: Block, depth: number, numberedIndex: number): string | null {
@@ -194,7 +197,7 @@ function renderBlock(block: Block, depth: number, numberedIndex: number): string
     case "heading_3": {
       const level = HEADING_LEVEL[block.type]!;
       const data = (block as unknown as Record<string, { rich_text?: RichText[]; is_toggleable?: boolean }>)[block.type];
-      const text = singleLine(richTextToMarkdown(data?.rich_text ?? []));
+      const text = richTextToMarkdown(data?.rich_text ?? []);
       // A toggleable heading is a disclosure widget that happens to be styled
       // as a heading, so it round-trips through <details> with a sidecar
       // naming the level. Rendering it as `# text` would lose both the toggle
@@ -204,21 +207,21 @@ function renderBlock(block: Block, depth: number, numberedIndex: number): string
           ?? (data as { children?: Block[] }).children;
         return `<!-- notion-heading: ${level} -->\n${renderDisclosure(text, kids)}`;
       }
-      return appendChildBlocks(`${"#".repeat(level)} ${text}`, block);
+      return appendChildBlocks(`${"#".repeat(level)} ${singleLine(text)}`, block);
     }
     case "bulleted_list_item": {
-      const text = `${indent}- ${richTextToMarkdown(block.bulleted_list_item?.rich_text ?? [])}`;
+      const text = `${indent}- ${singleLine(richTextToMarkdown(block.bulleted_list_item?.rich_text ?? []))}`;
       const nested = (block as any)._children as Block[] | undefined;
       return nested && nested.length > 0 ? `${text}\n${renderNestedList(nested, depth + 1)}` : text;
     }
     case "numbered_list_item": {
-      const text = `${indent}${numberedIndex + 1}. ${richTextToMarkdown(block.numbered_list_item?.rich_text ?? [])}`;
+      const text = `${indent}${numberedIndex + 1}. ${singleLine(richTextToMarkdown(block.numbered_list_item?.rich_text ?? []))}`;
       const nested = (block as any)._children as Block[] | undefined;
       return nested && nested.length > 0 ? `${text}\n${renderNestedList(nested, depth + 1)}` : text;
     }
     case "to_do": {
       const checked = block.to_do.checked ? "x" : " ";
-      const text = `${indent}- [${checked}] ${richTextToMarkdown(block.to_do.rich_text)}`;
+      const text = `${indent}- [${checked}] ${singleLine(richTextToMarkdown(block.to_do.rich_text))}`;
       const nested = (block as any)._children as Block[] | undefined;
       return nested && nested.length > 0 ? `${text}\n${renderNestedList(nested, depth + 1)}` : text;
     }
@@ -346,7 +349,7 @@ function renderBlock(block: Block, depth: number, numberedIndex: number): string
       }
       const url = media?.external?.url ?? "";
       const caption = (media?.caption ?? []).map((r) => r.plain_text).join("");
-      const label = caption || block.type;
+      const label = escapeMarkdownContent(caption || block.type);
       return `![${label}](${url})\n<!-- notion-block: ${block.type} id=${block.id} -->`;
     }
     case "bookmark":
@@ -354,14 +357,14 @@ function renderBlock(block: Block, depth: number, numberedIndex: number): string
       const bm = (block as unknown as { [key: string]: { url?: string; caption?: Array<{ plain_text: string }> } })[block.type];
       const url = bm?.url ?? "";
       const caption = (bm?.caption ?? []).map((r) => r.plain_text).join("");
-      return `[${caption || url}](${url})\n<!-- notion-block: ${block.type} id=${block.id} -->`;
+      return `[${escapeMarkdownContent(caption || url)}](${url})\n<!-- notion-block: ${block.type} id=${block.id} -->`;
     }
     case "child_page":
     case "child_database": {
       const body = (block as unknown as { [key: string]: { title?: string } })[block.type];
       const title = body?.title ?? "Untitled";
       const kind = block.type === "child_page" ? "page" : "database";
-      return `[${title}](notion://${kind}/${block.id})`;
+      return `[${escapeMarkdownContent(title)}](notion://${kind}/${block.id})`;
     }
     case "column_list": {
       const columns = (block as { _children?: Block[] })._children;
@@ -385,7 +388,7 @@ function renderBlock(block: Block, depth: number, numberedIndex: number): string
       const em = (block as unknown as { embed?: { url?: string; caption?: Array<{ plain_text: string }> } }).embed;
       const emUrl = em?.url ?? "";
       const emCaption = (em?.caption ?? []).map((r) => r.plain_text).join("");
-      return `[${emCaption || emUrl}](${emUrl})\n<!-- notion-block: embed id=${block.id} -->`;
+      return `[${escapeMarkdownContent(emCaption || emUrl)}](${emUrl})\n<!-- notion-block: embed id=${block.id} -->`;
     }
     case "synced_block":
     case "table_of_contents":

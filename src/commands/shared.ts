@@ -42,10 +42,13 @@ function describeDuration(ms: number): string {
  * Read a stream with a bounded size limit to prevent OOM on a huge input, and
  * a bounded idle time so an open pipe cannot hang the command forever.
  */
+const DEFAULT_STDIN_HINT = "pass --from <file> to read a file, or redirect from /dev/null for no content.";
+
 export function readStdinBounded(
   maxBytes = MAX_STDIN_BYTES,
   stream: Readable = process.stdin,
   idleMs = STDIN_IDLE_TIMEOUT_MS,
+  hint = DEFAULT_STDIN_HINT,
 ): Promise<string> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
@@ -69,14 +72,14 @@ export function readStdinBounded(
     };
 
     const armIdleTimer = () => {
-      if (interactive) return;
+      if (interactive) return;   // a prompt was already printed below
       if (idleTimer !== undefined) clearTimeout(idleTimer);
       if (noticeTimer !== undefined) clearTimeout(noticeTimer);
       // Only in the real pipeline: tests drive this with tiny timeouts and
       // would otherwise print a notice for every case.
-      if (stream === process.stdin && idleMs > STDIN_NOTICE_MS) {
+      if (stream === process.stdin && idleMs > STDIN_NOTICE_MS && totalBytes === 0) {
         noticeTimer = setTimeout(() => {
-          process.stderr.write("notionctl: waiting for input on stdin — pass --from <file> to read a file, or redirect from /dev/null for no content.\n");
+          process.stderr.write(`notionctl: waiting for input on stdin — ${hint}\n`);
         }, STDIN_NOTICE_MS);
       }
       idleTimer = setTimeout(() => {
@@ -88,8 +91,7 @@ export function readStdinBounded(
             {
               suggestions: [
                 "This command reads stdin whenever stdin is not a terminal, so it waits on a pipe that is open but never written to.",
-                "To read a file instead, pass --from <file>.",
-                "To provide no content at all, redirect from /dev/null.",
+                hint,
               ],
             },
           ));
@@ -111,6 +113,12 @@ export function readStdinBounded(
     };
     const onEnd = () => settle(() => resolve(Buffer.concat(chunks).toString("utf8")));
     const onError = (err: Error) => settle(() => reject(err));
+
+    // Reading from a terminal has no time limit, but it must not look like a
+    // hang: say what is being waited for and how to end it.
+    if (interactive) {
+      process.stderr.write("Reading from stdin — press Ctrl-D when finished.\n");
+    }
 
     stream.on("data", onData);
     stream.on("end", onEnd);

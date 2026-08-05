@@ -10,9 +10,37 @@ import assert from "node:assert/strict";
 import { blocksToMarkdown, markdownToBlocks } from "../../src/markdown/index.js";
 import { setMarkdownWarnHandler } from "../../src/markdown/write.js";
 
+/**
+ * The read path takes children on `_children`; the write path produces them on
+ * `<type>.children`. Re-attaching lets a result be fed back in, which is what
+ * makes multi-cycle testing possible — several first-cycle regressions hid
+ * behind a helper that could only ever run once.
+ */
+function reattach(blocks: any[]): any[] {
+  return blocks.map((b) => {
+    const kids = b[b.type]?.children;
+    return kids && kids.length > 0 ? { ...b, _children: reattach(kids) } : b;
+  });
+}
+
 function roundTrip(blocks: unknown[]): unknown[] {
   const md = blocksToMarkdown(blocks as any);
   return markdownToBlocks(md);
+}
+
+/** Run `n` full read→write cycles, re-attaching children between each. */
+function cycles(blocks: unknown[], n: number): unknown[] {
+  let current = blocks as any[];
+  for (let i = 0; i < n; i++) current = reattach(markdownToBlocks(blocksToMarkdown(current)) as any[]);
+  return current;
+}
+
+/** Compact structural view, for asserting that two cycles agree. */
+function shape(blocks: any[]): string {
+  return JSON.stringify(blocks.map(function walk(b: any): unknown {
+    const d = b[b.type] ?? {};
+    return [b.type, (d.rich_text ?? []).map((r: any) => r.plain_text).join(""), (d.children ?? []).map(walk)];
+  }));
 }
 
 describe("Markdown round-trip", () => {
@@ -863,4 +891,70 @@ describe("remote text cannot forge markup", () => {
     assert.notEqual(blocks[0].callout.icon.emoji, "hello", "must not send a word to the API as an emoji");
     assert.equal(warnings.length, 1);
   });
+});
+
+
+describe("everything converges, not just the first cycle", () => {
+  const ann = { bold: false, italic: false, strikethrough: false, underline: false, code: false, color: "default" };
+  const rt = (t: string) => [{ type: "text", text: { content: t, link: null }, plain_text: t, annotations: ann }];
+  const kid = (t: string) => ({ id: "k", type: "paragraph", has_children: false, paragraph: { rich_text: rt(t), color: "default" } });
+
+  // A line break is the case that kept slipping through: it is legal in every
+  // Notion rich_text field, and several renderers put it somewhere Markdown
+  // cannot express.
+  const specimens: Array<[string, any]> = [
+    ["toggle with a line break in its title", { id: "1", type: "toggle", has_children: true, toggle: { rich_text: rt("Release\nnotes"), color: "default" }, _children: [kid("body")] }],
+    ["list item with a line break", { id: "1", type: "bulleted_list_item", has_children: false, bulleted_list_item: { rich_text: rt("a\nb"), color: "default" } }],
+    ["to-do with a line break", { id: "1", type: "to_do", has_children: false, to_do: { rich_text: rt("a\nb"), checked: false, color: "default" } }],
+    ["heading with a line break", { id: "1", type: "heading_1", has_children: false, heading_1: { rich_text: rt("a\nb"), color: "default", is_toggleable: false } }],
+    ["toggleable heading", { id: "1", type: "heading_2", has_children: true, heading_2: { rich_text: rt("Sec"), color: "default", is_toggleable: true }, _children: [kid("inside")] }],
+    ["list item with a child paragraph", { id: "1", type: "bulleted_list_item", has_children: true, bulleted_list_item: { rich_text: rt("Item"), color: "default" }, _children: [kid("note")] }],
+    ["callout with a child list", { id: "1", type: "callout", has_children: true, callout: { rich_text: rt("body"), icon: { type: "emoji", emoji: "💡" }, color: "default" }, _children: [{ id: "l", type: "bulleted_list_item", has_children: false, bulleted_list_item: { rich_text: rt("a"), color: "default" } }] }],
+    ["quote with a child paragraph", { id: "1", type: "quote", has_children: true, quote: { rich_text: rt("quoted"), color: "default" }, _children: [kid("second")] }],
+  ];
+
+  for (const [name, block] of specimens) {
+    it(`${name} is unchanged from cycle 1 to cycle 3`, () => {
+      const one = shape(cycles([block], 1) as any[]);
+      const two = shape(cycles([block], 2) as any[]);
+      const three = shape(cycles([block], 3) as any[]);
+      assert.equal(two, three, `${name} never settles`);
+      assert.equal(one, two, `${name} changes on the second cycle`);
+    });
+  }
+
+  it("a title with a line break keeps its text", () => {
+    const out = cycles([specimens[0]![1]], 1) as any[];
+    assert.match(shape(out), /Release notes/, "the title must survive, collapsed to one line");
+  });
+
+  it("a list item with a line break stays in the list", () => {
+    const out = cycles([specimens[1]![1]], 1) as any[];
+    assert.equal(out.length, 1, "must not spill a paragraph out of the list");
+    assert.equal((out[0] as any).type, "bulleted_list_item");
+  });
+});
+
+describe("remote titles cannot forge links from any block type", () => {
+  const hostile = "X](https://evil.example)";
+  const cases: Array<[string, any]> = [
+    ["child_page", { id: "33dd872b-594c-816b-b58b-00025280b6c9", type: "child_page", has_children: false, child_page: { title: hostile } }],
+    ["bookmark", { id: "1", type: "bookmark", has_children: false, bookmark: { url: "https://real.example", caption: [{ plain_text: hostile }] } }],
+    ["image", { id: "1", type: "image", has_children: false, image: { type: "external", external: { url: "https://real.example/i.png" }, caption: [{ plain_text: hostile }] } }],
+    ["embed", { id: "1", type: "embed", has_children: false, embed: { url: "https://real.example", caption: [{ plain_text: hostile }] } }],
+  ];
+
+  for (const [name, block] of cases) {
+    it(`a ${name} title cannot link somewhere else`, () => {
+      const md = blocksToMarkdown([block] as any);
+      const out = markdownToBlocks(md) as any[];
+      const links: string[] = [];
+      const walk = (bs: any[]) => bs.forEach((b) => {
+        (b[b.type]?.rich_text ?? []).forEach((r: any) => { if (r.text?.link?.url) links.push(r.text.link.url); });
+        walk(b[b.type]?.children ?? []);
+      });
+      walk(out);
+      assert.ok(!links.includes("https://evil.example"), `${name} forged a link`);
+    });
+  }
 });

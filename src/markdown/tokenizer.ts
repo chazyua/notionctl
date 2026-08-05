@@ -260,7 +260,7 @@ export function findReplaceRichText(
  * - `*` : skip ALL escaping when every asterisk is between alphanumerics AND
  *         the run is not inside bold/italic context. Common win: `2*3 = 6`.
  */
-function escapeMarkdownContent(s: string, inEmphasisCtx: boolean = false): string {
+export function escapeMarkdownContent(s: string, inEmphasisCtx: boolean = false): string {
   const escUnderscore = hasEmphasisUnderscore(s);
   const escAsterisk = inEmphasisCtx || hasEmphasisAsterisk(s);
   let out = "";
@@ -323,7 +323,8 @@ function runContent(run: RichText): string {
     return label;
   }
   // Unreachable for the run types we model; kept for a shape Notion adds later.
-  return (run as { plain_text?: string }).plain_text ?? "";
+  // Escaped for the same reason the mention kinds are: it is remote text.
+  return escapeMarkdownContent((run as { plain_text?: string }).plain_text ?? "");
 }
 
 /**
@@ -350,6 +351,8 @@ interface ScannerState {
   strikethrough: boolean;
   code: boolean;
 }
+
+export { unescapeLabel };
 
 export function markdownToRichText(md: string): RichText[] {
   if (md.length === 0) return [];

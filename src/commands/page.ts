@@ -135,11 +135,11 @@ async function readInputMarkdown(flags: Map<string, string>): Promise<string> {
 
 /**
  * Strip YAML frontmatter from markdown so page get → page update/append
- * round-trips cleanly. A block that will not parse is refused rather than
- * written: on that path the "body" is the whole file, delimiters included.
+ * round-trips cleanly. `replacesContent` decides how a block that will not
+ * parse is handled — see frontmatterBody.
  */
-function stripFrontmatter(md: string, source: string): string {
-  return frontmatterBody(md, source);
+function stripFrontmatter(md: string, source: string, replacesContent = false): string {
+  return frontmatterBody(md, source, replacesContent);
 }
 
 /** How to name the input in an error — the file if there was one, else stdin. */
@@ -312,7 +312,7 @@ export async function pageUpdateCommand(ctx: { args: string[] }): Promise<string
   let resolvedTitle = title;
   let newBlocks: ReturnType<typeof markdownToBlocks> | null = null;
   if (hasFrom) {
-    const raw = stripFrontmatter(await readInputMarkdown(flags), inputLabel(flags));
+    const raw = stripFrontmatter(await readInputMarkdown(flags), inputLabel(flags), true);
     let bodyForBlocks = raw;
     if (!resolvedTitle) {
       // No explicit --title: use the leading H1 as the new title and strip

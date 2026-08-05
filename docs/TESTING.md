@@ -129,9 +129,11 @@ Comprehensive test scenarios for notionctl. Use this for manual dogfooding, regr
 - [M] Trashed page produces clear error with recovery instructions
 - [A] Front-matter that fails to parse is refused, not treated as a new file —
       no duplicate page is created and the original keeps its `notion_id`
-- [A] `page create/append/update`, `db row create` and `block append` refuse a
-      file whose front-matter will not parse, rather than writing the YAML onto
-      the page as content; the error names the offending line
+- [A] `page update` refuses a file whose front-matter will not parse, since it
+      replaces the page's existing blocks; `page create/append`, `db row create`
+      and `block append` report it and write the file, naming the offending line
+- [A] A document opening with a horizontal rule is not treated as front-matter,
+      whether or not the prose beneath it happens to parse as YAML
 - [A] A file with no front-matter, or an unclosed `---` opener, still creates
 - [A] A `notion_id` that is blank, `null`, `~` or a number is refused, not
       treated as a first sync
@@ -421,9 +423,10 @@ Comprehensive test scenarios for notionctl. Use this for manual dogfooding, regr
 - [A] A hand-written `notion://` link with a malformed id stays a link; a dashless
       id is normalised
 - [A] Quoting each list item separately does not collapse them into one value
-- [A] `auth doctor` rejects a config directory the owner cannot enter, warns about
-      a loose config file when `NOTION_TOKEN` is in use, and scrubs its report
-- [A] A terminal is exempt from the stdin idle timeout
+- [M] `auth doctor` rejects a config directory the owner cannot enter, warns about
+      a loose config file when `NOTION_TOKEN` is in use, and scrubs its report so
+      a remote name cannot forge a `[OK]` line
+- [M] A terminal is exempt from the stdin idle timeout and prints a prompt
 - [A] Callout icons round-trip for emoji, external URL and built-in Notion icons;
       a Notion-hosted icon falls back to a default and warns
 - [M] A page with mentions and custom callout icons survives `page get` →

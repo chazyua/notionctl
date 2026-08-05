@@ -107,10 +107,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   stdin blocked forever, with no output at all, when stdin was a pipe that
   stayed open — a background job, a producer that stalled, an inherited
   descriptor. These commands read stdin whenever it is not a terminal, so this
-  needed no explicit redirection to happen. They now give up after 30 seconds
-  with nothing arriving and say how to proceed. The limit is on idle time and
-  every chunk resets it, so a slow producer is never cut off; interactive
-  `auth set` is unaffected, as it reads a line rather than a stream.
+  needed no explicit redirection to happen. They now say they are waiting after
+  ten seconds and stop after two minutes, rather than never. The limit is on
+  idle time and every chunk resets it, so a producer that is slow but still
+  sending is never cut off, and typing at a terminal — including `--from -` —
+  has no limit at all, only a prompt saying input is being read.
 
 **Diagnostics**
 - `auth doctor` reported `[OK]` for a config directory its own owner cannot
@@ -171,15 +172,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   retries for reads, property and schema updates, and deletes.
 
 **Content loss (continued)**
-- `page create`, `page append`, `page update`, `db row create` and `block append`
+- `page create`, `page append`, `db row create` and `block append`
   gave no sign when a file's front-matter block could not be parsed. The whole
   file — delimiters and every YAML line, `notion_id` included — became the body,
   so a single mistyped line put the metadata on the page as visible content
   without a word about it. They now say so, naming the offending line, and still
   write the file as it stands: a block that will not parse may equally be a
   horizontal rule above ordinary prose, which is what `block get` emits for a
-  page starting with a divider. `page sync` remains stricter and refuses, because
-  only it acts on `notion_id` and only there does guessing wrong orphan a page.
+  page starting with a divider, so refusing it would reject notionctl's own
+  output. `page update` and `page sync` refuse instead, because both replace what
+  is already there — writing the YAML would delete the page's existing blocks, or
+  orphan the page entirely, and neither can be undone from the file.
+- A page whose first block is a divider lost its opening section when read back
+  and written elsewhere — `block get` emits no front-matter, so the leading `---`
+  and the prose under it looked like a front-matter block, and whenever that
+  prose happened to parse as YAML it was silently discarded. A `---` with a blank
+  line beneath it is now read as a horizontal rule, which is what it is.
 - A callout icon whose value contained a space — an image URL with one — split
   the callout into three blocks, leaving the callout empty, the marker comment
   visible as text, and the body in a separate quote. Any comment that is not one
@@ -191,9 +199,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   alert implies.
 
 **Property values**
-- Quoting each value separately — `--prop 'Assignee="user:a","user:b"'` — was
-  read as one malformed entry, because the outer quotes were stripped without
-  checking that they were a matching pair. This affected `multi_select` too.
+- Quoting list values did not work. `--prop 'Assignee="user:a","user:b"'` was
+  read as one malformed entry, and `--prop 'Tags="Bug, Regression"'` became two
+  options rather than one, because the surrounding quotes were removed before
+  the list was split. Both now behave as written, for `people`, `relation` and
+  `multi_select` alike.
 - Setting more than one person or relation without square brackets silently
   produced one malformed id: `--prop "Assignee=user:a,user:b"` was read as a
   single user called `a,user:b`, and Notion rejected the row with an error that
@@ -265,11 +275,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   pointing at a `notion://` address nothing can open. All three are now written
   as `[Name](notion://user/<id>)` and rebuilt as real mentions on the way back,
   so the name stays readable and the mention survives.
+- A toggle whose title contained a line break lost the title entirely: written
+  across two lines it ended its own `<summary>` element. Titles are now written
+  on one line, as headings already were, and the same applies to list items,
+  whose line break used to push the rest of the text out of the list.
 - A link preview's title was written out unescaped, so a title ending its own
   link — `Ship it](https://elsewhere/)` — became a real, clickable link to an
   address the user never wrote, with the rest left as stray text. Titles come
   from the linked page, so this was remote content forging markup. Every mention
-  kind is now escaped, including ones added to the API later.
+  kind is now escaped, including ones added to the API later. The same applied to
+  sub-page titles, bookmark and image captions and embed captions — all remote
+  text placed inside a link — which are now escaped too.
 - A link or mention whose text contained a square bracket was destroyed. `]`
   ends a link label and was stripped of its escape on the way back in, but was
   never escaped on the way out, so a page titled `Roadmap] Q3 draft` ended its
