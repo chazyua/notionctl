@@ -749,3 +749,38 @@ describe("empty spacer paragraphs (documented limitation)", () => {
     assert.match(text, /child content/, "content must never be lost, only spacing");
   });
 });
+
+describe("brackets in link and mention labels", () => {
+  function rt(text: string) {
+    return [{ type: "text", text: { content: text, link: null }, plain_text: text, annotations: { bold: false, italic: false, strikethrough: false, underline: false, code: false, color: "default" } }];
+  }
+  // `]` closes a link label. It was escaped on the way back but never on the
+  // way out, so a label containing one ended its own link: the link was lost
+  // and, for a mention, the raw id reappeared as visible text.
+  const labels = ["O]Brien", "A [B]", "Q3] draft", "[bracketed]", "back\\slash"];
+
+  for (const label of labels) {
+    it(`a link labelled ${JSON.stringify(label)} keeps its URL and text`, () => {
+      const blocks = [{ id: "1", type: "paragraph", has_children: false, paragraph: { rich_text: [{ type: "text", text: { content: label, link: { url: "https://example.com" } }, plain_text: label, annotations: { bold: false, italic: false, strikethrough: false, underline: false, code: false, color: "default" }, href: "https://example.com" }], color: "default" } }];
+      const run = (roundTrip(blocks) as any[])[0].paragraph.rich_text[0];
+      assert.equal(run.type, "text");
+      assert.deepEqual(run.text.link, { url: "https://example.com" });
+      assert.equal(run.plain_text, label);
+    });
+
+    it(`a mention labelled ${JSON.stringify(label)} stays a mention`, () => {
+      const id = "33dd872b-594c-816b-b58b-00025280b6c9";
+      const blocks = [{ id: "1", type: "paragraph", has_children: false, paragraph: { rich_text: [{ type: "mention", mention: { type: "user", user: { id } }, plain_text: label, annotations: { bold: false, italic: false, strikethrough: false, underline: false, code: false, color: "default" }, href: null }], color: "default" } }];
+      const runs = (roundTrip(blocks) as any[])[0].paragraph.rich_text;
+      assert.equal(runs.length, 1);
+      assert.equal(runs[0].type, "mention", "must not fall apart into literal text");
+      assert.equal(runs[0].mention.user.id, id);
+      assert.doesNotMatch(JSON.stringify(runs[0].plain_text), /notion:\/\//, "the id must not leak into the text");
+    });
+  }
+
+  it("plain bracketed prose still round-trips unchanged", () => {
+    const result = roundTrip([{ id: "1", type: "paragraph", has_children: false, paragraph: { rich_text: rt("array[0] access"), color: "default" } }]) as any[];
+    assert.equal(result[0].paragraph.rich_text.map((r: any) => r.plain_text).join(""), "array[0] access");
+  });
+});

@@ -411,6 +411,8 @@ Comprehensive test scenarios for notionctl. Use this for manual dogfooding, regr
 - [A] User, page and database mentions round-trip as mentions, not as links, and
       a person mention shows the name rather than a bare account id
 - [A] A `notion://` URL that is not a valid id stays an ordinary link
+- [A] A link or mention whose label contains `[` or `]` keeps its URL, its text
+      and its block type, and bracketed prose gains no stray backslash
 - [A] Callout icons round-trip for emoji, external URL and built-in Notion icons;
       a Notion-hosted icon falls back to a default and warns
 - [M] A page with mentions and custom callout icons survives `page get` →

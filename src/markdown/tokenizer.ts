@@ -268,7 +268,7 @@ function escapeMarkdownContent(s: string, inEmphasisCtx: boolean = false): strin
     const c = s[i]!;
     if (c === "_" && escUnderscore) { out += "\\_"; }
     else if (c === "*" && escAsterisk) { out += "\\*"; }
-    else if (c === "\\" || c === "`" || c === "~" || c === "[") { out += "\\" + c; }
+    else if (c === "\\" || c === "`" || c === "~" || c === "[" || c === "]") { out += "\\" + c; }
     else { out += c; }
   }
   return out;
@@ -306,9 +306,9 @@ function runContent(run: RichText): string {
   if (run.type === "equation") return `$${run.equation.expression}$`;
   if (run.type === "mention") {
     const m = run.mention;
-    if (m.type === "user") return `[${run.plain_text}](notion://user/${m.user.id})`;
-    if (m.type === "page") return `[${run.plain_text}](notion://page/${m.page.id})`;
-    if (m.type === "database") return `[${run.plain_text}](notion://database/${m.database.id})`;
+    if (m.type === "user") return `[${escapeMarkdownContent(run.plain_text)}](notion://user/${m.user.id})`;
+    if (m.type === "page") return `[${escapeMarkdownContent(run.plain_text)}](notion://page/${m.page.id})`;
+    if (m.type === "database") return `[${escapeMarkdownContent(run.plain_text)}](notion://database/${m.database.id})`;
     if (m.type === "date") {
       const range = m.date.end ? `${m.date.start}..${m.date.end}` : m.date.start;
       return `<${range}>`;
@@ -467,7 +467,7 @@ export function markdownToRichText(md: string): RichText[] {
         const labelEnd = linkEnd.labelEnd;
         const urlStart = linkEnd.urlStart;
         const urlEnd = linkEnd.urlEnd;
-        const label = md.slice(labelStart, labelEnd);
+        const label = unescapeLabel(md.slice(labelStart, labelEnd));
         const url = stripLinkTitle(md.slice(urlStart, urlEnd));
         if (url.length > 0 && !isAllowedLinkUrl(url) && warnHandler) {
           warnHandler(
@@ -518,6 +518,25 @@ function stripLinkTitle(raw: string): string {
     }
   }
   return raw;
+}
+
+/**
+ * Undo `escapeMarkdownContent` for a link label. The scanner unescapes as it
+ * buffers text, but a label is sliced out in one piece and never passes
+ * through that loop, so it needs the same treatment here.
+ */
+function unescapeLabel(s: string): string {
+  let out = "";
+  for (let i = 0; i < s.length; i++) {
+    const next = s[i + 1];
+    if (s[i] === "\\" && next !== undefined && isMarkerChar(next)) {
+      out += next;
+      i++;
+    } else {
+      out += s[i];
+    }
+  }
+  return out;
 }
 
 function isMarkerChar(c: string): boolean {

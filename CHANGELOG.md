@@ -241,6 +241,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   pointing at a `notion://` address nothing can open. All three are now written
   as `[Name](notion://user/<id>)` and rebuilt as real mentions on the way back,
   so the name stays readable and the mention survives.
+- A link or mention whose text contained a square bracket was destroyed. `]`
+  ends a link label and was stripped of its escape on the way back in, but was
+  never escaped on the way out, so a page titled `Roadmap] Q3 draft` ended its
+  own link: an ordinary link silently became plain text, and a mention put the
+  raw `notion://` address onto the page as visible content. Text such as
+  `array[0]` was also written back with a stray backslash. Both brackets are now
+  escaped, and a label is unescaped when read.
 - Callout icons other than emoji were replaced with a default. A custom image
   icon or one of Notion's built-in icons was dropped on read and reinvented as
   the emoji matching the callout's colour. Both now round-trip. An icon uploaded

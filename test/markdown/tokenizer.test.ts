@@ -873,7 +873,9 @@ describe("round-trip marker escaping — richTextToMarkdown escapes literals", (
 
   it("escapes literal brackets in plain text", () => {
     const md = richTextToMarkdown([text("array[0] access")]);
-    assert.equal(md, "array\\[0] access");
+    // Both brackets are escaped: `]` closes a link label, so leaving it bare
+    // let bracketed text terminate a link early and lose it.
+    assert.equal(md, "array\\[0\\] access");
     const rt = markdownToRichText(md);
     assert.equal(rt[0]!.plain_text, "array[0] access");
   });
