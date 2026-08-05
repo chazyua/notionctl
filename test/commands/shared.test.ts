@@ -3,7 +3,8 @@ import assert from "node:assert/strict";
 import { writeFile, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { parseFlags, resolvePageId, getBooleanFlag, readFileText, parseJsonObject, rejectExtraPositionals } from "../../src/commands/shared.js";
+import { parseFlags, resolvePageId, getBooleanFlag, readFileText, parseJsonObject, rejectExtraPositionals, readStdinBounded } from "../../src/commands/shared.js";
+import { PassThrough } from "node:stream";
 import { NotionCliError, ErrorCode } from "../../src/errors.js";
 
 describe("parseFlags", () => {
@@ -305,5 +306,58 @@ describe("boolean flags keep their parser semantics", () => {
     assert.equal(getBooleanFlag(parseFlags(["--yes=false"]).flags, "yes"), false);
     assert.equal(getBooleanFlag(parseFlags(["--yes=true"]).flags, "yes"), true);
     assert.equal(getBooleanFlag(parseFlags(["--yes", "--dry-run"]).flags, "dry-run"), true);
+  });
+});
+
+describe("readStdinBounded — an open pipe that never closes", () => {
+  it("gives up after the idle timeout instead of blocking forever", async () => {
+    // A pipe that is open but never written to used to block with no output at
+    // all, because the promise only settled on 'end'.
+    const stream = new PassThrough();
+    await assert.rejects(
+      readStdinBounded(1024, stream, 40),
+      (err: unknown) => {
+        assert.ok(err instanceof NotionCliError);
+        assert.equal((err as NotionCliError).code, ErrorCode.USAGE);
+        assert.match((err as Error).message, /No input on stdin/);
+        return true;
+      },
+    );
+  });
+
+  it("says how to proceed rather than only that it gave up", async () => {
+    const stream = new PassThrough();
+    await assert.rejects(readStdinBounded(1024, stream, 40), (err: any) => {
+      assert.ok(err.suggestions.some((s: string) => s.includes("--from")));
+      assert.ok(err.suggestions.some((s: string) => s.includes("/dev/null")));
+      return true;
+    });
+  });
+
+  it("a producer that keeps sending is never cut off", async () => {
+    // The bound is on idle time, not total time: each chunk resets it, so a
+    // slow but progressing stream must survive past the timeout.
+    const stream = new PassThrough();
+    const read = readStdinBounded(1024, stream, 60);
+    for (let i = 0; i < 5; i++) {
+      await new Promise((r) => setTimeout(r, 30));
+      stream.write("x");
+    }
+    stream.end();
+    assert.equal(await read, "xxxxx");
+  });
+
+  it("content that arrives normally still resolves", async () => {
+    const stream = new PassThrough();
+    const read = readStdinBounded(1024, stream, 5000);
+    stream.end("hello");
+    assert.equal(await read, "hello");
+  });
+
+  it("the size bound still applies", async () => {
+    const stream = new PassThrough();
+    const read = readStdinBounded(4, stream, 5000);
+    stream.write("far too long");
+    await assert.rejects(read, /exceeds maximum size/);
   });
 });

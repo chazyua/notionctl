@@ -16,26 +16,64 @@ const MAX_STDIN_TOKEN_BYTES = 4 * 1024;   // 4 KB (tokens are short)
  * Read a stream with a bounded size limit to prevent OOM from unbounded input.
  * Defaults to process.stdin; the optional stream parameter exists for testing.
  */
+/**
+ * How long to wait with no data arriving before giving up on stdin.
+ *
+ * These commands read stdin whenever it is not a terminal, so a pipe that is
+ * open but never written to — a background job, a producer that stalled, a
+ * shell that inherited a descriptor — used to block forever with no output at
+ * all. The bound is on idle time and is reset by every chunk, so a slow but
+ * progressing producer is never cut off; only a stream that has gone quiet is.
+ * Half a minute is far longer than any real producer takes to send its first
+ * bytes, and short enough that a stuck command reports instead of hanging.
+ */
+const STDIN_IDLE_TIMEOUT_MS = 30_000;
+
 export function readStdinBounded(
   maxBytes = MAX_STDIN_BYTES,
   stream: Readable = process.stdin,
+  idleMs = STDIN_IDLE_TIMEOUT_MS,
 ): Promise<string> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
     let totalBytes = 0;
     let settled = false;
+    let idleTimer: ReturnType<typeof setTimeout> | undefined;
 
     // Guarantee exactly one settle and always detach listeners.
     const settle = (fn: () => void) => {
       if (settled) return;
       settled = true;
+      if (idleTimer !== undefined) clearTimeout(idleTimer);
       stream.removeListener("data", onData);
       stream.removeListener("end", onEnd);
       stream.removeListener("error", onError);
       fn();
     };
 
+    const armIdleTimer = () => {
+      if (idleTimer !== undefined) clearTimeout(idleTimer);
+      if (idleMs <= 0) return;
+      idleTimer = setTimeout(() => {
+        settle(() => {
+          if (stream !== process.stdin) stream.destroy();
+          reject(new NotionCliError(
+            ErrorCode.USAGE,
+            `No input on stdin for ${Math.round(idleMs / 1000)}s — giving up rather than waiting indefinitely.`,
+            {
+              suggestions: [
+                "This command reads stdin whenever stdin is not a terminal, so it waits on a pipe that is open but never written to.",
+                "To read a file instead, pass --from <file>.",
+                "To provide no content at all, redirect from /dev/null.",
+              ],
+            },
+          ));
+        });
+      }, idleMs);
+    };
+
     const onData = (c: Buffer) => {
+      armIdleTimer();
       totalBytes += c.length;
       if (totalBytes > maxBytes) {
         settle(() => {
@@ -52,6 +90,7 @@ export function readStdinBounded(
     stream.on("data", onData);
     stream.on("end", onEnd);
     stream.on("error", onError);
+    armIdleTimer();
   });
 }
 

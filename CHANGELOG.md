@@ -102,6 +102,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   minute per attempt. Waits are now reported.
 - Error messages could carry terminal control sequences from remote content.
 
+**Hangs**
+- `page create`, `page append` and every other command that reads Markdown from
+  stdin blocked forever, with no output at all, when stdin was a pipe that
+  stayed open — a background job, a producer that stalled, an inherited
+  descriptor. These commands read stdin whenever it is not a terminal, so this
+  needed no explicit redirection to happen. They now give up after 30 seconds
+  with nothing arriving and say how to proceed. The limit is on idle time and
+  every chunk resets it, so a slow producer is never cut off; interactive
+  `auth set` is unaffected, as it reads a line rather than a stream.
+
 **Diagnostics**
 - `auth doctor` never reported insecure config file permissions. The check only
   ran once the token had loaded, but loading refuses any mode other than 0600 —

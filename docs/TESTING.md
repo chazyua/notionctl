@@ -99,6 +99,11 @@ Comprehensive test scenarios for notionctl. Use this for manual dogfooding, regr
 - [M] `--from file.md` reads content from file
 - [M] `--from -` reads from stdin explicitly
 - [M] Piped stdin read automatically without `--from` when stdin is not a TTY
+- [A] A pipe that stays open without sending anything stops after the idle
+      timeout with a usage error, instead of blocking forever
+- [A] A producer that keeps sending is not cut off by the idle timeout
+- [M] `notionctl page create ... <&3` on an unwritten FIFO exits with guidance
+      rather than hanging
 - [M] Frontmatter in input is stripped (doesn't become page content)
 - [M] Empty input returns warning instead of silent no-op
 - [M] `--dry-run` shows blocks without appending
