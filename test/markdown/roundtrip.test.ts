@@ -784,3 +784,83 @@ describe("brackets in link and mention labels", () => {
     assert.equal(result[0].paragraph.rich_text.map((r: any) => r.plain_text).join(""), "array[0] access");
   });
 });
+
+describe("remote text cannot forge markup", () => {
+  const ann = { bold: false, italic: false, strikethrough: false, underline: false, code: false, color: "default" };
+  function para(runs: any[]) {
+    return [{ id: "1", type: "paragraph", has_children: false, paragraph: { rich_text: runs, color: "default" } }];
+  }
+
+  it("a link_preview title cannot inject a link to somewhere else", () => {
+    // The title comes from the remote page, so it is the least trusted string
+    // in the document. Unescaped, it closed its own link and the rest became a
+    // second, attacker-chosen link in the user's page.
+    const hostile = "Ship it](https://evil.example/phish)";
+    const result = roundTrip(para([
+      { type: "mention", mention: { type: "link_preview", link_preview: { url: "https://real.example/x" } }, annotations: ann, plain_text: hostile, href: null },
+    ])) as any[];
+    const runs = result[0].paragraph.rich_text;
+    const links = runs.map((r: any) => r.text?.link?.url).filter(Boolean);
+    assert.ok(!links.includes("https://evil.example/phish"), "must not create a link to the injected URL");
+  });
+
+  it("a callout icon URL containing a space keeps the callout whole", () => {
+    const blocks = [{ id: "1", type: "callout", has_children: false, callout: {
+      rich_text: [{ type: "text", text: { content: "body", link: null }, plain_text: "body", annotations: ann }],
+      icon: { type: "external", external: { url: "https://ex.com/my icon.png" } }, color: "default" } }];
+    const result = roundTrip(blocks) as any[];
+    assert.equal(result.length, 1, "the body must not be evicted into separate blocks");
+    assert.equal(result[0].type, "callout");
+    assert.equal(result[0].callout.rich_text[0].text.content, "body");
+  });
+
+  it("a newline in an icon value cannot splice lines into the callout", () => {
+    const blocks = [{ id: "1", type: "callout", has_children: false, callout: {
+      rich_text: [{ type: "text", text: { content: "body", link: null }, plain_text: "body", annotations: ann }],
+      icon: { type: "external", external: { url: "https://x/ -->\n> injected line" } }, color: "default" } }];
+    const result = roundTrip(blocks) as any[];
+    // The value stays inside the icon field; what must not happen is it
+    // becoming a line of the callout, or splitting the callout apart.
+    assert.equal(result.length, 1, "must stay one block");
+    assert.equal(result[0].type, "callout");
+    assert.equal(result[0].callout.rich_text.map((r: any) => r.plain_text).join(""), "body");
+  });
+
+  it("a callout keeps its colour instead of taking the alert's", () => {
+    const blocks = [{ id: "1", type: "callout", has_children: false, callout: {
+      rich_text: [{ type: "text", text: { content: "body", link: null }, plain_text: "body", annotations: ann }],
+      icon: { type: "emoji", emoji: "💡" }, color: "red_background" } }];
+    assert.equal((roundTrip(blocks) as any[])[0].callout.color, "red_background");
+  });
+
+  it("a default-coloured callout does not turn blue", () => {
+    const blocks = [{ id: "1", type: "callout", has_children: false, callout: {
+      rich_text: [{ type: "text", text: { content: "body", link: null }, plain_text: "body", annotations: ann }],
+      icon: { type: "emoji", emoji: "💡" }, color: "default" } }];
+    assert.equal((roundTrip(blocks) as any[])[0].callout.color, "default");
+  });
+
+  it("a malformed id in a hand-written notion:// link stays a link", () => {
+    // Built as a mention it became a body Notion rejects outright, failing the
+    // whole page update rather than the one line.
+    const runs = markdownToBlocks("[docs](notion://page/3-3dd872b594c816bb58b00025280b6c9)") as any[];
+    assert.equal(runs[0].paragraph.rich_text[0].type, "text");
+  });
+
+  it("a dashless id is normalised rather than sent as-is", () => {
+    const runs = markdownToBlocks("[docs](notion://page/33dd872b594c816bb58b00025280b6c9)") as any[];
+    const run = runs[0].paragraph.rich_text[0];
+    assert.equal(run.type, "mention");
+    assert.equal(run.mention.page.id, "33dd872b-594c-816b-b58b-00025280b6c9");
+  });
+
+  it("a hand-edited icon that is not an emoji falls back with a warning", () => {
+    const warnings: string[] = [];
+    setMarkdownWarnHandler((m) => warnings.push(m));
+    const blocks = markdownToBlocks("> [!NOTE]\n<!-- icon: hello -->\n> body") as any[];
+    setMarkdownWarnHandler(null);
+    assert.equal(blocks[0].callout.icon.type, "emoji");
+    assert.notEqual(blocks[0].callout.icon.emoji, "hello", "must not send a word to the API as an emoji");
+    assert.equal(warnings.length, 1);
+  });
+});

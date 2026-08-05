@@ -1171,3 +1171,14 @@ describe("list item body column", () => {
     assert.equal(blocks[1]!.type, "paragraph");
   });
 });
+
+describe("an unrecognised comment inside a callout", () => {
+  it("is skipped rather than ending the callout", () => {
+    // Falling through to the loop's break left an empty callout, the comment as
+    // a visible paragraph, and the body stranded in a separate quote.
+    const blocks = markdownToBlocks("> [!NOTE]\n<!-- todo: revisit -->\n> body text");
+    assert.equal(blocks.length, 1, "must stay one block");
+    assert.equal(blocks[0]!.type, "callout");
+    assert.equal((blocks[0] as any).callout.rich_text.map((r: any) => r.plain_text).join(""), "body text");
+  });
+});

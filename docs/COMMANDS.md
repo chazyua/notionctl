@@ -251,8 +251,12 @@ ids, and a page id may be pasted as a Notion URL. Square brackets are optional:
 `[user:a, user:b]` and `user:a,user:b` mean the same thing. Wrap a value
 containing a comma in quotes.
 
-An empty value clears any property that can be empty — `--prop "Assignee="`
-removes everyone, `--prop "Points="` clears the number.
+An empty value clears `number`, `select`, `status`, `date`, `people`, `relation`
+and `multi_select` — `--prop "Assignee="` removes everyone, `--prop "Points="`
+clears the number. Other types have no empty form and report an error.
+
+Quote a value that contains a comma. Quoting each item of a list separately
+(`"user:a","user:b"`) works too.
 
 ### db row delete
 
@@ -448,18 +452,22 @@ notionctl's Markdown engine handles bidirectional conversion:
 **Write (Markdown to Notion):** headings (H1-H3, ATX `#` or setext `===`/`---`), paragraphs, bullet/numbered/to-do lists (nested via 2-space indent), code blocks, tables, blockquotes, dividers, images, bold, italic, strikethrough, inline code, links.
 
 **Reading from stdin.** Commands taking `--from` read stdin when the flag is
-omitted and stdin is not a terminal. If nothing arrives for 30 seconds the
-command stops with a usage error rather than waiting indefinitely — the limit is
-on idle time, so a slow producer that keeps sending is never interrupted. Pass
+omitted and stdin is not a terminal. After ten seconds with nothing arriving the
+command says it is waiting, and after two minutes it stops with a usage error
+rather than waiting indefinitely. The limit is on idle time, so a producer that
+is slow but still sending is never interrupted, and a terminal is exempt — typing
+input directly, including with `--from -`, has no time limit. Pass
 `--from <file>` to read a file, or redirect from `/dev/null` to supply no body.
 
-**Broken front-matter is refused.** Every command that reads a Markdown file —
-`page create/append/update`, `page sync`, `db row create`, `block append` —
-refuses a file whose front-matter block opens and closes but does not parse,
-naming the offending line. Writing it would put the delimiters and every YAML
-line, `notion_id` included, onto the page as visible content. A file with no
-front-matter, or one whose `---` opener is never closed, is not front-matter and
-is written as-is; a file meant to open with a horizontal rule should use `***`.
+**Broken front-matter.** A front-matter block that opens and closes but does not
+parse is ambiguous — it may be front-matter with a mistyped line, or a horizontal
+rule above ordinary prose. `page create/append/update`, `db row create` and
+`block append` report the parse failure on stderr and write the file as it
+stands, so nothing is lost either way; the YAML may appear as page content, which
+is visible and fixable. `page sync` refuses instead, because only it acts on
+`notion_id`, and reading it wrong would orphan the existing page. A file with no
+front-matter, or one whose `---` opener is never closed, is not front-matter at
+all; a file meant to open with a horizontal rule should use `***`.
 
 **Empty paragraphs are not preserved.** A blank paragraph used as spacing in
 Notion has no Markdown equivalent — a blank line is already how blocks are

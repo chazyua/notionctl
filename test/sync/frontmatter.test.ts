@@ -108,33 +108,40 @@ describe("extractFrontmatter — malformed blocks are distinguishable", () => {
   });
 });
 
-describe("frontmatterBody — a block that will not parse is refused", () => {
+describe("frontmatterBody — a block that will not parse is kept, not refused", () => {
   const broken = '---\ntitle: Test\nnotion_id: "abc123"\nbroken line without colon\n---\n\nReal body.\n';
+  const dividerFirst = "---\n\nprose paragraph\n\n---\n\nmore prose\n";
 
-  it("throws instead of returning the raw file as the body", () => {
-    // On the parse-failure path `body` is the whole input, so a caller that
-    // ignores `malformed` writes the delimiters and every YAML line — notion_id
-    // included — onto the page as visible content.
-    assert.throws(
-      () => frontmatterBody(broken, "test.md"),
-      (err: any) => {
-        assert.equal(err.code, "USAGE");
-        assert.match(err.message, /not valid YAML/);
-        assert.match(err.message, /test\.md/);
-        return true;
-      },
-    );
+  function captureStderr(fn: () => string): { body: string; warned: string } {
+    const original = process.stderr.write.bind(process.stderr);
+    let warned = "";
+    (process.stderr as any).write = (chunk: any) => { warned += String(chunk); return true; };
+    try {
+      return { body: fn(), warned };
+    } finally {
+      (process.stderr as any).write = original;
+    }
+  }
+
+  it("keeps a document that opens with a horizontal rule", () => {
+    // This is the shape `block get` emits for a page starting with a divider,
+    // and what any document underlining its first heading with --- looks like.
+    // Refusing it broke round-tripping notionctl's own output.
+    const { body } = captureStderr(() => frontmatterBody(dividerFirst, "notes.md"));
+    assert.equal(body, dividerFirst, "content must not be dropped or refused");
   });
 
-  it("names the offending line so it can be fixed", () => {
-    assert.throws(() => frontmatterBody(broken, "test.md"), /broken line without colon/);
+  it("reports the parse failure rather than staying silent", () => {
+    const { warned } = captureStderr(() => frontmatterBody(broken, "test.md"));
+    assert.match(warned, /not valid YAML/);
+    assert.match(warned, /test\.md/);
+    assert.match(warned, /broken line without colon/, "names the offending line");
+    assert.match(warned, /\*\*\*/, "offers the horizontal-rule workaround");
   });
 
-  it("offers the *** workaround for a file opening with a rule", () => {
-    assert.throws(() => frontmatterBody(broken, "test.md"), (err: any) => {
-      assert.ok(err.suggestions.some((s: string) => s.includes("***")));
-      return true;
-    });
+  it("never loses content, whichever way the block was meant", () => {
+    const { body } = captureStderr(() => frontmatterBody(broken, "test.md"));
+    assert.match(body, /Real body\./);
   });
 
   it("valid front-matter returns only the body", () => {

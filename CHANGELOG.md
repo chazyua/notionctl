@@ -113,6 +113,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `auth set` is unaffected, as it reads a line rather than a stream.
 
 **Diagnostics**
+- `auth doctor` reported `[OK]` for a config directory its own owner cannot
+  open: the check only rejected group and other permissions. It now requires the
+  owner to be able to read, write and enter it.
+- `auth doctor` said nothing about a config file left behind with loose
+  permissions when `NOTION_TOKEN` was in use — a readable file still holding a
+  usable token. It now warns, without failing the command.
+- `auth doctor` was the one command whose output skipped the scrubbing applied
+  to every error, so text from the API reached the terminal with any control
+  characters intact. Its report is now scrubbed like everything else.
+- A config file that could not be read for a reason other than being absent was
+  passed over in silence. That reason is now reported.
+
 - `auth doctor` never reported insecure config file permissions. The check only
   ran once the token had loaded, but loading refuses any mode other than 0600 —
   so the one case it existed for could not reach it. A file with the wrong
@@ -160,16 +172,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 **Content loss (continued)**
 - `page create`, `page append`, `page update`, `db row create` and `block append`
-  wrote a broken front-matter block onto the page as visible content. When the
-  block could not be parsed, the whole file — delimiters and every YAML line,
-  `notion_id` included — was treated as the body, so a single mistyped line put
-  the metadata on the page as a heading and paragraphs, and for `page update`
-  that replaced the content that was there. All five now refuse the file and
-  name the offending line, matching what `page sync` already did. A file with no
-  front-matter, or with an unclosed `---` opener, is unaffected; a file meant to
-  open with a horizontal rule should use `***`.
+  gave no sign when a file's front-matter block could not be parsed. The whole
+  file — delimiters and every YAML line, `notion_id` included — became the body,
+  so a single mistyped line put the metadata on the page as visible content
+  without a word about it. They now say so, naming the offending line, and still
+  write the file as it stands: a block that will not parse may equally be a
+  horizontal rule above ordinary prose, which is what `block get` emits for a
+  page starting with a divider. `page sync` remains stricter and refuses, because
+  only it acts on `notion_id` and only there does guessing wrong orphan a page.
+- A callout icon whose value contained a space — an image URL with one — split
+  the callout into three blocks, leaving the callout empty, the marker comment
+  visible as text, and the body in a separate quote. Any comment that is not one
+  notionctl wrote is now skipped rather than ending the callout.
+- A callout silently changed colour on every sync: a red one came back blue, and
+  a default one came back blue, because the colour was only recorded when it
+  could not be guessed from the alert type — while the alert type was chosen
+  from the icon. The colour is now recorded whenever it differs from what the
+  alert implies.
 
 **Property values**
+- Quoting each value separately — `--prop 'Assignee="user:a","user:b"'` — was
+  read as one malformed entry, because the outer quotes were stripped without
+  checking that they were a matching pair. This affected `multi_select` too.
 - Setting more than one person or relation without square brackets silently
   produced one malformed id: `--prop "Assignee=user:a,user:b"` was read as a
   single user called `a,user:b`, and Notion rejected the row with an error that
@@ -241,6 +265,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   pointing at a `notion://` address nothing can open. All three are now written
   as `[Name](notion://user/<id>)` and rebuilt as real mentions on the way back,
   so the name stays readable and the mention survives.
+- A link preview's title was written out unescaped, so a title ending its own
+  link — `Ship it](https://elsewhere/)` — became a real, clickable link to an
+  address the user never wrote, with the rest left as stray text. Titles come
+  from the linked page, so this was remote content forging markup. Every mention
+  kind is now escaped, including ones added to the API later.
 - A link or mention whose text contained a square bracket was destroyed. `]`
   ends a link label and was stripped of its escape on the way back in, but was
   never escaped on the way out, so a page titled `Roadmap] Q3 draft` ended its

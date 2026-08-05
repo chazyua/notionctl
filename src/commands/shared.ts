@@ -17,18 +17,31 @@ const MAX_STDIN_TOKEN_BYTES = 4 * 1024;   // 4 KB (tokens are short)
  * Defaults to process.stdin; the optional stream parameter exists for testing.
  */
 /**
- * How long to wait with no data arriving before giving up on stdin.
+ * How long stdin may stay silent before we stop waiting, and how long before we
+ * say we are waiting.
  *
  * These commands read stdin whenever it is not a terminal, so a pipe that is
- * open but never written to — a background job, a producer that stalled, a
- * shell that inherited a descriptor — used to block forever with no output at
- * all. The bound is on idle time and is reset by every chunk, so a slow but
- * progressing producer is never cut off; only a stream that has gone quiet is.
- * Half a minute is far longer than any real producer takes to send its first
- * bytes, and short enough that a stuck command reports instead of hanging.
+ * open but never written to used to block forever with no output at all. The
+ * bound is on idle time and every chunk resets it, so a producer that is slow
+ * but progressing is never cut off. The limit is generous because the wait is
+ * often a human — a credential manager prompting for a fingerprint, a build
+ * step — and being told what is happening matters more than failing early,
+ * which is why the notice comes first.
+ *
+ * A terminal is exempt entirely: `--from -` means the user is typing, and there
+ * is no runaway to protect against.
  */
-const STDIN_IDLE_TIMEOUT_MS = 30_000;
+const STDIN_NOTICE_MS = 10_000;
+const STDIN_IDLE_TIMEOUT_MS = 120_000;
 
+function describeDuration(ms: number): string {
+  return ms >= 1000 ? `${Math.round(ms / 1000)}s` : `${ms}ms`;
+}
+
+/**
+ * Read a stream with a bounded size limit to prevent OOM on a huge input, and
+ * a bounded idle time so an open pipe cannot hang the command forever.
+ */
 export function readStdinBounded(
   maxBytes = MAX_STDIN_BYTES,
   stream: Readable = process.stdin,
@@ -39,12 +52,16 @@ export function readStdinBounded(
     let totalBytes = 0;
     let settled = false;
     let idleTimer: ReturnType<typeof setTimeout> | undefined;
+    let noticeTimer: ReturnType<typeof setTimeout> | undefined;
+    // Typing at a terminal is not a stalled pipe; leave interactive input alone.
+    const interactive = (stream as Readable & { isTTY?: boolean }).isTTY === true;
 
     // Guarantee exactly one settle and always detach listeners.
     const settle = (fn: () => void) => {
       if (settled) return;
       settled = true;
       if (idleTimer !== undefined) clearTimeout(idleTimer);
+      if (noticeTimer !== undefined) clearTimeout(noticeTimer);
       stream.removeListener("data", onData);
       stream.removeListener("end", onEnd);
       stream.removeListener("error", onError);
@@ -52,14 +69,22 @@ export function readStdinBounded(
     };
 
     const armIdleTimer = () => {
+      if (interactive) return;
       if (idleTimer !== undefined) clearTimeout(idleTimer);
-      if (idleMs <= 0) return;
+      if (noticeTimer !== undefined) clearTimeout(noticeTimer);
+      // Only in the real pipeline: tests drive this with tiny timeouts and
+      // would otherwise print a notice for every case.
+      if (stream === process.stdin && idleMs > STDIN_NOTICE_MS) {
+        noticeTimer = setTimeout(() => {
+          process.stderr.write("notionctl: waiting for input on stdin — pass --from <file> to read a file, or redirect from /dev/null for no content.\n");
+        }, STDIN_NOTICE_MS);
+      }
       idleTimer = setTimeout(() => {
         settle(() => {
           if (stream !== process.stdin) stream.destroy();
           reject(new NotionCliError(
             ErrorCode.USAGE,
-            `No input on stdin for ${Math.round(idleMs / 1000)}s — giving up rather than waiting indefinitely.`,
+            `No input on stdin for ${describeDuration(idleMs)} — giving up rather than waiting indefinitely.`,
             {
               suggestions: [
                 "This command reads stdin whenever stdin is not a terminal, so it waits on a pipe that is open but never written to.",

@@ -13,7 +13,7 @@ import { execFile } from "node:child_process";
 import { notionRequest, exchangeOAuthCode } from "../http.js";
 import { saveToken, clearToken, loadToken, getConfigPath, getConfigDir, listProfiles, AuthSource } from "../auth.js";
 import { parseFlags, getBooleanFlag, readStdinBounded, MAX_STDIN_TOKEN_BYTES, rejectExtraPositionals, type CommandResult } from "./shared.js";
-import { NotionCliError, ErrorCode, EXIT_CODES } from "../errors.js";
+import { NotionCliError, ErrorCode, EXIT_CODES, scrub } from "../errors.js";
 import { renderJson } from "../output.js";
 
 async function readStdinToken(): Promise<string> {
@@ -109,16 +109,24 @@ export async function authDoctorCommand(_ctx: { args: string[] }): Promise<Comma
           detail: `mode 0${mode.toString(8)} — should be 0600. Run: chmod 600 ${getConfigPath()}`,
         });
       }
-    } catch {
+    } catch (err) {
       // No config file at all is not a fault: the token may simply be unset, or
-      // meant to come from NOTION_TOKEN. The token check above already says so.
+      // meant to come from NOTION_TOKEN. Anything else — an unreadable parent,
+      // a permission error — is worth saying out loud.
+      if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
+        checks.push({
+          check: "Config file permissions",
+          status: "warn",
+          detail: `Could not read ${getConfigPath()}: ${(err as Error).message}`,
+        });
+      }
     }
 
     // Config dir permissions
     try {
       const st = await stat(getConfigDir());
       const mode = st.mode & 0o777;
-      if ((mode & 0o077) === 0) {
+      if ((mode & 0o077) === 0 && (mode & 0o700) === 0o700) {
         checks.push({ check: "Config dir permissions", status: "pass", detail: `mode 0${mode.toString(8)}` });
       } else {
         checks.push({
@@ -129,6 +137,23 @@ export async function authDoctorCommand(_ctx: { args: string[] }): Promise<Comma
       }
     } catch {
       // skip if can't stat
+    }
+  }
+
+  // A token in the environment wins, but a loose config file left behind still
+  // holds a usable secret — report it without failing the command.
+  if (tokenSource === AuthSource.ENV) {
+    try {
+      const mode = (await stat(getConfigPath())).mode & 0o777;
+      if (mode !== 0o600) {
+        checks.push({
+          check: "Config file permissions",
+          status: "warn",
+          detail: `mode 0${mode.toString(8)} on ${getConfigPath()} — not in use (NOTION_TOKEN takes precedence) but still readable. Run: chmod 600 ${getConfigPath()}`,
+        });
+      }
+    } catch {
+      // No config file beside the env var is the normal case.
     }
   }
 
@@ -211,7 +236,7 @@ export async function authDoctorCommand(_ctx: { args: string[] }): Promise<Comma
   // multi-failure case and tell the caller nothing they cannot read. AUTH over
   // GENERIC because GENERIC is what an unhandled crash exits with, and "the
   // diagnostic ran and found problems" should not look like "it fell over".
-  return { output: lines.join("\n"), exitCode: failed > 0 ? EXIT_CODES.AUTH : 0 };
+  return { output: scrub(lines.join("\n")), exitCode: failed > 0 ? EXIT_CODES.AUTH : 0 };
 }
 
 export async function authListCommand(_ctx: { args: string[] }): Promise<string> {

@@ -348,3 +348,20 @@ describe("people and relation accept several values without brackets", () => {
     );
   });
 });
+
+describe("quoted list values are not collapsed", () => {
+  const schema: Record<string, PropertySchema> = { Assignee: { type: "people" }, Tags: { type: "multi_select" } };
+  const A = "11111111-1111-1111-1111-111111111111";
+  const B = "22222222-2222-2222-2222-222222222222";
+
+  it("each item quoted separately stays separate", () => {
+    // `"a","b"` starts and ends with a quote without being one quoted value;
+    // stripping the outer pair turned two items into one malformed one.
+    const out = parseProperty(schema, "Assignee", `"user:${A}","user:${B}"`) as any;
+    assert.deepEqual(out.people, [{ id: A }, { id: B }]);
+  });
+
+  it("the same holds for multi_select", () => {
+    assert.deepEqual((parseProperty(schema, "Tags", '"a","b"') as any).multi_select, [{ name: "a" }, { name: "b" }]);
+  });
+});

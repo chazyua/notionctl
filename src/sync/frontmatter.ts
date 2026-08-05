@@ -86,12 +86,26 @@ export function malformedFrontmatterError(
 }
 
 /**
- * Body of a file whose front-matter has to parse before anything is written.
- * On the parse-failure path `body` is the entire raw input, so a caller that
- * ignores `malformed` writes the YAML onto the page as content.
+ * Body of a file for a command that wants content and nothing else.
+ *
+ * A block that opens and closes with `---` but will not parse is genuinely
+ * ambiguous: front-matter with one mistyped line, or a horizontal rule above
+ * ordinary prose. The second is not hypothetical — it is the shape `block get`
+ * emits for a page starting with a divider, and any document whose first
+ * heading is underlined with `---`. Refusing broke both, so the file is used as
+ * it stands and the parse failure is reported instead. Nothing is lost either
+ * way: at worst the YAML shows up as content, which is visible and fixable.
+ *
+ * `page sync` stays strict, because only it acts on `notion_id` and only there
+ * does guessing wrong orphan a page.
  */
 export function frontmatterBody(input: string, source: string): string {
   const { body, malformed } = extractFrontmatter(input);
-  if (malformed) throw malformedFrontmatterError(source, malformed);
+  if (malformed) {
+    process.stderr.write(
+      `notionctl: front-matter in ${source} is not valid YAML (${malformed}) — using the file as written, so those lines become page content.\n`
+      + "  If it was meant to be front-matter, fix that line. If it was meant to be a horizontal rule, write it as *** instead.\n",
+    );
+  }
   return body;
 }

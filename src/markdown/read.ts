@@ -33,10 +33,16 @@ const EMOJI_TO_ALERT_TYPE: Record<string, string> = {
  */
 function calloutIconSidecar(icon: CalloutIcon | null | undefined): string | null {
   if (!icon) return null;
-  if (icon.type === "emoji") return EMOJI_TO_ALERT_TYPE[icon.emoji] ? null : icon.emoji;
-  if (icon.type === "external") return icon.external.url;
-  if (icon.type === "icon") return `notion:${icon.icon.name}:${icon.icon.color}`;
-  return HOSTED_ICON;
+  const value = icon.type === "emoji"
+    ? (EMOJI_TO_ALERT_TYPE[icon.emoji] ? null : icon.emoji)
+    : icon.type === "external"
+      ? icon.external.url
+      : icon.type === "icon"
+        ? `notion:${icon.icon.name}:${icon.icon.color}`
+        : HOSTED_ICON;
+  // The sidecar occupies exactly one line. A line break in a value coming back
+  // from the API would otherwise splice whatever followed it into the callout.
+  return value === null ? null : value.replace(/[\r\n]+/g, " ");
 }
 
 function colorToAlertType(color: string | undefined): string | null {
@@ -47,6 +53,15 @@ function colorToAlertType(color: string | undefined): string | null {
   if (color.startsWith("red")) return "IMPORTANT";
   return null;
 }
+
+/** Colour each alert type implies on the way back, so we only note a difference. */
+const ALERT_TYPE_TO_COLOR_BY_NAME: Record<string, string> = {
+  NOTE: "blue_background",
+  TIP: "green_background",
+  WARNING: "yellow_background",
+  IMPORTANT: "red_background",
+  CAUTION: "red_background",
+};
 
 const LIST_ITEM_TYPES = new Set(["bulleted_list_item", "numbered_list_item", "to_do"]);
 
@@ -250,7 +265,7 @@ function renderBlock(block: Block, depth: number, numberedIndex: number): string
       if (iconSidecar !== null) {
         lines.splice(1, 0, `<!-- icon: ${iconSidecar} -->`);
       }
-      if (block.callout.color && block.callout.color !== "default" && !colorToAlertType(block.callout.color)) {
+      if (block.callout.color && ALERT_TYPE_TO_COLOR_BY_NAME[alertType] !== block.callout.color) {
         lines.splice(1, 0, `<!-- color: ${block.callout.color} -->`);
       }
       // Render nested children as continuation lines. Insert a blank `>`

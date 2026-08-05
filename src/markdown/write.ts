@@ -44,6 +44,14 @@ function calloutIcon(value: string | undefined, alertType: string): CalloutIcon 
   if (/^https?:\/\//i.test(value)) return { type: "external", external: { url: value } };
   const builtin = /^notion:([\w-]+):([\w-]+)$/.exec(value);
   if (builtin) return { type: "icon", icon: { name: builtin[1]!, color: builtin[2]! } };
+  // Anything left has to be an emoji. Plain words reach here from a hand-edited
+  // sidecar, and Notion rejects the whole request rather than just the icon.
+  if (/^[\p{ASCII}]{2,}$/u.test(value)) {
+    warnHandler?.(
+      `notionctl: '${value}' is not an emoji, an image URL, or notion:<name>:<colour> — the callout keeps its default icon.`,
+    );
+    return fallback;
+  }
   return { type: "emoji", emoji: value };
 }
 
@@ -390,10 +398,14 @@ function markdownToBlocksInternal(md: string, ctx: ParseContext, depth: number):
       let overrideColor: string | undefined;
       while (i < lines.length) {
         const next = lines[i]!.trim();
-        const iconComment = /^<!--\s*icon:\s*(\S+)\s*-->$/.exec(next);
-        const colorComment = /^<!--\s*color:\s*(\S+)\s*-->$/.exec(next);
+        const iconComment = /^<!--\s*icon:\s*(.+?)\s*-->$/.exec(next);
+        const colorComment = /^<!--\s*color:\s*(.+?)\s*-->$/.exec(next);
         if (iconComment) { overrideIcon = iconComment[1]!; i++; continue; }
         if (colorComment) { overrideColor = colorComment[1]!; i++; continue; }
+        // Any other comment here is not ours — a hand-edited sidecar, a stray
+        // HTML comment. Skipping keeps the callout together; falling through to
+        // the break below ended it and left its body as a separate quote.
+        if (/^<!--.*-->$/.test(next)) { i++; continue; }
         if (/^>\s/.test(next)) {
           continuationLines.push(next.slice(2));
           i++;

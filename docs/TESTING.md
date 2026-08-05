@@ -413,6 +413,17 @@ Comprehensive test scenarios for notionctl. Use this for manual dogfooding, regr
 - [A] A `notion://` URL that is not a valid id stays an ordinary link
 - [A] A link or mention whose label contains `[` or `]` keeps its URL, its text
       and its block type, and bracketed prose gains no stray backslash
+- [A] A link-preview title cannot forge a link to another address
+- [A] A callout icon value containing a space or a newline keeps the callout in
+      one piece, and an unrecognised comment inside a callout is skipped
+- [A] A callout keeps its own colour, including `default`, instead of taking the
+      one its alert type implies
+- [A] A hand-written `notion://` link with a malformed id stays a link; a dashless
+      id is normalised
+- [A] Quoting each list item separately does not collapse them into one value
+- [A] `auth doctor` rejects a config directory the owner cannot enter, warns about
+      a loose config file when `NOTION_TOKEN` is in use, and scrubs its report
+- [A] A terminal is exempt from the stdin idle timeout
 - [A] Callout icons round-trip for emoji, external URL and built-in Notion icons;
       a Notion-hosted icon falls back to a default and warns
 - [M] A page with mentions and custom callout icons survives `page get` →

@@ -306,16 +306,24 @@ function runContent(run: RichText): string {
   if (run.type === "equation") return `$${run.equation.expression}$`;
   if (run.type === "mention") {
     const m = run.mention;
-    if (m.type === "user") return `[${escapeMarkdownContent(run.plain_text)}](notion://user/${m.user.id})`;
-    if (m.type === "page") return `[${escapeMarkdownContent(run.plain_text)}](notion://page/${m.page.id})`;
-    if (m.type === "database") return `[${escapeMarkdownContent(run.plain_text)}](notion://database/${m.database.id})`;
+    // Every label here is remote text — a person's name, a page or link-preview
+    // title — so it is escaped before it goes inside `[...]`. Left raw, a `]`
+    // in a title ended the link early and the rest became a link of its own.
+    const label = escapeMarkdownContent(run.plain_text);
+    if (m.type === "user") return `[${label}](notion://user/${m.user.id})`;
+    if (m.type === "page") return `[${label}](notion://page/${m.page.id})`;
+    if (m.type === "database") return `[${label}](notion://database/${m.database.id})`;
     if (m.type === "date") {
       const range = m.date.end ? `${m.date.start}..${m.date.end}` : m.date.start;
       return `<${range}>`;
     }
-    if (m.type === "link_preview") return `[${run.plain_text}](${m.link_preview.url})`;
+    if (m.type === "link_preview") return `[${label}](${m.link_preview.url})`;
+    // Notion adds mention kinds over time; render the escaped text rather than
+    // emitting an unknown shape raw.
+    return label;
   }
-  return run.plain_text;
+  // Unreachable for the run types we model; kept for a shape Notion adds later.
+  return (run as { plain_text?: string }).plain_text ?? "";
 }
 
 /**
@@ -672,6 +680,7 @@ function splitLongRuns(runs: RichText[]): RichText[] {
 }
 
 const NOTION_MENTION_RE = /^notion:\/\/(user|page|database)\/([0-9a-fA-F-]+)$/;
+const CANONICAL_ID_RE = /^[0-9a-f]{8}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{12}$/i;
 
 /**
  * `notion://user/<id>` and friends are how the read path writes a mention.
@@ -682,8 +691,12 @@ const NOTION_MENTION_RE = /^notion:\/\/(user|page|database)\/([0-9a-fA-F-]+)$/;
 function makeMentionRun(url: string, label: string, state: ScannerState): MentionRichText | null {
   const m = NOTION_MENTION_RE.exec(url);
   if (!m) return null;
-  const id = m[2]!;
-  if (id.replace(/-/g, "").length !== 32) return null;
+  const raw = m[2]!;
+  // Dashes anywhere summing to 32 hex characters used to pass, and the id went
+  // to the API verbatim — one stray dash failed the entire request.
+  if (!CANONICAL_ID_RE.test(raw)) return null;
+  const hex = raw.replace(/-/g, "").toLowerCase();
+  const id = `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
   const kind = m[1] as "user" | "page" | "database";
   const mention = kind === "user"
     ? { type: "user" as const, user: { id } }
@@ -698,7 +711,6 @@ function makeMentionRun(url: string, label: string, state: ScannerState): Mentio
       bold: state.bold,
       italic: state.italic,
       strikethrough: state.strikethrough,
-      code: state.code,
     },
     plain_text: label,
     href: null,

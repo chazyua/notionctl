@@ -216,7 +216,7 @@ function resolveRelationRef(ref: string, propKey: string): { id: string } {
     `Relation property '${propKey}' needs 'page:<id>', got: ${ref}`,
     {
       suggestions: [
-        "Write one relation as page:<id>, several as page:<id>,page:<id> — a Notion URL works as the id.",
+        "Write one relation as page:<id>, several as page:<id>,page:<id> — use the page's id, not its URL.",
         `Looking a page up by title is not supported. Pass an empty value (--prop '${propKey}=') to clear the property.`,
       ],
     },
@@ -264,11 +264,20 @@ function parseCheckboxValue(key: string, raw: string): boolean {
   );
 }
 
+/**
+ * Remove surrounding quotes, but only when the trailing quote is the one that
+ * closes the leading one. `"a","b"` starts and ends with a quote without being
+ * a single quoted value; stripping the outer pair there turned two items into
+ * one — the exact misparse the list handling exists to prevent.
+ */
 function stripQuotes(s: string): string {
-  if ((s.startsWith('"') && s.endsWith('"')) || (s.startsWith("'") && s.endsWith("'"))) {
-    return s.slice(1, -1);
+  const q = s[0];
+  if ((q !== '"' && q !== "'") || s.length < 2 || s[s.length - 1] !== q) return s;
+  for (let i = 1; i < s.length - 1; i++) {
+    if (s[i] === "\\") { i++; continue; }
+    if (s[i] === q) return s;   // closes before the end: not one quoted value
   }
-  return s;
+  return s.slice(1, -1);
 }
 
 function suggestKey(input: string, candidates: string[]): string[] {
