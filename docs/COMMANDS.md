@@ -423,4 +423,29 @@ notionctl's Markdown engine handles bidirectional conversion:
 
 **Read (Notion to Markdown):** headings, paragraphs, bullet/numbered/to-do lists (nested), code blocks (with language), tables, quotes, callouts, toggles, dividers, images, bookmarks, bold, italic, strikethrough, inline code, links.
 
-**Write (Markdown to Notion):** headings (H1-H3), paragraphs, bullet/numbered/to-do lists (nested via 2-space indent), code blocks, tables, blockquotes, dividers, images, bold, italic, strikethrough, inline code, links.
+**Write (Markdown to Notion):** headings (H1-H3, ATX `#` or setext `===`/`---`), paragraphs, bullet/numbered/to-do lists (nested via 2-space indent), code blocks, tables, blockquotes, dividers, images, bold, italic, strikethrough, inline code, links.
+
+**Multi-paragraph list items.** Content indented to the item's body column stays
+inside that item:
+
+```markdown
+- Step one
+
+  Why step one matters.
+
+  ```bash
+  run --it
+  ```
+
+- Step two
+```
+
+A line wrapped without a blank line above it (`- long item that\n  wraps`) is
+folded into the item's own text, not made a separate block.
+
+**Nesting limit.** Notion accepts at most two levels of nesting below the top
+level of a page and rejects the entire request when a write exceeds it. Depth is
+counted across all block types together — a list inside a callout inside a toggle
+shares one budget with a three-level list. A table needs a level for its rows, so
+it fits one level shallower than other blocks. Content past the limit is written
+beside its parent instead, and a warning is printed to stderr.

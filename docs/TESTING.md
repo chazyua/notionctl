@@ -343,6 +343,8 @@ Comprehensive test scenarios for notionctl. Use this for manual dogfooding, regr
 - [A] Paragraphs, headings (H1-H3), bold, italic, strikethrough, inline code, links
 - [A] Bullet lists, numbered lists, to-do lists (checked/unchecked)
 - [A] Nested lists at 1, 2, and 3 levels with correct indentation
+- [A] A list item's non-list children (paragraphs, code) are indented to the item's
+      body column so they stay attached when written back
 - [A] Code blocks with language annotation
 - [A] GFM tables with header row
 - [A] Blockquotes, callouts (with emoji and color), toggles — all with nested children
@@ -369,8 +371,30 @@ Comprehensive test scenarios for notionctl. Use this for manual dogfooding, regr
 - [A] Inline `<details>...<summary>...</summary>...</details>` does not consume next block
 - [A] `![alt](url)` on its own line becomes Notion image block
 - [A] Multi-paragraph blockquotes preserve line breaks (not collapsed to single line)
+- [A] Setext headings: `Title`+`===` becomes H1, `Title`+`---` becomes H2, and the
+      underline never appears in the text
+- [A] `---` separated from prose by a blank line, and `***` in any position, stay
+      dividers
+- [A] Content indented under a list item (paragraph, quote, code fence) becomes a
+      child of that item, including when a deeper nested item sits between them
+- [A] A line wrapped without a blank line folds into the item's own text
+- [A] Nesting depth is counted across toggles, quotes, callouts and lists together
+      and never exceeds two levels below the top level; over-deep content is
+      promoted, not dropped, and a single warning is emitted
+- [A] A table is promoted one level earlier than other blocks, since its rows
+      occupy a level
+- [A] A list item's continuation keeps its position relative to the item's nested
+      children
+- [A] A heading whose `rich_text` contains a line break has its continuation lines
+      shielded, so a `===` line is not swallowed as a setext underline
+- [A] A pathologically indented list (thousands of levels) does not exhaust the
+      call stack
 - [M] Large Markdown files (100+ blocks) convert without error
 - [M] Markdown with mixed indentation (tabs vs spaces) handles gracefully
+- [M] A page with three levels of mixed toggles/callouts/lists is accepted by the
+      live API rather than rejected whole
+- [M] `page get` → `page update` on a page with multi-paragraph list items is
+      idempotent (re-reading returns identical Markdown)
 
 ### 9.3 Rich Text Tokenizer
 - [A] All annotation types: bold, italic, code, strikethrough, links

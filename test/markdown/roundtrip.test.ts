@@ -406,3 +406,106 @@ describe("prose that looks like a block marker", () => {
     assert.deepEqual(result.map((b: any) => b.type), ["heading_1", "bulleted_list_item", "divider"]);
   });
 });
+
+describe("list item children survive the round-trip", () => {
+  function rt(text: string) {
+    return [{ type: "text", text: { content: text, link: null }, plain_text: text, annotations: { bold: false, italic: false, strikethrough: false, underline: false, code: false, color: "default" } }];
+  }
+
+  it("an extra paragraph stays a child, not a top-level sibling", () => {
+    const blocks = [{
+      id: "1", type: "bulleted_list_item", has_children: true,
+      bulleted_list_item: { rich_text: rt("Item"), color: "default" },
+      _children: [{ id: "2", type: "paragraph", has_children: false, paragraph: { rich_text: rt("belongs to the item"), color: "default" } }],
+    }];
+    const result = roundTrip(blocks) as any[];
+    assert.equal(result.length, 1, "the paragraph must not escape to the top level");
+    const children = result[0].bulleted_list_item.children;
+    assert.equal(children.length, 1);
+    assert.equal(children[0].type, "paragraph");
+    assert.equal(children[0].paragraph.rich_text[0].text.content, "belongs to the item");
+  });
+
+  it("a code child stays attached and keeps its language", () => {
+    const blocks = [{
+      id: "1", type: "bulleted_list_item", has_children: true,
+      bulleted_list_item: { rich_text: rt("Item"), color: "default" },
+      _children: [{ id: "2", type: "code", has_children: false, code: { rich_text: rt("print(1)"), caption: [], language: "python" } }],
+    }];
+    const result = roundTrip(blocks) as any[];
+    assert.equal(result.length, 1);
+    const children = result[0].bulleted_list_item.children;
+    assert.equal(children[0].type, "code");
+    assert.equal(children[0].code.language, "python");
+    assert.equal(children[0].code.rich_text[0].text.content, "print(1)");
+  });
+
+  it("a nested list item and an extra paragraph coexist", () => {
+    const blocks = [{
+      id: "1", type: "bulleted_list_item", has_children: true,
+      bulleted_list_item: { rich_text: rt("Item"), color: "default" },
+      _children: [
+        { id: "2", type: "bulleted_list_item", has_children: false, bulleted_list_item: { rich_text: rt("nested"), color: "default" } },
+        { id: "3", type: "paragraph", has_children: false, paragraph: { rich_text: rt("trailing note"), color: "default" } },
+      ],
+    }];
+    const result = roundTrip(blocks) as any[];
+    assert.equal(result.length, 1);
+    assert.equal(result[0].bulleted_list_item.children.length, 2);
+  });
+});
+
+describe("setext underlines in prose are shielded", () => {
+  function para(text: string) {
+    return [{ id: "1", type: "paragraph", has_children: false, paragraph: { rich_text: [{ type: "text", text: { content: text, link: null }, plain_text: text, annotations: { bold: false, italic: false, strikethrough: false, underline: false, code: false, color: "default" } }], color: "default" } }];
+  }
+  function textOf(blocks: any[]) {
+    return blocks[0][blocks[0].type].rich_text.map((r: any) => r.plain_text).join("");
+  }
+
+  for (const body of ["===", "---", "--", "=", "\\===", "Title\n===", "a\n-"]) {
+    it(`a paragraph reading ${JSON.stringify(body)} stays that paragraph`, () => {
+      const back = roundTrip(para(body)) as any[];
+      assert.equal(back.length, 1, "must not split into a heading or a divider");
+      assert.equal(back[0].type, "paragraph");
+      assert.equal(textOf(back), body);
+      // A second cycle must not accrete or shed backslashes.
+      assert.equal(textOf(roundTrip(para(textOf(back))) as any[]), body);
+    });
+  }
+});
+
+describe("list item child order is preserved", () => {
+  function rt(text: string) {
+    return [{ type: "text", text: { content: text, link: null }, plain_text: text, annotations: { bold: false, italic: false, strikethrough: false, underline: false, code: false, color: "default" } }];
+  }
+  function item(text: string, children?: any[]) {
+    const b: any = { id: "1", type: "bulleted_list_item", has_children: !!children, bulleted_list_item: { rich_text: rt(text), color: "default" } };
+    if (children) b._children = children;
+    return b;
+  }
+  const para = (t: string) => ({ id: "2", type: "paragraph", has_children: false, paragraph: { rich_text: rt(t), color: "default" } });
+
+  it("a paragraph written above a nested item stays above it", () => {
+    const result = roundTrip([item("Item", [para("note"), item("sub")])]) as any[];
+    const kids = result[0].bulleted_list_item.children;
+    assert.deepEqual(kids.map((k: any) => k.type), ["paragraph", "bulleted_list_item"]);
+  });
+
+  it("a paragraph written below a nested item stays below it", () => {
+    const result = roundTrip([item("Item", [item("sub"), para("note")])]) as any[];
+    const kids = result[0].bulleted_list_item.children;
+    assert.deepEqual(kids.map((k: any) => k.type), ["bulleted_list_item", "paragraph"]);
+  });
+});
+
+describe("a heading with a soft line break", () => {
+  it("keeps a setext-looking continuation line instead of swallowing it", () => {
+    const text = "Release\nnotes\n===";
+    const blocks = [{ id: "1", type: "heading_1", has_children: false, heading_1: { rich_text: [{ type: "text", text: { content: text, link: null }, plain_text: text, annotations: { bold: false, italic: false, strikethrough: false, underline: false, code: false, color: "default" } }], color: "default", is_toggleable: false } }];
+    const result = roundTrip(blocks) as any[];
+    const all = result.map((b) => b[b.type].rich_text.map((r: any) => r.plain_text).join("")).join("\n");
+    assert.match(all, /===/, "the underline must not be deleted");
+    assert.match(all, /notes/);
+  });
+});

@@ -84,15 +84,60 @@ export function markdownToBlocks(md: string): Block[] {
   // Normalize CRLF and stray CR to LF so paragraph runs don't carry trailing
   // carriage returns that would bleed into Notion rich_text content.
   const normalized = md.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
-  const ctx: ParseContext = { warnedHeadingDowngrade: false };
-  return markdownToBlocksInternal(normalized, ctx);
+  const ctx: ParseContext = { warnedHeadingDowngrade: false, promoted: false };
+  const blocks = markdownToBlocksInternal(normalized, ctx, 0);
+  if (ctx.promoted && warnHandler) {
+    warnHandler(
+      "notionctl: content nested deeper than 2 levels was moved up beside its parent. Notion's API supports at most 2 levels of nested children.",
+    );
+  }
+  return blocks;
 }
 
 interface ParseContext {
   warnedHeadingDowngrade: boolean;
+  /** Set when any block had to be promoted out of a full container. */
+  promoted: boolean;
 }
 
-function markdownToBlocksInternal(md: string, ctx: ParseContext): Block[] {
+/**
+ * Notion rejects any request whose `children` nest more than two levels below
+ * the top-level array: a block may sit at depth 0, 1 or 2, but a depth-2 block
+ * may not carry children of its own. Verified live against the API — exceeding
+ * it fails the entire request, not just the offending block.
+ */
+const MAX_BLOCK_DEPTH = 2;
+
+function canNestAt(depth: number): boolean {
+  return depth < MAX_BLOCK_DEPTH;
+}
+
+/**
+ * Attach `children` to a container block's payload, or hand them back for the
+ * caller to emit as siblings when one more level would exceed Notion's limit.
+ * Promoting keeps the content; nesting it would fail the whole request.
+ */
+function nestOrPromote(data: { children?: Block[] }, children: Block[], depth: number, ctx: ParseContext): Block[] {
+  if (children.length === 0) return [];
+  // A table carries its rows as children, so it needs one more level than a
+  // block that ends at itself — Notion does not even accept `table` as a type
+  // at the deepest level. Promoting cascades: the table ends up one level
+  // shallower, where its rows fit.
+  const reserved = children.some((b) => b.type === "table") ? 1 : 0;
+  if (canNestAt(depth + reserved)) {
+    data.children = children;
+    return [];
+  }
+  ctx.promoted = true;
+  return children;
+}
+
+/** Depth to parse a container's body at — the same depth once nesting is full. */
+function childDepth(depth: number): number {
+  return canNestAt(depth) ? depth + 1 : depth;
+}
+
+function markdownToBlocksInternal(md: string, ctx: ParseContext, depth: number): Block[] {
   const lines = md.split("\n");
   const blocks: Block[] = [];
   let i = 0;
@@ -237,7 +282,7 @@ function markdownToBlocksInternal(md: string, ctx: ParseContext): Block[] {
 
     // Lists: bulleted, numbered, to-do — all indentation levels
     if (isListLine(line)) {
-      const { blocks: listBlocks, nextIdx } = parseListSection(lines, i);
+      const { blocks: listBlocks, nextIdx } = parseListSection(lines, i, ctx, depth);
       blocks.push(...listBlocks);
       // Defense in depth: if parseListSection made no progress, force-advance
       // to avoid an infinite loop on a line that isListLine recognizes but
@@ -271,7 +316,9 @@ function markdownToBlocksInternal(md: string, ctx: ParseContext): Block[] {
       // children. Any leading paragraph still becomes the quote's
       // rich_text body so the visual ordering is preserved.
       const innerMd = quoteLines.join("\n");
-      const innerBlocks = innerMd.length > 0 ? markdownToBlocks(innerMd) : [];
+      const innerBlocks = innerMd.length > 0
+        ? markdownToBlocksInternal(innerMd, ctx, childDepth(depth))
+        : [];
       const allParagraphs = innerBlocks.length > 0
         && innerBlocks.every((b) => b.type === "paragraph");
       let quoteRichText: RichText[] = [];
@@ -300,14 +347,15 @@ function markdownToBlocksInternal(md: string, ctx: ParseContext): Block[] {
         quoteChildren = innerBlocks;
       }
       const quoteData: any = { rich_text: quoteRichText, color: "default" };
-      if (quoteChildren.length > 0) quoteData.children = quoteChildren;
+      const quotePromoted = nestOrPromote(quoteData, quoteChildren, depth, ctx);
       blocks.push({
         object: "block",
         id: "",
         type: "quote",
-        has_children: quoteChildren.length > 0,
+        has_children: quoteData.children !== undefined,
         quote: quoteData,
       } as unknown as Block);
+      blocks.push(...quotePromoted);
       continue;
     }
 
@@ -349,7 +397,9 @@ function markdownToBlocksInternal(md: string, ctx: ParseContext): Block[] {
       }
       // Parse continuation as markdown to detect child block structure
       const innerMd = continuationLines.join("\n").trim();
-      const childBlocks = innerMd.length > 0 ? markdownToBlocksInternal(innerMd, ctx) : [];
+      const childBlocks = innerMd.length > 0
+        ? markdownToBlocksInternal(innerMd, ctx, childDepth(depth))
+        : [];
       // First child paragraph becomes the callout's rich_text; rest become children
       let calloutRichText: RichText[] = [];
       let calloutChildren: Block[] = [];
@@ -367,14 +417,15 @@ function markdownToBlocksInternal(md: string, ctx: ParseContext): Block[] {
         icon: { type: "emoji", emoji: overrideIcon ?? ALERT_TYPE_TO_EMOJI[alertType] ?? "💡" },
         color: overrideColor ?? ALERT_TYPE_TO_COLOR[alertType] ?? "default",
       };
-      if (calloutChildren.length > 0) calloutData.children = calloutChildren;
+      const calloutPromoted = nestOrPromote(calloutData, calloutChildren, depth, ctx);
       blocks.push({
         object: "block",
         id: "",
         type: "callout",
-        has_children: calloutChildren.length > 0,
+        has_children: calloutData.children !== undefined,
         callout: calloutData,
       } as unknown as Block);
+      blocks.push(...calloutPromoted);
       continue;
     }
 
@@ -385,17 +436,20 @@ function markdownToBlocksInternal(md: string, ctx: ParseContext): Block[] {
       if (inlineCloseMatch) {
         const summary = inlineCloseMatch[1] ?? "";
         const bodyText = (inlineCloseMatch[2] ?? "").trim();
-        const childBlocks = bodyText.length > 0 ? markdownToBlocksInternal(bodyText, ctx) : [];
+        const childBlocks = bodyText.length > 0
+          ? markdownToBlocksInternal(bodyText, ctx, childDepth(depth))
+          : [];
         i++;
         const toggleData: any = { rich_text: markdownToRichText(summary), color: "default" };
-        if (childBlocks.length > 0) toggleData.children = childBlocks;
+        const togglePromoted = nestOrPromote(toggleData, childBlocks, depth, ctx);
         blocks.push({
           object: "block",
           id: "",
           type: "toggle",
-          has_children: childBlocks.length > 0,
+          has_children: toggleData.children !== undefined,
           toggle: toggleData,
         } as unknown as Block);
+        blocks.push(...togglePromoted);
         continue;
       }
 
@@ -430,23 +484,24 @@ function markdownToBlocksInternal(md: string, ctx: ParseContext): Block[] {
       i++; // consume </details>
 
       const bodyMd = bodyLines.join("\n").trim();
-      const childBlocks = bodyMd.length > 0 ? markdownToBlocksInternal(bodyMd, ctx) : [];
+      const childBlocks = bodyMd.length > 0
+        ? markdownToBlocksInternal(bodyMd, ctx, childDepth(depth))
+        : [];
 
       const toggleData: any = {
         rich_text: markdownToRichText(summary),
         color: "default",
       };
-      if (childBlocks.length > 0) {
-        toggleData.children = childBlocks;
-      }
+      const togglePromoted = nestOrPromote(toggleData, childBlocks, depth, ctx);
 
       blocks.push({
         object: "block",
         id: "",
         type: "toggle",
-        has_children: childBlocks.length > 0,
+        has_children: toggleData.children !== undefined,
         toggle: toggleData,
       } as unknown as Block);
+      blocks.push(...togglePromoted);
       continue;
     }
 
@@ -568,6 +623,15 @@ function markdownToBlocksInternal(md: string, ctx: ParseContext): Block[] {
       paraLines.push(lines[i]!);
       i++;
     }
+    // Setext heading: prose underlined by `===` (H1) or `---` (H2) on the very
+    // next line. A blank line in between means the underline is a divider
+    // instead, which is what the read path emits, so round-trips are unaffected.
+    const level = i < lines.length ? setextLevel(lines[i]!) : null;
+    if (level !== null) {
+      blocks.push(makeHeadingBlock(level, unescapeBlockStarts(paraLines.join("\n"))));
+      i++;
+      continue;
+    }
     blocks.push(makeParagraphBlock(paraLines.join("\n")));
   }
 
@@ -620,6 +684,18 @@ function parseImageLine(line: string): { alt: string; url: string } | null {
 }
 
 /**
+ * Level of the setext heading a line underlines, or null when it is ordinary
+ * text. `=` is H1, `-` is H2; a run of three or more `-` doubles as a divider
+ * and only reads as an underline when prose sits directly above it.
+ */
+function setextLevel(line: string): 1 | 2 | null {
+  const t = line.trim();
+  if (/^=+$/.test(t)) return 1;
+  if (/^-+$/.test(t)) return 2;
+  return null;
+}
+
+/**
  * True when a line would be parsed as the start of a block rather than prose.
  * Exported so the read path can shield paragraph text that happens to look like
  * a marker — the two sides must agree on this set or round-trips silently
@@ -634,6 +710,7 @@ export function isBlockStart(line: string): boolean {
     /^>/.test(t) ||
     /^```/.test(t) ||
     /^[-*_]{3,}\s*$/.test(t) ||
+    setextLevel(t) !== null ||
     /^\|.*\|$/.test(t) ||
     /^\$\$/.test(t) ||
     /^!\[/.test(t) ||
@@ -676,142 +753,214 @@ function makeHeadingBlock(level: 1 | 2 | 3, text: string): Block {
   } as Block;
 }
 
-interface ListItem {
+interface ParsedListLine {
   type: "bulleted" | "numbered" | "todo";
   text: string;
   checked: boolean;
   indent: number;
+  /** Column the item's body starts at — where its continuation dedents to. */
+  body: number;
+}
+
+interface ListItem extends ParsedListLine {
   children: ListItem[];
-  trailingBlocks: Block[];
+  trailingMd: string;
+  /** True when the continuation appeared above the item's nested children. */
+  trailingFirst: boolean;
 }
 
 function isListLine(line: string): boolean {
   return /^\s*[-*+]\s+/.test(line) || /^\s*\d+\.\s+/.test(line);
 }
 
-function parseListSection(lines: string[], startIdx: number): { blocks: Block[]; nextIdx: number } {
-  const rawItems: Omit<ListItem, "children" | "trailingBlocks">[] = [];
-  const trailingBlocksMap = new Map<number, Block[]>();
-  let i = startIdx;
-  while (i < lines.length && isListLine(lines[i]!)) {
-    const parsed = classifyListLine(lines[i]!);
-    if (parsed === null) break;
-    rawItems.push(parsed);
-    const itemIdx = rawItems.length - 1;
-    i++;
-    // Peek for indented code fences belonging to this list item. A code fence
-    // is considered part of the list item when it is indented at least as far
-    // as the item's content start (indent + marker width, approximated as
-    // indent + 2 so "- " items pick up 2-space-indented fences).
-    const contentIndent = parsed.indent + 2;
-    while (i < lines.length) {
-      // Skip blank lines between the list item and a potential code fence
-      let peek = i;
-      while (peek < lines.length && lines[peek]!.trim().length === 0) peek++;
-      if (peek >= lines.length) break;
-      const peekLine = lines[peek]!;
-      const peekLineIndent = (peekLine.match(/^(\s*)/) ?? ["", ""])[1]!.length;
-      const peekTrimmed = peekLine.trim();
-      const fenceMatch = /^(`{3,}|~{3,})(.*)$/.exec(peekTrimmed);
-      if (!fenceMatch || peekLineIndent < contentIndent) break;
-      // Consume the indented code fence
-      const fenceChar = fenceMatch[1]![0]!;
-      const fenceLen = fenceMatch[1]!.length;
-      const lang = fenceMatch[2]!.trim();
-      const closePat = fenceChar === "`"
-        ? new RegExp(`^\`{${fenceLen},}\\s*$`)
-        : new RegExp(`^~{${fenceLen},}\\s*$`);
-      const codeLines: string[] = [];
-      i = peek + 1;
-      while (i < lines.length && !closePat.test(lines[i]!.trim())) {
-        // Strip up to contentIndent spaces of leading indentation from code body
-        const codeLine = lines[i]!;
-        const stripped = codeLine.length > contentIndent && /^\s+/.test(codeLine)
-          ? codeLine.slice(Math.min(contentIndent, (codeLine.match(/^(\s*)/)![1]!.length)))
-          : codeLine;
-        codeLines.push(stripped);
-        i++;
-      }
-      if (i < lines.length) i++; // consume closing fence
-      const blocks = trailingBlocksMap.get(itemIdx) ?? [];
-      blocks.push(makeCodeBlock(codeLines.join("\n"), lang));
-      trailingBlocksMap.set(itemIdx, blocks);
-    }
-  }
-  const { items: tree, flattened } = capListDepth(buildListTree(rawItems, trailingBlocksMap));
-  if (flattened > 0 && warnHandler) {
-    warnHandler(
-      `notionctl: ${flattened} list item${flattened === 1 ? "" : "s"} deeper than 2 levels were promoted to the maximum allowed depth. Notion's API supports at most 2 levels of nested children.`,
-    );
-  }
-  return { blocks: tree.map(listItemToBlock), nextIdx: i };
+function indentOf(line: string): number {
+  return line.length - line.trimStart().length;
 }
 
-function classifyListLine(line: string): Omit<ListItem, "children" | "trailingBlocks"> | null {
-  const indent = (line.match(/^(\s*)/) ?? ["", ""])[1]!.length;
+function dedent(line: string, width: number): string {
+  return line.slice(Math.min(width, indentOf(line)));
+}
+
+/**
+ * Consumes a run of list lines plus any content indented under them.
+ *
+ * Content that is not itself a list line belongs to the innermost open item
+ * whose body column it clears — that is what lets `- a` keep a trailing
+ * paragraph even when a deeper `  - b` was parsed in between. The ownership
+ * threshold is deliberately looser than the exact marker width (2 spaces reads
+ * as continuation of a `1. ` item too) while the dedent uses the real width, so
+ * no leading space leaks into the text.
+ *
+ * Known limit: an item with continuation content both above and below its
+ * nested children emits all of it on whichever side the first chunk appeared.
+ */
+function parseListSection(lines: string[], startIdx: number, ctx: ParseContext, depth: number): { blocks: Block[]; nextIdx: number } {
+  const rawItems: ParsedListLine[] = [];
+  const contLines = new Map<number, string[]>();
+  const contFirst = new Set<number>();
+  // Items still open at the current indentation, innermost last. Bounded by
+  // nesting depth, so ownership lookup stays cheap however long the list is.
+  const open: number[] = [];
+  let i = startIdx;
+
+  /** Innermost open item that owns content starting at column `col`, or -1. */
+  const ownerAt = (col: number): number => {
+    for (let n = open.length - 1; n >= 0; n--) {
+      const idx = open[n]!;
+      if (col >= rawItems[idx]!.indent + 2) return idx;
+    }
+    return -1;
+  };
+
+  /** Buffer for `owner`, noting whether it opened before any nested child. */
+  const bufferFor = (owner: number): string[] => {
+    let buf = contLines.get(owner);
+    if (!buf) {
+      buf = [];
+      contLines.set(owner, buf);
+      if (owner === rawItems.length - 1) contFirst.add(owner);
+    }
+    return buf;
+  };
+
+  while (i < lines.length) {
+    const cur = lines[i]!;
+
+    if (isListLine(cur)) {
+      const parsed = classifyListLine(cur);
+      if (parsed === null) break;
+      rawItems.push(parsed);
+      while (open.length > 0 && rawItems[open[open.length - 1]!]!.indent >= parsed.indent) open.pop();
+      open.push(rawItems.length - 1);
+      i++;
+      // Prose on the very next lines is a soft wrap of this item's own text,
+      // the way every markdown renderer treats it — not a child block.
+      const wrapped: string[] = [];
+      while (i < lines.length) {
+        const next = lines[i]!;
+        if (next.trim().length === 0 || isListLine(next) || isBlockStart(next)) break;
+        if (indentOf(next) < parsed.indent + 2) break;
+        wrapped.push(next.trim());
+        i++;
+      }
+      if (wrapped.length > 0) parsed.text = [parsed.text, ...wrapped].join(" ").trim();
+      continue;
+    }
+
+    if (cur.trim().length === 0) {
+      let scan = i;
+      while (scan < lines.length && lines[scan]!.trim().length === 0) scan++;
+      if (scan >= lines.length) break;
+      if (isListLine(lines[scan]!)) { i = scan; continue; }
+      if (ownerAt(indentOf(lines[scan]!)) < 0) break;
+      // Blank lines only matter once the owner has content to separate, and
+      // any run of them is a single block separator when re-parsed.
+      const buf = contLines.get(ownerAt(indentOf(lines[scan]!)));
+      if (buf && buf.length > 0) buf.push("");
+      i = scan;
+      continue;
+    }
+
+    const owner = ownerAt(indentOf(cur));
+    if (owner < 0) break;
+    const buf = bufferFor(owner);
+    // A fence and its body dedent to the fence's own column, so the re-parse
+    // still recognises the closing marker; everything else dedents to the
+    // item's body column.
+    const fence = /^(`{3,}|~{3,})/.exec(cur.trim());
+    const width = fence ? indentOf(cur) : rawItems[owner]!.body;
+    buf.push(dedent(cur, width));
+    i++;
+    if (fence) {
+      // Only a backtick or a tilde can reach the pattern, both regex-inert.
+      const closeFence = new RegExp(`^${fence[1]![0]}{${fence[1]!.length},}\\s*$`);
+      while (i < lines.length) {
+        const line = lines[i]!;
+        buf.push(dedent(line, width));
+        i++;
+        if (closeFence.test(line.trim())) break;
+      }
+    }
+  }
+
+  const tree = buildListTree(rawItems, contLines, contFirst, depth, ctx);
+  return { blocks: tree.flatMap((it) => listItemToBlocks(it, depth, ctx)), nextIdx: i };
+}
+
+function classifyListLine(line: string): ParsedListLine | null {
+  const indent = indentOf(line);
   const trimmed = line.trim();
+  // Body column is measured off the raw line per branch, so it can never drift
+  // from the marker the branch actually matched.
+  const bodyAfter = (re: RegExp): number => re.exec(line)?.[0]!.length ?? indent + 2;
   // Allow empty to-do bodies (`- [ ]` with no trailing text). The previous
   // regex required at least one whitespace + content, which silently
   // demoted bare checkboxes to bulleted list items containing "[x]".
   const todoMatch = /^-\s+\[([ xX])\](?:\s+(.*))?$/.exec(trimmed);
   if (todoMatch) {
-    return { indent, type: "todo", text: todoMatch[2] ?? "", checked: todoMatch[1]!.toLowerCase() === "x" };
+    return {
+      indent,
+      body: bodyAfter(/^\s*-\s+\[[ xX]\]\s*/),
+      type: "todo",
+      text: todoMatch[2] ?? "",
+      checked: todoMatch[1]!.toLowerCase() === "x",
+    };
   }
   // Empty-body bullet (`- `, `*\t`, `+  `) — isListLine() on the untrimmed
   // line already confirmed it looks like a bullet, so accept it as an empty
   // item instead of returning null. Returning null used to leave the main
   // loop stuck at the same index because isListLine kept matching, producing
   // an infinite loop on innocuous input like "- \n- real".
-  const emptyBulletMatch = /^[-*+]$/.exec(trimmed);
-  if (emptyBulletMatch) {
-    return { indent, type: "bulleted", text: "", checked: false };
-  }
-  const bulletMatch = /^[-*+]\s+(.*)$/.exec(trimmed);
+  const bulletMatch = /^[-*+](?:\s+(.*))?$/.exec(trimmed);
   if (bulletMatch) {
-    return { indent, type: "bulleted", text: bulletMatch[1]!, checked: false };
+    return { indent, body: bodyAfter(/^\s*[-*+]\s*/), type: "bulleted", text: bulletMatch[1] ?? "", checked: false };
   }
   // Same guard for numbered lists: `1.` with no body needs to be accepted as
   // an empty item rather than dropped to null.
-  const emptyNumMatch = /^\d+\.$/.exec(trimmed);
-  if (emptyNumMatch) {
-    return { indent, type: "numbered", text: "", checked: false };
-  }
-  const numMatch = /^\d+\.\s+(.*)$/.exec(trimmed);
+  const numMatch = /^\d+\.(?:\s+(.*))?$/.exec(trimmed);
   if (numMatch) {
-    return { indent, type: "numbered", text: numMatch[1]!, checked: false };
+    return { indent, body: bodyAfter(/^\s*\d+\.\s*/), type: "numbered", text: numMatch[1] ?? "", checked: false };
   }
   return null;
 }
 
-function buildListTree(flat: Omit<ListItem, "children" | "trailingBlocks">[], trailingBlocksMap?: Map<number, Block[]>): ListItem[] {
+/**
+ * Notion's nesting limit is applied here rather than during block
+ * construction, so the tree can never be deeper than the limit and a
+ * pathologically indented file cannot exhaust the call stack.
+ */
+function buildListTree(
+  flat: ParsedListLine[],
+  contLines: Map<number, string[]>,
+  contFirst: Set<number>,
+  baseDepth: number,
+  ctx: ParseContext,
+): ListItem[] {
   const roots: ListItem[] = [];
   const stack: ListItem[] = [];
+  const maxAncestors = Math.max(0, MAX_BLOCK_DEPTH - baseDepth);
   for (let idx = 0; idx < flat.length; idx++) {
-    const raw = flat[idx]!;
-    const item: ListItem = { ...raw, children: [], trailingBlocks: trailingBlocksMap?.get(idx) ?? [] };
+    const item: ListItem = {
+      ...flat[idx]!,
+      children: [],
+      trailingMd: (contLines.get(idx) ?? []).join("\n"),
+      trailingFirst: contFirst.has(idx),
+    };
     while (stack.length > 0 && stack[stack.length - 1]!.indent >= item.indent) {
       stack.pop();
     }
-    if (stack.length === 0) {
-      roots.push(item);
-    } else {
-      stack[stack.length - 1]!.children.push(item);
-    }
+    if (stack.length > maxAncestors) ctx.promoted = true;
+    const parent = stack[Math.min(stack.length, maxAncestors) - 1];
+    if (parent) parent.children.push(item);
+    else roots.push(item);
     stack.push(item);
   }
   return roots;
 }
 
 /**
- * Notion API allows max 2 levels of nested children (block → child → grandchild).
- * Items deeper than that are promoted up to the deepest allowed parent so
- * content is never silently dropped.
- */
-const MAX_CHILD_DEPTH = 2;
-
-/**
- * Set by the CLI entry so write.ts can warn about list depth flattening
- * without importing process.stderr directly. Tests leave it unset so test
+ * Set by the CLI entry so write.ts can warn about flattened nesting without
+ * importing process.stderr directly. Tests leave it unset so test
  * output stays clean.
  */
 let warnHandler: ((msg: string) => void) | null = null;
@@ -819,73 +968,35 @@ export function setMarkdownWarnHandler(fn: ((msg: string) => void) | null): void
   warnHandler = fn;
 }
 
-function capListDepth(items: ListItem[], depth: number = 0): { items: ListItem[]; flattened: number } {
-  const result: ListItem[] = [];
-  let flattened = 0;
-  for (const item of items) {
-    if (depth + 1 >= MAX_CHILD_DEPTH) {
-      result.push({ ...item, children: [] });
-      const descendants = collectDescendants(item.children);
-      if (descendants.length > 0) flattened += descendants.length;
-      result.push(...descendants.map((c) => ({ ...c, children: [] })));
-    } else {
-      const capped = capListDepth(item.children, depth + 1);
-      flattened += capped.flattened;
-      result.push({ ...item, children: capped.items });
-    }
-  }
-  return { items: result, flattened };
-}
+const LIST_TYPE_TO_BLOCK_TYPE = {
+  todo: "to_do",
+  bulleted: "bulleted_list_item",
+  numbered: "numbered_list_item",
+} as const;
 
-function collectDescendants(items: ListItem[]): ListItem[] {
-  const result: ListItem[] = [];
-  for (const item of items) {
-    result.push(item);
-    result.push(...collectDescendants(item.children));
-  }
-  return result;
-}
-
-function listItemToBlock(item: ListItem): Block {
-  const childBlocks = [...item.children.map(listItemToBlock), ...item.trailingBlocks];
-  if (item.type === "todo") {
-    const body: any = {
-      rich_text: markdownToRichText(item.text),
-      checked: item.checked,
-      color: "default",
-    };
-    if (childBlocks.length > 0) body.children = childBlocks;
-    return {
+/**
+ * Returns the item's block plus any content that had to be promoted to a
+ * sibling because the item already sits at Notion's deepest nesting level.
+ */
+function listItemToBlocks(item: ListItem, depth: number, ctx: ParseContext): Block[] {
+  const trailing = item.trailingMd.length > 0
+    ? markdownToBlocksInternal(item.trailingMd, ctx, childDepth(depth))
+    : [];
+  const nested = item.children.flatMap((c) => listItemToBlocks(c, depth + 1, ctx));
+  const kids = item.trailingFirst ? [...trailing, ...nested] : [...nested, ...trailing];
+  const body: any = { rich_text: markdownToRichText(item.text), color: "default" };
+  if (item.type === "todo") body.checked = item.checked;
+  const promoted = nestOrPromote(body, kids, depth, ctx);
+  const key = LIST_TYPE_TO_BLOCK_TYPE[item.type];
+  return [
+    {
       object: "block",
-      type: "to_do",
-      has_children: childBlocks.length > 0,
-      to_do: body,
-    } as unknown as Block;
-  }
-  if (item.type === "bulleted") {
-    const body: any = {
-      rich_text: markdownToRichText(item.text),
-      color: "default",
-    };
-    if (childBlocks.length > 0) body.children = childBlocks;
-    return {
-      object: "block",
-      type: "bulleted_list_item",
-      has_children: childBlocks.length > 0,
-      bulleted_list_item: body,
-    } as unknown as Block;
-  }
-  const body: any = {
-    rich_text: markdownToRichText(item.text),
-    color: "default",
-  };
-  if (childBlocks.length > 0) body.children = childBlocks;
-  return {
-    object: "block",
-    type: "numbered_list_item",
-    has_children: childBlocks.length > 0,
-    numbered_list_item: body,
-  } as unknown as Block;
+      type: key,
+      has_children: body.children !== undefined,
+      [key]: body,
+    } as unknown as Block,
+    ...promoted,
+  ];
 }
 
 const VALID_LANGUAGES = new Set([

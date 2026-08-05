@@ -32,6 +32,8 @@ function colorToAlertType(color: string | undefined): string | null {
   return null;
 }
 
+const LIST_ITEM_TYPES = new Set(["bulleted_list_item", "numbered_list_item", "to_do"]);
+
 export interface RenderOptions {
   depth?: number;
 }
@@ -43,7 +45,7 @@ export function blocksToMarkdown(blocks: Block[], opts: RenderOptions = {}): str
   let numberedIndex = 0;
 
   for (const block of blocks) {
-    const isListItem = block.type === "bulleted_list_item" || block.type === "numbered_list_item" || block.type === "to_do";
+    const isListItem = LIST_ITEM_TYPES.has(block.type);
     const isSameList = lastType === block.type && isListItem;
 
     if (!isSameList && lastType !== null) {
@@ -81,11 +83,22 @@ function renderNestedList(blocks: Block[], depth: number): string {
   let numIdx = 0;
   for (const block of blocks) {
     const rendered = renderBlock(block, depth, numIdx);
-    if (rendered !== null) lines.push(rendered);
+    if (rendered !== null) {
+      const isListItem = LIST_ITEM_TYPES.has(block.type);
+      // A list item indents itself. Anything else — an extra paragraph, a
+      // quote — has to be indented here and set off by a blank line, or the
+      // write path reads it back as a top-level sibling of the list.
+      lines.push(isListItem ? rendered : `\n${indentLines(rendered, depth)}`);
+    }
     if (block.type === "numbered_list_item") numIdx++;
     else numIdx = 0;
   }
   return lines.join("\n");
+}
+
+function indentLines(text: string, depth: number): string {
+  const pad = "  ".repeat(depth);
+  return text.split("\n").map((l) => (l.length > 0 ? pad + l : l)).join("\n");
 }
 
 /**
@@ -105,6 +118,18 @@ function escapeBlockStarts(text: string): string {
     .join("\n");
 }
 
+/**
+ * A heading's first line carries the `#` prefix, so it can never be re-read as
+ * something else. A soft line break inside its rich_text puts later lines at
+ * the start of a line, where a marker would be — `Release\nnotes\n===` came
+ * back with the `===` swallowed as a setext underline. Shield those; the write
+ * path unescapes them as part of the paragraph they become.
+ */
+function escapeHeadingText(text: string): string {
+  const nl = text.indexOf("\n");
+  return nl === -1 ? text : text.slice(0, nl + 1) + escapeBlockStarts(text.slice(nl + 1));
+}
+
 function renderBlock(block: Block, depth: number, numberedIndex: number): string | null {
   const indent = "  ".repeat(depth);
   switch (block.type) {
@@ -114,11 +139,11 @@ function renderBlock(block: Block, depth: number, numberedIndex: number): string
       return appendChildBlocks(text, block);
     }
     case "heading_1":
-      return appendChildBlocks(`# ${richTextToMarkdown(block.heading_1?.rich_text ?? [])}`, block);
+      return appendChildBlocks(`# ${escapeHeadingText(richTextToMarkdown(block.heading_1?.rich_text ?? []))}`, block);
     case "heading_2":
-      return appendChildBlocks(`## ${richTextToMarkdown(block.heading_2?.rich_text ?? [])}`, block);
+      return appendChildBlocks(`## ${escapeHeadingText(richTextToMarkdown(block.heading_2?.rich_text ?? []))}`, block);
     case "heading_3":
-      return appendChildBlocks(`### ${richTextToMarkdown(block.heading_3?.rich_text ?? [])}`, block);
+      return appendChildBlocks(`### ${escapeHeadingText(richTextToMarkdown(block.heading_3?.rich_text ?? []))}`, block);
     case "bulleted_list_item": {
       const text = `${indent}- ${richTextToMarkdown(block.bulleted_list_item?.rich_text ?? [])}`;
       const nested = (block as any)._children as Block[] | undefined;
@@ -160,10 +185,9 @@ function renderBlock(block: Block, depth: number, numberedIndex: number): string
       const matches = content.match(/`+/g);
       if (matches) for (const m of matches) if (m.length > longest) longest = m.length;
       const fence = "`".repeat(Math.max(3, longest + 1));
-      // Indent code blocks that are children of list items so the write path
-      // can re-associate them with the parent list item on round-trip.
-      const codeLines = content.split("\n").map((l) => indent + l).join("\n");
-      return `${indent}${fence}${lang}\n${codeLines}\n${indent}${fence}`;
+      // Nesting under a list item is applied by renderNestedList, which owns
+      // the indent for every non-list child.
+      return `${fence}${lang}\n${content}\n${fence}`;
     }
     case "divider":
       return "---";

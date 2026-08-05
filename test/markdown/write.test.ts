@@ -192,18 +192,15 @@ describe("markdownToBlocks nested lists", () => {
     assert.equal(children[1].type, "bulleted_list_item");
   });
 
-  it("three-level nesting caps at Notion API limit (2 levels of children)", () => {
+  it("three-level nesting is preserved (Notion allows it)", () => {
     const md = "- A\n  - B\n    - C";
     const blocks = markdownToBlocks(md);
     assert.equal(blocks.length, 1);
-    // B and C are both children of A (C promoted from B's child to A's child)
-    const children = (blocks[0] as any).bulleted_list_item.children;
-    assert.equal(children.length, 2, "B and C both at second level");
-    assert.equal(children[0].type, "bulleted_list_item");
-    assert.equal(children[1].type, "bulleted_list_item");
-    // Neither has further children
-    assert.equal(children[0].bulleted_list_item.children, undefined);
-    assert.equal(children[1].bulleted_list_item.children, undefined);
+    const bs = (blocks[0] as any).bulleted_list_item.children;
+    assert.equal(bs.length, 1, "only B at second level");
+    const cs = bs[0].bulleted_list_item.children;
+    assert.equal(cs.length, 1, "C stays nested under B");
+    assert.equal(cs[0].bulleted_list_item.children, undefined);
   });
 
   it("multiple top-level items each with children", () => {
@@ -237,16 +234,17 @@ describe("markdownToBlocks nested lists", () => {
     assert.equal((blocks[0] as any).bulleted_list_item.children[0].id, undefined);
   });
 
-  it("four-level nesting promotes deeper items (Notion API limit)", () => {
+  it("four-level nesting promotes the deepest item (Notion API limit)", () => {
     const md = "- A\n  - B\n    - C\n      - D";
     const blocks = markdownToBlocks(md);
     assert.equal(blocks.length, 1, "one root block A");
     const aChildren = (blocks[0] as any).bulleted_list_item.children;
-    // B, C, D all promoted to children of A (only 2 nesting levels allowed)
-    assert.equal(aChildren.length, 3, "B, C, D all at second level");
-    // None should have children
-    for (const child of aChildren) {
-      assert.equal(child.bulleted_list_item.children, undefined, "no third-level children");
+    assert.equal(aChildren.length, 1, "only B at second level");
+    const bChildren = aChildren[0].bulleted_list_item.children;
+    // D is promoted to sit beside C — a third-level block may not have children
+    assert.equal(bChildren.length, 2, "C and D both at third level");
+    for (const child of bChildren) {
+      assert.equal(child.bulleted_list_item.children, undefined, "no fourth-level children");
     }
   });
 
@@ -277,10 +275,17 @@ describe("markdownToBlocks — paragraph/block boundary edge cases", () => {
     assert.equal(blocks[1]!.type, "equation");
   });
 
-  it("divider after paragraph (no blank line) is parsed separately", () => {
+  it("divider on the line after prose is a setext heading, not a divider", () => {
     const md = "Some text\n---";
     const blocks = markdownToBlocks(md);
-    assert.equal(blocks.length, 2, "paragraph and divider must be separate");
+    assert.equal(blocks.length, 1, "prose plus its underline is one heading");
+    assert.equal(blocks[0]!.type, "heading_2");
+    assert.equal((blocks[0] as any).heading_2.rich_text[0].text.content, "Some text");
+  });
+
+  it("divider separated from prose by a blank line stays a divider", () => {
+    const blocks = markdownToBlocks("Some text\n\n---");
+    assert.equal(blocks.length, 2);
     assert.equal(blocks[0]!.type, "paragraph");
     assert.equal(blocks[1]!.type, "divider");
   });
@@ -671,20 +676,19 @@ describe("markdownToBlocks — H4/H5/H6 headings downgraded to H3", () => {
 describe("markdown write edge cases", () => {
   afterEach(() => setMarkdownWarnHandler(null));
 
-  it("emits a warning via the registered handler when lists are flattened", () => {
+  it("emits one warning via the registered handler when lists are flattened", () => {
     const warnings: string[] = [];
     setMarkdownWarnHandler((msg) => warnings.push(msg));
     const md = "- a\n  - b\n    - c\n      - d\n        - e";
     markdownToBlocks(md);
-    assert.equal(warnings.length, 1);
-    assert.match(warnings[0]!, /list item/i);
+    assert.equal(warnings.length, 1, "one warning however many levels were flattened");
     assert.match(warnings[0]!, /2 levels/i);
   });
 
-  it("does not warn when list nesting stays within 2 levels", () => {
+  it("does not warn when nesting stays within the limit", () => {
     const warnings: string[] = [];
     setMarkdownWarnHandler((msg) => warnings.push(msg));
-    markdownToBlocks("- a\n  - b\n- c");
+    markdownToBlocks("- a\n  - b\n    - c");
     assert.equal(warnings.length, 0);
   });
 
@@ -969,3 +973,201 @@ describe("markdownToBlocks does NOT strip YAML frontmatter", () => {
   });
 });
 
+
+describe("setext headings", () => {
+  it("prose underlined with === becomes an H1", () => {
+    const blocks = markdownToBlocks("Title\n===");
+    assert.equal(blocks.length, 1);
+    assert.equal(blocks[0]!.type, "heading_1");
+    assert.equal((blocks[0] as any).heading_1.rich_text[0].text.content, "Title");
+  });
+
+  it("prose underlined with --- becomes an H2", () => {
+    const blocks = markdownToBlocks("Title\n---");
+    assert.equal(blocks.length, 1);
+    assert.equal(blocks[0]!.type, "heading_2");
+    assert.equal((blocks[0] as any).heading_2.rich_text[0].text.content, "Title");
+  });
+
+  it("a single = or - underline still counts", () => {
+    assert.equal(markdownToBlocks("Title\n=")[0]!.type, "heading_1");
+    assert.equal(markdownToBlocks("Title\n-")[0]!.type, "heading_2");
+  });
+
+  it("the underline never leaks into the text", () => {
+    const blocks = markdownToBlocks("Title\n====");
+    const runs = (blocks[0] as any).heading_1.rich_text as any[];
+    assert.equal(runs.map((r) => r.plain_text).join(""), "Title");
+  });
+
+  it("*** after prose is still a divider, not a heading", () => {
+    const blocks = markdownToBlocks("Some text\n***");
+    assert.equal(blocks.length, 2);
+    assert.equal(blocks[0]!.type, "paragraph");
+    assert.equal(blocks[1]!.type, "divider");
+  });
+
+  it("=== with no prose above it stays a paragraph", () => {
+    const blocks = markdownToBlocks("===");
+    assert.equal(blocks.length, 1);
+    assert.equal(blocks[0]!.type, "paragraph");
+  });
+
+  it("heading text keeps inline formatting", () => {
+    const blocks = markdownToBlocks("**Bold** title\n===");
+    const runs = (blocks[0] as any).heading_1.rich_text as any[];
+    assert.equal(runs[0].annotations.bold, true);
+  });
+});
+
+describe("multi-paragraph list items", () => {
+  it("indented continuation stays a child of its list item", () => {
+    const blocks = markdownToBlocks("- Item\n\n  continuation");
+    assert.equal(blocks.length, 1, "continuation must not become a top-level sibling");
+    assert.equal(blocks[0]!.type, "bulleted_list_item");
+    const children = (blocks[0] as any).bulleted_list_item.children;
+    assert.equal(children.length, 1);
+    assert.equal(children[0].type, "paragraph");
+    assert.equal(children[0].paragraph.rich_text[0].text.content, "continuation");
+  });
+
+  it("continuation indentation does not leak into the text", () => {
+    const blocks = markdownToBlocks("1. Item\n\n   continuation");
+    const children = (blocks[0] as any).numbered_list_item.children;
+    assert.equal(children[0].paragraph.rich_text[0].text.content, "continuation");
+  });
+
+  it("a to-do item carries its continuation too", () => {
+    const blocks = markdownToBlocks("- [x] Done\n\n      why it is done");
+    assert.equal(blocks.length, 1);
+    const children = (blocks[0] as any).to_do.children;
+    assert.equal(children[0].paragraph.rich_text[0].text.content, "why it is done");
+  });
+
+  it("continuation stops at the next list item", () => {
+    const blocks = markdownToBlocks("- One\n\n  more about one\n\n- Two");
+    assert.equal(blocks.length, 2);
+    assert.equal((blocks[0] as any).bulleted_list_item.children.length, 1);
+    assert.equal((blocks[1] as any).bulleted_list_item.children, undefined);
+  });
+
+  it("continuation stops at unindented prose", () => {
+    const blocks = markdownToBlocks("- One\n\n  mine\n\nnot mine");
+    assert.equal(blocks.length, 2);
+    assert.equal(blocks[1]!.type, "paragraph");
+    assert.equal((blocks[1] as any).paragraph.rich_text[0].text.content, "not mine");
+  });
+
+  it("a code fence whose body is unindented still closes correctly", () => {
+    const blocks = markdownToBlocks("- Item\n\n  ```\nunindented\n  ```\n\nafter");
+    assert.equal(blocks.length, 2, "the fence must not swallow the trailing paragraph");
+    const children = (blocks[0] as any).bulleted_list_item.children;
+    assert.equal(children[0].type, "code");
+    assert.equal(children[0].code.rich_text[0].text.content, "unindented");
+    assert.equal(blocks[1]!.type, "paragraph");
+  });
+
+  it("multiple continuation blocks all attach to the item", () => {
+    const blocks = markdownToBlocks("- Item\n\n  first\n\n  second");
+    assert.equal(blocks.length, 1);
+    assert.equal((blocks[0] as any).bulleted_list_item.children.length, 2);
+  });
+});
+
+/** Deepest block depth in the tree, counting the top-level array as depth 0. */
+function maxDepth(blocks: any[], depth = 0): number {
+  let deepest = depth;
+  for (const b of blocks) {
+    const kids = b[b.type]?.children ?? b.children;
+    if (Array.isArray(kids) && kids.length > 0) {
+      deepest = Math.max(deepest, maxDepth(kids, depth + 1));
+    }
+  }
+  return deepest;
+}
+
+describe("nesting depth is capped across mixed block types", () => {
+  const cases: Array<[string, string]> = [
+    ["toggles", "<details><summary>L1</summary>\n\n<details><summary>L2</summary>\n\n<details><summary>L3</summary>\n\nleaf\n\n</details>\n\n</details>\n\n</details>"],
+    ["toggle > quote > quote", "<details><summary>L1</summary>\n\n> outer\n>\n> > inner\n> >\n> > > deepest\n\n</details>"],
+    ["toggle > callout", "<details><summary>L1</summary>\n\n> [!NOTE]\n> body\n>\n> - a\n>   - b\n>     - c\n\n</details>"],
+    ["toggle > list", "<details><summary>L1</summary>\n\n- a\n  - b\n    - c\n\n</details>"],
+    ["callout > list", "> [!NOTE]\n> body\n>\n> - a\n>   - b\n>     - c"],
+    ["list item continuation inside a toggle", "<details><summary>L1</summary>\n\n- a\n  - b\n\n    note\n\n</details>"],
+  ];
+  for (const [name, md] of cases) {
+    it(`${name} never exceeds Notion's limit`, () => {
+      assert.ok(maxDepth(markdownToBlocks(md)) <= 2, `${name} nested too deep`);
+    });
+  }
+
+  it("content pushed past the limit is promoted, not dropped", () => {
+    const md = "<details><summary>L1</summary>\n\n<details><summary>L2</summary>\n\n<details><summary>L3</summary>\n\nkeep me\n\n</details>\n\n</details>\n\n</details>";
+    assert.match(JSON.stringify(markdownToBlocks(md)), /keep me/);
+  });
+
+  it("warns when blocks are promoted out of a container", () => {
+    const warnings: string[] = [];
+    setMarkdownWarnHandler((msg) => warnings.push(msg));
+    markdownToBlocks("<details><summary>L1</summary>\n\n<details><summary>L2</summary>\n\n<details><summary>L3</summary>\n\nleaf\n\n</details>\n\n</details>\n\n</details>");
+    setMarkdownWarnHandler(null);
+    assert.equal(warnings.length, 1);
+    assert.match(warnings[0]!, /2 levels/i);
+  });
+});
+
+describe("wrapped list item text", () => {
+  it("a line wrapped without a blank line folds into the item's text", () => {
+    const blocks = markdownToBlocks("- A long item that\n  wraps onto a second line");
+    assert.equal(blocks.length, 1);
+    const item = (blocks[0] as any).bulleted_list_item;
+    assert.equal(item.children, undefined, "a soft wrap is not a child block");
+    assert.equal(item.rich_text.map((r: any) => r.plain_text).join(""), "A long item that wraps onto a second line");
+  });
+
+  it("a blank line still separates a real child paragraph", () => {
+    const blocks = markdownToBlocks("- Item\n  wrapped\n\n  separate paragraph");
+    const item = (blocks[0] as any).bulleted_list_item;
+    assert.equal(item.rich_text.map((r: any) => r.plain_text).join(""), "Item wrapped");
+    assert.equal(item.children.length, 1);
+    assert.equal(item.children[0].paragraph.rich_text[0].text.content, "separate paragraph");
+  });
+});
+
+describe("nesting limits that need extra room", () => {
+  it("a table two containers deep is promoted, since its rows need a level", () => {
+    const md = "<details><summary>Outer</summary>\n\n<details><summary>Inner</summary>\n\n| A | B |\n| --- | --- |\n| 1 | 2 |\n\n</details>\n\n</details>";
+    const blocks = markdownToBlocks(md);
+    assert.ok(maxDepth(blocks) <= 2, "table rows must not land at depth 3");
+    assert.match(JSON.stringify(blocks), /table_row/, "the table must survive");
+  });
+
+  it("a table under a nested list item is promoted too", () => {
+    const md = "- a\n  - b\n\n    | A | B |\n    | --- | --- |\n    | 1 | 2 |";
+    const blocks = markdownToBlocks(md);
+    assert.ok(maxDepth(blocks) <= 2, "table rows must not land at depth 3");
+    assert.match(JSON.stringify(blocks), /table_row/);
+  });
+
+  it("a table one container deep still nests normally", () => {
+    const blocks = markdownToBlocks("<details><summary>Outer</summary>\n\n| A | B |\n| --- | --- |\n| 1 | 2 |\n\n</details>");
+    assert.equal(blocks.length, 1);
+    assert.equal((blocks[0] as any).toggle.children[0].type, "table");
+  });
+
+  it("a pathologically indented list does not exhaust the stack", () => {
+    const md = Array.from({ length: 5000 }, (_, k) => " ".repeat(k) + "- x").join("\n");
+    assert.doesNotThrow(() => markdownToBlocks(md));
+  });
+});
+
+describe("list item body column", () => {
+  it("an over-indented fence still finds its closing marker", () => {
+    const blocks = markdownToBlocks("- Item\n\n      ```\n      code\n      ```\n\nafter");
+    assert.equal(blocks.length, 2, "the fence must close, leaving the trailing paragraph");
+    const children = (blocks[0] as any).bulleted_list_item.children;
+    assert.equal(children[0].type, "code");
+    assert.equal(children[0].code.rich_text[0].text.content, "code");
+    assert.equal(blocks[1]!.type, "paragraph");
+  });
+});

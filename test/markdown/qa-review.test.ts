@@ -926,15 +926,16 @@ describe("extractSyncTitle — additional cases", () => {
 // ─── capListDepth / list promotion correctness ────────────────────────────────
 
 describe("capListDepth — deep list promotion edge cases", () => {
-  it("5-level nesting: all levels 3+ promoted to be siblings at level 2", () => {
+  it("5-level nesting: levels 4+ promoted to be siblings at the deepest level", () => {
     const md = "- L1\n  - L2\n    - L3\n      - L4\n        - L5";
     const blocks = markdownToBlocks(md);
     assert.equal(blocks.length, 1, "one root block");
     const l1Children = (blocks[0] as any).bulleted_list_item.children;
-    // L2, L3, L4, L5 all at second level (4 siblings)
-    assert.equal(l1Children.length, 4, "L2, L3, L4, L5 all at second level");
-    for (const child of l1Children) {
-      assert.equal(child.bulleted_list_item.children, undefined, "no third-level children");
+    assert.equal(l1Children.length, 1, "only L2 at second level");
+    const l2Children = l1Children[0].bulleted_list_item.children;
+    assert.equal(l2Children.length, 3, "L3, L4, L5 all at third level");
+    for (const child of l2Children) {
+      assert.equal(child.bulleted_list_item.children, undefined, "no fourth-level children");
     }
   });
 
@@ -944,8 +945,10 @@ describe("capListDepth — deep list promotion edge cases", () => {
     assert.equal(blocks.length, 2, "two root items");
     const aChildren = (blocks[0] as any).bulleted_list_item.children;
     const bChildren = (blocks[1] as any).bulleted_list_item.children;
-    assert.equal(aChildren.length, 2, "A1, A2 at second level");
-    assert.equal(bChildren.length, 2, "B1, B2 at second level");
+    assert.equal(aChildren.length, 1, "A1 at second level");
+    assert.equal(bChildren.length, 1, "B1 at second level");
+    assert.equal(aChildren[0].bulleted_list_item.children.length, 1, "A2 at third level");
+    assert.equal(bChildren[0].bulleted_list_item.children.length, 1, "B2 at third level");
   });
 
   it("mixed type nesting: numbered parent with bulleted children capped correctly", () => {

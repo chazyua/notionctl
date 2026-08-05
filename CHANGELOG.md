@@ -139,6 +139,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   no retry guarantee for it. Rate-limit (429) retries are unchanged, as are
   retries for reads, property and schema updates, and deletes.
 
+**Markdown conversion**
+- Setext headings were mangled. `Title` followed by `===` became a single
+  paragraph with the underline in the text; `Title` followed by `---` became a
+  paragraph plus a horizontal rule. Both are now headings, H1 and H2
+  respectively, matching every other Markdown tool. **Breaking:** a line of
+  prose immediately followed by a line of dashes or equals signs — any number of
+  them, so `-`, `--` and `======` all count — is now a heading, and the
+  underline line is consumed. Existing files written by an earlier version, or
+  by hand, are reinterpreted the first time they are written back: `Total` above
+  a row of dashes was a paragraph and a rule, and becomes a heading. To keep a
+  rule, leave a blank line above it or write it as `***`; to keep the text,
+  prefix the line with a backslash. Text synced down from Notion is shielded
+  automatically, including a heading that contains a line break.
+- A list item with more than one paragraph broke apart. `- Item` followed by a
+  blank line and an indented continuation moved the continuation out of the list
+  to the top level, with its indentation showing in the visible text. Indented
+  content — extra paragraphs, quotes, code — now stays inside the item it
+  belongs to, including when a deeper nested item sits between the two. A line
+  wrapped without a blank line above it now folds into the item's own text
+  instead of becoming a separate block.
+- Nesting deeper than Notion allows was rejected outright rather than adjusted.
+  Only list depth was being counted, so three levels of mixed toggles, quotes and
+  callouts exceeded the limit and Notion refused the whole request — the page was
+  not written at all. A table two levels down failed the same way, since its rows
+  need a level of their own. Depth is now tracked across every block type, and
+  content past the limit is moved up beside its parent with a warning, as
+  over-deep lists already were. Lists gained a level in the process: three levels
+  of nesting are preserved where the fourth used to be flattened.
+- A list item's own child blocks were written back to Markdown without
+  indentation, so a `page get` followed by a `page update` moved them out of the
+  list. They now round-trip in place.
+
 ### Added
 - Test coverage for each fix above, alongside the module it exercises.
 

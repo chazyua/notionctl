@@ -161,7 +161,14 @@ Bidirectional Markdown conversion with full fidelity:
 
 **Read:** headings, paragraphs, bullet/numbered/to-do lists (nested), code blocks, tables (GFM), quotes, callouts, toggles, dividers, images, equations, bold, italic, strikethrough, inline code, links.
 
-**Write:** all of the above. Nested lists use 2-space indentation and produce the corresponding nested block tree in Notion.
+**Write:** all of the above. Nested lists use 2-space indentation and produce the corresponding nested block tree in Notion. Setext headings (`Title` underlined with `===` or `---`) are read as H1 and H2. Content indented under a list item — extra paragraphs, quotes, code blocks — stays inside that item.
+
+Notion accepts at most two levels of nesting below the top level of a page, and
+rejects the whole request when a write exceeds it. Blocks past that depth are
+moved up beside their parent and a warning is printed, rather than the write
+failing. This applies to every block type, so a toggle inside a callout inside a
+quote counts toward the same budget as a three-level list. A table needs one
+level for its rows, so it fits one level shallower than other blocks.
 
 Notion text that begins with a Markdown marker is written out with a leading
 backslash — a paragraph reading `---` becomes `\---` in the file. That shield is
