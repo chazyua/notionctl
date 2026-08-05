@@ -170,6 +170,10 @@ failing. This applies to every block type, so a toggle inside a callout inside a
 quote counts toward the same budget as a three-level list. A table needs one
 level for its rows, so it fits one level shallower than other blocks.
 
+Blank paragraphs used as spacing in Notion are dropped, since a blank line is
+already how Markdown separates blocks — syncing a page back removes its blank
+spacing. Content is never affected, only spacing.
+
 Notion text that begins with a Markdown marker is written out with a leading
 backslash — a paragraph reading `---` becomes `\---` in the file. That shield is
 removed when the file is read back, so the paragraph stays a paragraph instead of

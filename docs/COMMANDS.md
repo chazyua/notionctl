@@ -425,6 +425,13 @@ notionctl's Markdown engine handles bidirectional conversion:
 
 **Write (Markdown to Notion):** headings (H1-H3, ATX `#` or setext `===`/`---`), paragraphs, bullet/numbered/to-do lists (nested via 2-space indent), code blocks, tables, blockquotes, dividers, images, bold, italic, strikethrough, inline code, links.
 
+**Empty paragraphs are not preserved.** A blank paragraph used as spacing in
+Notion has no Markdown equivalent — a blank line is already how blocks are
+separated — so spacers are dropped on read and not recreated on write. Syncing a
+page back therefore removes its blank spacing. Only spacing is affected: a blank
+paragraph that carries child blocks keeps them. This is stable, not cumulative;
+a second sync changes nothing further.
+
 **Mentions.** A person, page or database mention is written as
 `[Name](notion://user/<id>)` (or `notion://page/`, `notion://database/`) and is
 rebuilt as a real mention when the file is written back. Editing the label is

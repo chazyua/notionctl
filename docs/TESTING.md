@@ -397,6 +397,9 @@ Comprehensive test scenarios for notionctl. Use this for manual dogfooding, regr
       a Notion-hosted icon falls back to a default and warns
 - [M] A page with mentions and custom callout icons survives `page get` →
       `page update` with both intact on the Notion side
+- [A] Empty spacer paragraphs are dropped (documented limitation), the drop is
+      stable across repeated syncs, and a blank paragraph carrying children keeps
+      the children
 - [A] A pathologically indented list (thousands of levels) does not exhaust the
       call stack
 - [M] Large Markdown files (100+ blocks) convert without error

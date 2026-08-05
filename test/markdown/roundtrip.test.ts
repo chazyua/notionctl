@@ -720,3 +720,32 @@ describe("callout icons", () => {
     assert.match(warnings[0]!, /cannot be written back/i);
   });
 });
+
+describe("empty spacer paragraphs (documented limitation)", () => {
+  function para(text: string, children?: any[]) {
+    const b: any = { id: "1", type: "paragraph", has_children: !!children, paragraph: { rich_text: text ? [{ type: "text", text: { content: text, link: null }, plain_text: text, annotations: { bold: false, italic: false, strikethrough: false, underline: false, code: false, color: "default" } }] : [], color: "default" } };
+    if (children) b._children = children;
+    return b;
+  }
+
+  // Markdown cannot express a blank block, and Notion pages are full of them,
+  // so spacers are dropped rather than marked up. This is a decision, not an
+  // oversight — the test exists so changing it has to be deliberate.
+  it("a spacer paragraph is dropped", () => {
+    const result = roundTrip([para("one"), para(""), para(""), para("two")]) as any[];
+    assert.equal(result.length, 2);
+    assert.deepEqual(result.map((b) => b.paragraph.rich_text[0].text.content), ["one", "two"]);
+  });
+
+  it("dropping spacers is stable, not cumulative", () => {
+    const once = roundTrip([para("one"), para(""), para("two")]) as any[];
+    const twice = roundTrip(once) as any[];
+    assert.equal(twice.length, once.length);
+  });
+
+  it("an empty paragraph that carries children keeps them", () => {
+    const result = roundTrip([para("", [para("child content")])]) as any[];
+    const text = JSON.stringify(result);
+    assert.match(text, /child content/, "content must never be lost, only spacing");
+  });
+});
