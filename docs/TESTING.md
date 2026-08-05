@@ -120,6 +120,9 @@ Comprehensive test scenarios for notionctl. Use this for manual dogfooding, regr
 - [M] Trashed page produces clear error with recovery instructions
 - [A] Front-matter that fails to parse is refused, not treated as a new file —
       no duplicate page is created and the original keeps its `notion_id`
+- [A] `page create/append/update`, `db row create` and `block append` refuse a
+      file whose front-matter will not parse, rather than writing the YAML onto
+      the page as content; the error names the offending line
 - [A] A file with no front-matter, or an unclosed `---` opener, still creates
 - [A] A `notion_id` that is blank, `null`, `~` or a number is refused, not
       treated as a first sync

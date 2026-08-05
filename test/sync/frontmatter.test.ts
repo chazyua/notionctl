@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { extractFrontmatter, reinsertFrontmatter } from "../../src/sync/frontmatter.js";
+import { extractFrontmatter, frontmatterBody, reinsertFrontmatter } from "../../src/sync/frontmatter.js";
 
 describe("extractFrontmatter", () => {
   it("extracts YAML delimited by triple-dashes", () => {
@@ -105,5 +105,48 @@ describe("extractFrontmatter — malformed blocks are distinguishable", () => {
     // the user to write the rule as *** instead.
     const { malformed } = extractFrontmatter("---\n\nprose\n\n---\n\nmore\n");
     assert.ok(malformed);
+  });
+});
+
+describe("frontmatterBody — a block that will not parse is refused", () => {
+  const broken = '---\ntitle: Test\nnotion_id: "abc123"\nbroken line without colon\n---\n\nReal body.\n';
+
+  it("throws instead of returning the raw file as the body", () => {
+    // On the parse-failure path `body` is the whole input, so a caller that
+    // ignores `malformed` writes the delimiters and every YAML line — notion_id
+    // included — onto the page as visible content.
+    assert.throws(
+      () => frontmatterBody(broken, "test.md"),
+      (err: any) => {
+        assert.equal(err.code, "USAGE");
+        assert.match(err.message, /not valid YAML/);
+        assert.match(err.message, /test\.md/);
+        return true;
+      },
+    );
+  });
+
+  it("names the offending line so it can be fixed", () => {
+    assert.throws(() => frontmatterBody(broken, "test.md"), /broken line without colon/);
+  });
+
+  it("offers the *** workaround for a file opening with a rule", () => {
+    assert.throws(() => frontmatterBody(broken, "test.md"), (err: any) => {
+      assert.ok(err.suggestions.some((s: string) => s.includes("***")));
+      return true;
+    });
+  });
+
+  it("valid front-matter returns only the body", () => {
+    assert.equal(frontmatterBody("---\ntitle: Fine\n---\n\nBody here.\n", "t.md"), "Body here.\n");
+  });
+
+  it("a file with no front-matter is returned unchanged", () => {
+    assert.equal(frontmatterBody("Just prose.\n", "t.md"), "Just prose.\n");
+  });
+
+  it("an unclosed opener is not front-matter and is not refused", () => {
+    const input = "---\nunclosed: opener\n\nstill body\n";
+    assert.equal(frontmatterBody(input, "t.md"), input);
   });
 });

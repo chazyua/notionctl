@@ -7,7 +7,7 @@ import { notionRequest, appendBlocksChunked } from "../http.js";
 import { blocksToMarkdown, markdownToBlocks } from "../markdown/index.js";
 import type { Block } from "../markdown/index.js";
 import { fetchBlockTree } from "../blocks.js";
-import { extractFrontmatter } from "../sync/frontmatter.js";
+import { frontmatterBody } from "../sync/frontmatter.js";
 import { resolvePageId, parseFlags, getBooleanFlag, fetchWith404Hint, parseJsonObject, readStdinBounded, readFileText, rejectExtraPositionals } from "./shared.js";
 import { NotionCliError, ErrorCode } from "../errors.js";
 import { renderJson, chooseFormat, isStdoutTty, type Format } from "../output.js";
@@ -90,7 +90,7 @@ export async function blockAppendCommand(ctx: { args: string[] }): Promise<strin
   } else if (fromFile === "-" || !process.stdin.isTTY) {
     md = await readStdinBounded();
   }
-  const { body } = extractFrontmatter(md);
+  const body = frontmatterBody(md, fromFile && fromFile !== "-" ? fromFile : "the input read from stdin");
   const blocks = markdownToBlocks(body);
   if (blocks.length === 0) {
     return renderJson({ action: "block append", id, blocks: [], warning: "no blocks parsed from input" });

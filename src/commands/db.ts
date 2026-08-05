@@ -17,7 +17,7 @@ import { fetchBlockTree } from "../blocks.js";
 import { NotionCliError, ErrorCode } from "../errors.js";
 import { renderJson, renderTable, renderCsv, chooseFormat, isStdoutTty, type Format } from "../output.js";
 import { stringifyYaml, type YamlObject } from "../utils/yaml.js";
-import { extractFrontmatter } from "../sync/frontmatter.js";
+import { frontmatterBody } from "../sync/frontmatter.js";
 import { RESERVED_FRONTMATTER_KEYS } from "../sync/sync.js";
 
 /**
@@ -633,7 +633,7 @@ export async function dbRowCreateCommand(ctx: { args: string[] }): Promise<strin
     } else {
       raw = await readFileText(fromFile, "row body markdown");
     }
-    const { body } = extractFrontmatter(raw);
+    const body = frontmatterBody(raw, fromFile === "-" ? "the input read from stdin" : fromFile);
     children = markdownToBlocks(body);
   }
 

@@ -425,6 +425,14 @@ notionctl's Markdown engine handles bidirectional conversion:
 
 **Write (Markdown to Notion):** headings (H1-H3, ATX `#` or setext `===`/`---`), paragraphs, bullet/numbered/to-do lists (nested via 2-space indent), code blocks, tables, blockquotes, dividers, images, bold, italic, strikethrough, inline code, links.
 
+**Broken front-matter is refused.** Every command that reads a Markdown file —
+`page create/append/update`, `page sync`, `db row create`, `block append` —
+refuses a file whose front-matter block opens and closes but does not parse,
+naming the offending line. Writing it would put the delimiters and every YAML
+line, `notion_id` included, onto the page as visible content. A file with no
+front-matter, or one whose `---` opener is never closed, is not front-matter and
+is written as-is; a file meant to open with a horizontal rule should use `***`.
+
 **Empty paragraphs are not preserved.** A blank paragraph used as spacing in
 Notion has no Markdown equivalent — a blank line is already how blocks are
 separated — so spacers are dropped on read and not recreated on write. Syncing a

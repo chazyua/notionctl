@@ -139,6 +139,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   no retry guarantee for it. Rate-limit (429) retries are unchanged, as are
   retries for reads, property and schema updates, and deletes.
 
+**Content loss (continued)**
+- `page create`, `page append`, `page update`, `db row create` and `block append`
+  wrote a broken front-matter block onto the page as visible content. When the
+  block could not be parsed, the whole file — delimiters and every YAML line,
+  `notion_id` included — was treated as the body, so a single mistyped line put
+  the metadata on the page as a heading and paragraphs, and for `page update`
+  that replaced the content that was there. All five now refuse the file and
+  name the offending line, matching what `page sync` already did. A file with no
+  front-matter, or with an unclosed `---` opener, is unaffected; a file meant to
+  open with a horizontal rule should use `***`.
+
 **Markdown conversion**
 - Setext headings were mangled. `Title` followed by `===` became a single
   paragraph with the underline in the text; `Title` followed by `---` became a

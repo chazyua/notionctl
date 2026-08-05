@@ -10,7 +10,7 @@
 import { writeFile, rename, realpath } from "node:fs/promises";
 import { resolve, sep } from "node:path";
 import { execFile } from "node:child_process";
-import { extractFrontmatter, reinsertFrontmatter } from "../sync/frontmatter.js";
+import { extractFrontmatter, frontmatterBody, malformedFrontmatterError, reinsertFrontmatter } from "../sync/frontmatter.js";
 import { classifySyncState, computeContentHash, SyncState, RESERVED_FRONTMATTER_KEYS } from "../sync/sync.js";
 import { notionRequest, appendBlocksChunked } from "../http.js";
 import { blocksToMarkdown, markdownToBlocks } from "../markdown/index.js";
@@ -133,9 +133,19 @@ async function readInputMarkdown(flags: Map<string, string>): Promise<string> {
   return "";
 }
 
-/** Strip YAML frontmatter from markdown so page get → page update/append round-trips cleanly */
-function stripFrontmatter(md: string): string {
-  return extractFrontmatter(md).body;
+/**
+ * Strip YAML frontmatter from markdown so page get → page update/append
+ * round-trips cleanly. A block that will not parse is refused rather than
+ * written: on that path the "body" is the whole file, delimiters included.
+ */
+function stripFrontmatter(md: string, source: string): string {
+  return frontmatterBody(md, source);
+}
+
+/** How to name the input in an error — the file if there was one, else stdin. */
+function inputLabel(flags: Map<string, string>): string {
+  const from = flags.get("from");
+  return from && from !== "-" ? from : "the input read from stdin";
 }
 
 /**
@@ -206,7 +216,7 @@ export async function pageCreateCommand(ctx: { args: string[] }): Promise<string
 
   const parentKey = await detectParentKey(parentId);
 
-  let bodyMd = stripFrontmatter(await readInputMarkdown(flags));
+  let bodyMd = stripFrontmatter(await readInputMarkdown(flags), inputLabel(flags));
   bodyMd = stripLeadingTitleHeading(bodyMd, title);
   const blocks = bodyMd.length > 0 ? markdownToBlocks(bodyMd) : [];
 
@@ -263,7 +273,7 @@ export async function pageAppendCommand(ctx: { args: string[] }): Promise<string
     throw new NotionCliError(ErrorCode.USAGE, "Usage: notionctl page append <id> [--from file.md]");
   }
   const id = resolvePageId(positional[0]!);
-  const bodyMd = stripFrontmatter(await readInputMarkdown(flags));
+  const bodyMd = stripFrontmatter(await readInputMarkdown(flags), inputLabel(flags));
   const blocks = markdownToBlocks(bodyMd);
 
   if (blocks.length === 0) {
@@ -302,7 +312,7 @@ export async function pageUpdateCommand(ctx: { args: string[] }): Promise<string
   let resolvedTitle = title;
   let newBlocks: ReturnType<typeof markdownToBlocks> | null = null;
   if (hasFrom) {
-    const raw = stripFrontmatter(await readInputMarkdown(flags));
+    const raw = stripFrontmatter(await readInputMarkdown(flags), inputLabel(flags));
     let bodyForBlocks = raw;
     if (!resolvedTitle) {
       // No explicit --title: use the leading H1 as the new title and strip
@@ -937,16 +947,10 @@ export async function pageSyncCommand(ctx: { args: string[] }): Promise<string> 
   // and make a second page while the original keeps the id nobody can now find.
   // No --force override: there is no safe reading of a broken block.
   if (malformed) {
-    throw new NotionCliError(
-      ErrorCode.USAGE,
-      `Front-matter in ${file} is not valid YAML: ${malformed}`,
-      {
-        suggestions: [
-          "If this is front-matter, fix the offending line. Syncing while it cannot be parsed would ignore notion_id, create a second page, and leave the existing one orphaned.",
-          "notionctl reads a flat subset of YAML: no block sequences (- item), nested maps, or multi-line strings (| and >). A list must be written inline as [a, b] — this is the usual cause when importing files from Jekyll or Hugo.",
-          "If the file was meant to open with a horizontal rule, write it as *** instead — a leading --- is read as a front-matter delimiter, and a blank line above it does not change that.",
-        ],
-      },
+    throw malformedFrontmatterError(
+      file,
+      malformed,
+      "If this is front-matter, fix the offending line. Syncing while it cannot be parsed would ignore notion_id, create a second page, and leave the existing one orphaned.",
     );
   }
   // A key that is present but unusable (blank, null, a number) is the same
