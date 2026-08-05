@@ -40,6 +40,10 @@ export function richTextToMarkdown(runs: RichText[]): string {
   // We switch to * when the preceding char is a word char (intraword _ would be
   // parsed as literal by the write-path CommonMark scanner).
   let italicChar = "_";
+  // Where the current italic opener sits in `out`, so the close-side rewrite
+  // below can correct that exact character instead of hunting backwards for an
+  // underscore — the hunt could land on one inside the run's own text.
+  let italicOpenIdx = -1;
 
   for (const run of runs) {
     const desired = activeMarkers(run.annotations);
@@ -73,7 +77,7 @@ export function richTextToMarkdown(runs: RichText[]): string {
       const openChar = (m === "italic")
         ? (/\w/.test(out[out.length - 1] ?? "") ? "*" : "_")
         : MARKERS[m];
-      if (m === "italic") italicChar = openChar;
+      if (m === "italic") { italicChar = openChar; italicOpenIdx = out.length; }
       out += openChar;
       openStack.push(m);
     }
@@ -84,7 +88,7 @@ export function richTextToMarkdown(runs: RichText[]): string {
         const openChar = (marker === "italic")
           ? (/\w/.test(out[out.length - 1] ?? "") ? "*" : "_")
           : MARKERS[marker];
-        if (marker === "italic") italicChar = openChar;
+        if (marker === "italic") { italicChar = openChar; italicOpenIdx = out.length; }
         out += openChar;
         openStack.push(marker);
       }
@@ -112,7 +116,7 @@ export function richTextToMarkdown(runs: RichText[]): string {
           const openChar = (m === "italic")
             ? (/\w/.test(out[out.length - 1] ?? "") ? "*" : "_")
             : MARKERS[m];
-          if (m === "italic") italicChar = openChar;
+          if (m === "italic") { italicChar = openChar; italicOpenIdx = out.length; }
           out += openChar;
           openStack.push(m);
         }
@@ -120,12 +124,11 @@ export function richTextToMarkdown(runs: RichText[]): string {
         // No remaining open markers — switch the trailing _ to * to avoid
         // the intraword rule treating it as literal.
         out = out.slice(0, -1) + "*";
-        // Also fix the matching open _
-        for (let k = out.length - 2; k >= 0; k--) {
-          if (out[k] === "_" && (k === 0 || out[k - 1] !== "_") && (out[k + 1] !== "_")) {
-            out = out.slice(0, k) + "*" + out.slice(k + 1);
-            break;
-          }
+        // Correct the opener we actually wrote. Scanning back for "an
+        // underscore" used to rewrite one belonging to the text instead,
+        // silently turning content like `a_b` into `a*b`.
+        if (italicOpenIdx >= 0 && out[italicOpenIdx] === "_") {
+          out = out.slice(0, italicOpenIdx) + "*" + out.slice(italicOpenIdx + 1);
         }
       }
     }
@@ -286,12 +289,21 @@ function hasEmphasisUnderscore(s: string): boolean {
 }
 
 /** True when at least one asterisk could trigger emphasis (not purely between alphanums). */
+/**
+ * Whether any `*` in the text would be read back as emphasis, and so has to be
+ * escaped. This must stay in step with `isAsteriskEmphasis` — when the two
+ * disagreed, one direction lost an annotation and the other lost the literal
+ * asterisks from text such as `5*x*2`.
+ */
 function hasEmphasisAsterisk(s: string): boolean {
   for (let i = 0; i < s.length; i++) {
     if (s[i] !== "*") continue;
-    const prev = i > 0 ? s[i - 1]! : "";
     const next = i < s.length - 1 ? s[i + 1]! : "";
-    if (!(/[A-Za-z0-9]/.test(prev) && /[A-Za-z0-9]/.test(next))) return true;
+    if (!/[A-Za-z0-9]/.test(next)) return true;
+    // An opener needs a closer later in the text; a lone `*` stays literal.
+    for (let j = i + 1; j < s.length; j++) {
+      if (s[j] === "*" && /\S/.test(s[j - 1] ?? "")) return true;
+    }
   }
   return false;
 }
@@ -568,16 +580,18 @@ function isIntraword(md: string, idx: number): boolean {
  *     keeping ***bold italic*** working.
  *   - Inside bold (state.bold true): accept any *. The surrounding ** already
  *     establishes emphasis context, so nested "word*italic*" is fine.
- *   - Otherwise (italic closed, bold closed): require a non-alphanumeric
- *     before and an alphanumeric after — the classic word-boundary opener
- *     that rejects 2*3, *.md, $5 * $10.
+ *   - Otherwise: require an alphanumeric after, and a matching closer later
+ *     in the line. The opener is allowed mid-word, as CommonMark allows for
+ *     `*` — the read path emits exactly that shape for a run whose italic
+ *     starts after a word character, and rejecting it turned the text into
+ *     literal asterisks. The closer requirement is what still rejects
+ *     `int *ptr = NULL;`, `*.md` and `$5 * $10`.
  */
 function isAsteriskEmphasis(md: string, idx: number, state: ScannerState): boolean {
   if (state.italic) return true;
   if (state.bold) return true;
-  const prev = idx > 0 ? md[idx - 1]! : "";
   const next = idx < md.length - 1 ? md[idx + 1]! : "";
-  if (!/[A-Za-z0-9]/.test(prev) && /[A-Za-z0-9]/.test(next)) {
+  if (/[A-Za-z0-9]/.test(next)) {
     // Verify a matching closer exists — without this, "int *ptr = NULL;"
     // would open italic with no closer, mangling the output.
     for (let j = idx + 1; j < md.length; j++) {

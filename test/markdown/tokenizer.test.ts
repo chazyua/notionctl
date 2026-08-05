@@ -947,13 +947,15 @@ describe("round-trip marker escaping — richTextToMarkdown escapes literals", (
     }
   });
 
-  it("purely alphanum-surrounded asterisks are clean (no escaping)", () => {
-    // Common in math, wildcards
+  it("alphanum-surrounded asterisks survive a round-trip", () => {
+    // Common in maths and wildcards. A single `*` with no partner stays bare;
+    // a pair is escaped, because the parser now reads `5*x*2` as emphasis the
+    // way CommonMark does, and leaving it bare would drop the asterisks.
     for (const s of ["2*3", "a*b", "5*x*2"]) {
       const md = richTextToMarkdown([text(s)]);
-      assert.equal(md, s, `"${s}" should not be escaped`);
       const rt = markdownToRichText(md);
-      assert.equal(rt[0]!.plain_text, s, `"${s}" must round-trip`);
+      assert.equal(rt.map((r) => r.plain_text).join(""), s, `"${s}" must round-trip`);
     }
+    assert.equal(richTextToMarkdown([text("2*3")]), "2*3", "a lone * needs no escape");
   });
 });

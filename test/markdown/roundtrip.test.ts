@@ -1028,3 +1028,49 @@ describe("constructs that used to swallow or destroy neighbouring blocks", () =>
     assert.deepEqual(cells, ["a | b", "c"]);
   });
 });
+
+describe("emphasis the escaper and the parser used to disagree about", () => {
+  const A = { bold: false, italic: false, strikethrough: false, underline: false, code: false, color: "default" };
+  const run = (t: string, a: Record<string, boolean> = {}) => ({ type: "text", text: { content: t, link: null }, plain_text: t, annotations: { ...A, ...a } });
+  const para = (runs: any[]) => [{ id: "1", type: "paragraph", has_children: false, paragraph: { rich_text: runs, color: "default" } }];
+  const readBack = (bs: any[]) => bs[0].paragraph.rich_text.map((r: any) => [r.plain_text, r.annotations.italic]);
+  const textOf = (bs: any[]) => bs[0].paragraph.rich_text.map((r: any) => r.plain_text).join("");
+
+  it("italic starting after a word character keeps its annotation", () => {
+    // The read path emits `ab*c*`; the parser rejected an opener after an
+    // alphanumeric, so the whole thing came back as literal text.
+    const out = roundTrip(para([run("ab"), run("c", { italic: true })])) as any[];
+    assert.equal(textOf(out), "abc", "the asterisks must not become text");
+    assert.deepEqual(readBack(out), [["ab", false], ["c", true]]);
+  });
+
+  it("italic, plain, italic with no spaces round-trips", () => {
+    const out = roundTrip(para([run("a", { italic: true }), run("b"), run("c", { italic: true })])) as any[];
+    assert.equal(textOf(out), "abc");
+    assert.deepEqual(readBack(out), [["a", true], ["b", false], ["c", true]]);
+  });
+
+  it("the emitted delimiters are the ones a Markdown renderer would read", () => {
+    // Our own parser tolerates a misplaced opener, but the file is meant to be
+    // readable elsewhere: `_a_b*c` renders as italic "a" followed by "b*c" in
+    // GitHub, which is not what the page says.
+    const md = blocksToMarkdown(para([run("a_b", { italic: true }), run("c")]) as any);
+    assert.equal(md, "*a_b*c");
+  });
+
+  it("an underscore inside italic text is not mistaken for the delimiter", () => {
+    // The close-side rewrite scanned backwards for "an underscore" and could
+    // land on one belonging to the content, turning `a_b` into `a*b`.
+    const out = roundTrip(para([run("a_b", { italic: true }), run("c")])) as any[];
+    assert.equal(textOf(out), "a_bc");
+    assert.deepEqual(readBack(out), [["a_b", true], ["c", false]]);
+  });
+
+  for (const literal of ["2*3", "5*x*2", "int *ptr = NULL;", "foo*bar literal", "a*b"]) {
+    it(`literal asterisks in ${JSON.stringify(literal)} survive`, () => {
+      const out = roundTrip(para([run(literal)])) as any[];
+      assert.equal(textOf(out), literal);
+      assert.ok(out[0].paragraph.rich_text.every((r: any) => !r.annotations.italic), "must not become emphasis");
+    });
+  }
+});

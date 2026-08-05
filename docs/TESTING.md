@@ -422,6 +422,10 @@ Comprehensive test scenarios for notionctl. Use this for manual dogfooding, regr
       block, neither loses its text nor absorbs later blocks
 - [A] A table cell containing a backtick, a pipe, or a line break round-trips
       with its columns intact
+- [A] Italic beginning after a word character keeps its annotation, and literal
+      asterisks (`2*3`, `5*x*2`, `int *ptr`) survive unchanged
+- [A] The emphasis delimiters written to the file are the ones another Markdown
+      renderer would read
 - [A] A callout icon value containing a space or a newline keeps the callout in
       one piece, and an unrecognised comment inside a callout is skipped
 - [A] A callout keeps its own colour, including `default`, instead of taking the

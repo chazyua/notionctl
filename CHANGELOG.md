@@ -214,6 +214,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   anywhere. Every property type now has its value syntax in the command
   reference.
 
+**Emphasis**
+- Italic starting immediately after a word character was destroyed: the text was
+  written as `ab*c*` and read back as those five literal characters, losing the
+  italic and adding two asterisks to the text. The reader now accepts an opener
+  mid-word, as CommonMark does, and the writer escapes asterisks wherever that
+  would change the meaning — so `5*x*2` still comes back exactly as typed.
+- Closing an italic run before a word character rewrote the wrong character when
+  the text itself contained an underscore, turning `a_b` into `a*b` in the file.
+  The opener's position is now recorded rather than guessed.
+
 **Blocks that destroyed their neighbours**
 - An equation spanning more than one line, or an empty one, swallowed the whole
   rest of the page. Its closing `$$` was written on the same line as the last
