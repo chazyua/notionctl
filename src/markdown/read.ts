@@ -79,15 +79,20 @@ export function blocksToMarkdown(blocks: Block[], opts: RenderOptions = {}): str
     const isListItem = LIST_ITEM_TYPES.has(block.type);
     const isSameList = lastType === block.type && isListItem;
 
-    if (!isSameList && lastType !== null) {
-      lines.push("");
-    }
     if (!isSameList) numberedIndex = 0;
 
     const rendered = renderBlock(block, depth, numberedIndex);
     if (block.type === "numbered_list_item") numberedIndex++;
 
-    if (rendered !== null) lines.push(rendered);
+    // Only a block that actually renders gets a separator, and only once
+    // something precedes it. A block that renders to nothing used to
+    // contribute blank lines anyway — at the top of the file those were
+    // stripped when it was read back, so the content no longer matched its own
+    // hash and every sync of an untouched file reported a change.
+    if (rendered !== null && rendered.length > 0) {
+      if (!isSameList && lines.length > 0) lines.push("");
+      lines.push(rendered);
+    }
     lastType = block.type;
   }
 

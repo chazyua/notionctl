@@ -10,6 +10,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 **Content loss**
+- `page update` and `page sync` moved every sub-page and sub-database on the page
+  to the trash, along with everything inside them. Replacing a page's content
+  deletes its blocks by id, and a sub-page link's id *is* the sub-page — so an
+  unchanged file was enough to lose an entire branch of the workspace, with no
+  warning, because an empty sub-page has no children to warn about. Those links
+  are now left in place and reported; remove them in Notion if you mean to.
+- `page sync` renamed the page to a heading from the middle of the body and
+  deleted that heading. Only the *leading* `# ` line is the title, which is what
+  `page get` writes and what the surrounding code already assumed. Worst on a
+  database row, which has no title line: every sync renamed the row to its first
+  section and ate one heading.
+- A page whose content began with a blank paragraph was rewritten in full on
+  every sync, even untouched. The leading blank lines were written into the file
+  but stripped when it was read back, so the content never matched its own hash
+  — and for `page sync` a mismatch means delete-and-recreate. Blocks that render
+  to nothing no longer contribute blank lines.
+
 - `page update` and `page sync` deleted a page's existing blocks before writing
   the replacement, so a failure during the write (a block Notion rejected, a
   dropped connection, exhausted retries) left the page with its original

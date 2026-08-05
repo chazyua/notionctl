@@ -628,3 +628,26 @@ describe("embed block URLs must be preserved", () => {
     assert.ok(out.includes("[My Widget](https://example.com/widget)"), `expected captioned link, got: ${out}`);
   });
 });
+
+describe("blocks that render to nothing", () => {
+  it("do not put blank lines at the top of the file", () => {
+    // The leading blanks were stripped when the file was read back, so the
+    // hash never matched what was written and every sync of an untouched file
+    // reported a change — which for page sync means delete-and-recreate.
+    const out = blocksToMarkdown([
+      mkBlock("paragraph", { rich_text: [], color: "default" }),
+      mkBlock("paragraph", { rich_text: [rt("real content")], color: "default" }),
+    ]);
+    assert.equal(out, "real content");
+    assert.equal(out, out.replace(/^\n+/, ""), "must not start with a blank line");
+  });
+
+  it("still separate the blocks around them", () => {
+    const out = blocksToMarkdown([
+      mkBlock("paragraph", { rich_text: [rt("first")], color: "default" }),
+      mkBlock("paragraph", { rich_text: [], color: "default" }),
+      mkBlock("paragraph", { rich_text: [rt("second")], color: "default" }),
+    ]);
+    assert.equal(out, "first\n\nsecond");
+  });
+});

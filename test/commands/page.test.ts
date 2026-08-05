@@ -7,6 +7,7 @@ import {
   replaceInRichText,
   pageGetCommand,
   pageUpdateCommand,
+  isLiveReference,
 } from "../../src/commands/page.js";
 import { fetchWith404Hint, parseFlags } from "../../src/commands/shared.js";
 import { setTokenProvider, resetForTesting } from "../../src/http.js";
@@ -100,10 +101,9 @@ describe("extractSyncTitle", () => {
     assert.equal(explicit, false);
   });
 
-  it("ignores H1s inside a fenced code block whose closer is shorter than the opener", () => {
-    // Regression: the fence tracker used to toggle on any ` `{3,} ` match, so
-    // a ``` line inside a ```` fence flipped inFence=false and the next H1
-    // was picked up as the page title even though it was still code content.
+  it("never takes an H1 inside a fenced code block as the title", () => {
+    // Only the leading line is considered now, so code content can no longer
+    // supply a title however the fences nest.
     const body = [
       "````",
       "# Not a real H1 inside code",
@@ -111,10 +111,12 @@ describe("extractSyncTitle", () => {
       "# Still inside code",
       "````",
       "",
-      "# Real title",
+      "# A heading further down",
     ].join("\n");
-    const { title } = extractSyncTitle({}, body);
-    assert.equal(title, "Real title");
+    const { title, explicit, syncBody } = extractSyncTitle({}, body);
+    assert.equal(title, "Untitled");
+    assert.equal(explicit, false, "no title line means the page keeps its name");
+    assert.equal(syncBody, body, "and nothing is removed from the content");
   });
 });
 
@@ -649,5 +651,24 @@ describe("pageSyncCommand — an unusable notion_id is refused, not treated as a
       classifySyncState({ frontmatter: { title: "x" }, localBody: "b", remoteEditedAt: undefined }),
       SyncState.CREATE,
     );
+  });
+});
+
+describe("blocks a replace must not delete", () => {
+  const mk = (type: string) => ({ object: "block", id: "x", type, has_children: false, [type]: {} }) as any;
+
+  it("a sub-page or sub-database link is a live reference", () => {
+    // A child_page block's id IS the sub-page's id, so DELETE /blocks/<id>
+    // moves the sub-page and its whole subtree to the trash. page update and
+    // page sync replace content by deleting every existing block; without this
+    // they silently trashed the user's sub-pages.
+    assert.equal(isLiveReference(mk("child_page")), true);
+    assert.equal(isLiveReference(mk("child_database")), true);
+  });
+
+  it("ordinary content is not", () => {
+    for (const t of ["paragraph", "heading_1", "toggle", "callout", "table", "image", "divider"]) {
+      assert.equal(isLiveReference(mk(t)), false, `${t} must still be replaceable`);
+    }
   });
 });

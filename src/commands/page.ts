@@ -181,6 +181,29 @@ export function stripLeadingTitleHeading(body: string, title: string): string {
  *     than no warning at all. Counting `has_children` costs no extra API
  *     calls, unlike walking the tree.
  */
+/**
+ * Blocks whose id IS the thing they point at, so deleting the block deletes the
+ * page or database itself along with everything inside it. A replace must leave
+ * these alone: the reference stays on the page, and nothing is trashed.
+ * `page duplicate` already refuses to copy these for the same reason.
+ */
+const LIVE_REFERENCE_TYPES = new Set(["child_page", "child_database"]);
+
+export function isLiveReference(block: Block): boolean {
+  return LIVE_REFERENCE_TYPES.has(block.type);
+}
+
+function warnAboutPreservedReferences(action: string, kept: Block[]): void {
+  if (kept.length === 0) return;
+  const names = kept
+    .map((b) => (b as unknown as Record<string, { title?: string }>)[b.type]?.title)
+    .filter((t): t is string => typeof t === "string" && t.length > 0);
+  const detail = names.length > 0 ? ` (${names.join(", ")})` : "";
+  process.stderr.write(
+    `notionctl: ${action} kept ${kept.length} sub-page/sub-database link(s)${detail} that markdown cannot recreate. Deleting those blocks would move the sub-pages themselves to the trash, so they are left in place — reorder or remove them in Notion.\n`,
+  );
+}
+
 function warnAboutDestructiveReplace(action: string, existing: Block[]): void {
   const hostedMedia = existing.filter((b) => {
     const t = b.type;
@@ -357,7 +380,10 @@ export async function pageUpdateCommand(ctx: { args: string[] }): Promise<string
     // and its order are identical — and a mid-flight failure now leaves the
     // user's original content intact rather than destroyed.
     await appendBlocksChunked(id, newBlocks);
+    const keptRefs = existing.results.filter(isLiveReference);
+    warnAboutPreservedReferences("page update", keptRefs);
     for (const b of existing.results) {
+      if (isLiveReference(b)) continue;   // deleting this trashes the sub-page
       await notionRequest("DELETE", `/blocks/${b.id}`);
     }
     result["deletedBlocks"] = existing.results.length;
@@ -873,37 +899,19 @@ export function extractSyncTitle(
   if (frontmatter.title) {
     return { title: String(frontmatter.title), syncBody: body, explicit: true };
   }
-  // Find H1 outside fenced code blocks (backtick or tilde). We track the
-  // opening fence's char and length so a shorter closer (e.g. ``` inside a
-  // ```` fence) is treated as code content instead of toggling out of the
-  // fence and misreading an H1 inside the block as the page title.
+  // Only the *leading* H1 is the page's title — that is what `page get` writes
+  // at the top, and what `stripLeadingTitleHeading` assumes. Scanning the whole
+  // body meant a heading further down was taken as the title and then deleted
+  // from the content: a database row, which has no title line of its own, was
+  // renamed to its first section and lost that heading on every sync.
   const lines = body.split("\n");
-  let fenceChar: "`" | "~" | null = null;
-  let fenceLen = 0;
-  for (let i = 0; i < lines.length; i++) {
-    const trimmed = lines[i]!.trim();
-    const openMatch = /^(`{3,}|~{3,})/.exec(trimmed);
-    if (openMatch) {
-      const mark = openMatch[1]!;
-      if (fenceChar === null) {
-        fenceChar = mark[0] as "`" | "~";
-        fenceLen = mark.length;
-        continue;
-      }
-      if (mark[0] === fenceChar && mark.length >= fenceLen && /^\s*$/.test(trimmed.slice(mark.length))) {
-        fenceChar = null;
-        fenceLen = 0;
-        continue;
-      }
-      continue;
-    }
-    if (fenceChar !== null) continue;
-    const h1 = /^# (.+)$/.exec(lines[i]!);
-    if (h1) {
-      const title = h1[1]!.trim();
-      const syncBody = [...lines.slice(0, i), ...lines.slice(i + 1)].join("\n").trimStart();
-      return { title, syncBody, explicit: true };
-    }
+  let i = 0;
+  while (i < lines.length && lines[i]!.trim().length === 0) i++;
+  const h1 = i < lines.length ? /^# (.+)$/.exec(lines[i]!) : null;
+  if (h1) {
+    const title = h1[1]!.trim();
+    const syncBody = [...lines.slice(0, i), ...lines.slice(i + 1)].join("\n").trimStart();
+    return { title, syncBody, explicit: true };
   }
   return { title: "Untitled", syncBody: body, explicit: false };
 }
@@ -1101,7 +1109,10 @@ export async function pageSyncCommand(ctx: { args: string[] }): Promise<string> 
     // Append before delete — see pageUpdateCommand. A failure partway through
     // must not leave the user's page empty.
     await appendBlocksChunked(pageId, newBlocks);
+    const keptSyncRefs = existing.results.filter(isLiveReference);
+    warnAboutPreservedReferences("page sync", keptSyncRefs);
     for (const b of existing.results) {
+      if (isLiveReference(b)) continue;   // deleting this trashes the sub-page
       await notionRequest("DELETE", `/blocks/${b.id}`);
     }
     frontmatter.notion_hash = computeContentHash(body);

@@ -918,11 +918,14 @@ describe("extractSyncTitle — additional cases", () => {
     assert.equal(syncBody.trim(), "");
   });
 
-  it("H1 anywhere in body is extracted (multiline regex ^# with /m flag)", () => {
-    // The /m flag on /^# (.+)$/m means ^ matches start of any line, not just
-    // the document. The first H1 found anywhere in the body is used as the title.
-    const { title } = extractSyncTitle({}, "Some text\n# Mid Title\nmore");
-    assert.equal(title, "Mid Title");
+  it("an H1 further down the body is left alone", () => {
+    // It used to become the page title and be deleted from the content. For a
+    // database row, which has no title line of its own, that renamed the row to
+    // its first section and ate that heading on every sync.
+    const { title, explicit, syncBody } = extractSyncTitle({}, "Some text\n# Mid Title\nmore");
+    assert.equal(title, "Untitled");
+    assert.equal(explicit, false);
+    assert.equal(syncBody, "Some text\n# Mid Title\nmore", "the heading must stay in the body");
   });
 
   it("bold H1 text is extracted with asterisks intact (raw text)", () => {
