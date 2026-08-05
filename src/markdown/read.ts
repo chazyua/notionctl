@@ -255,7 +255,12 @@ function renderBlock(block: Block, depth: number, numberedIndex: number): string
       return `${fence}${lang}\n${content}\n${fence}`;
     }
     case "divider":
-      return "---";
+      // `***` rather than `---`, which is a thematic break in every Markdown
+      // dialect but is also a front-matter delimiter and a setext underline.
+      // A page whose first block is a divider used to read back as something
+      // indistinguishable from front-matter, and its opening section was
+      // dropped; emitting the unambiguous form removes the class entirely.
+      return "***";
     case "callout": {
       const text = escapeBlockStarts(richTextToMarkdown(block.callout.rich_text));
       const icon = block.callout.icon;
@@ -290,8 +295,17 @@ function renderBlock(block: Block, depth: number, numberedIndex: number): string
         richTextToMarkdown(block.toggle.rich_text),
         (block as { _children?: Block[] })._children ?? block.toggle.children,
       );
-    case "equation":
-      return `$$${block.equation.expression}$$`;
+    case "equation": {
+      const expr = block.equation.expression;
+      // A closing `$$` is only recognised alone on a line, so anything that is
+      // not a simple one-liner has to use the fenced form. Written inline, a
+      // multi-line or empty expression swallowed the rest of the page.
+      if (expr.length > 0 && !expr.includes("\n")) return `$$${expr}$$`;
+      // A line inside the expression that is itself `$$` would terminate the
+      // fence early, truncating the equation and spilling the rest as prose.
+      const shielded = expr.split("\n").map((l) => (/^\$\$\s*$/.test(l) ? `\\${l}` : l)).join("\n");
+      return `$$\n${shielded}\n$$`;
+    }
     case "table": {
       const tb = block as unknown as { table: { children?: unknown[]; has_column_header?: boolean }; _children?: unknown[] };
       const rows = (tb.table.children ?? tb._children ?? []) as Array<{
@@ -304,7 +318,7 @@ function renderBlock(block: Block, depth: number, numberedIndex: number): string
       if (hasHeader) {
         rows.forEach((row, i) => {
           const cells = row.table_row.cells.map((cell) =>
-            richTextToMarkdown(cell).replace(/\|/g, "\\|"),
+            singleLine(richTextToMarkdown(cell)).replace(/\|/g, "\\|"),
           );
           lines.push(`| ${cells.join(" | ")} |`);
           if (i === 0) {
@@ -322,7 +336,7 @@ function renderBlock(block: Block, depth: number, numberedIndex: number): string
         lines.push(`| ${Array.from({ length: width }, () => "---").join(" | ")} |`);
         for (const row of rows) {
           const cells = row.table_row.cells.map((cell) =>
-            richTextToMarkdown(cell).replace(/\|/g, "\\|"),
+            singleLine(richTextToMarkdown(cell)).replace(/\|/g, "\\|"),
           );
           lines.push(`| ${cells.join(" | ")} |`);
         }

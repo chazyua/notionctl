@@ -416,6 +416,12 @@ Comprehensive test scenarios for notionctl. Use this for manual dogfooding, regr
 - [A] A link or mention whose label contains `[` or `]` keeps its URL, its text
       and its block type, and bracketed prose gains no stray backslash
 - [A] A link-preview title cannot forge a link to another address
+- [A] A multi-line, empty, or `$$`-containing equation does not swallow the
+      blocks after it
+- [A] A toggle body mentioning `<details>`/`</details>`, including inside a code
+      block, neither loses its text nor absorbs later blocks
+- [A] A table cell containing a backtick, a pipe, or a line break round-trips
+      with its columns intact
 - [A] A callout icon value containing a space or a newline keeps the callout in
       one piece, and an unrecognised comment inside a callout is skipped
 - [A] A callout keeps its own colour, including `default`, instead of taking the

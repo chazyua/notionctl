@@ -253,9 +253,9 @@ describe("Markdown string round-trip (md → blocks → md)", () => {
     assert.match(result, /console\.log/);
   });
 
-  it("divider survives", () => {
-    const result = mdRoundTrip("---");
-    assert.match(result, /^---$/m);
+  it("divider survives, in either spelling", () => {
+    assert.match(mdRoundTrip("---"), /^\*\*\*$/m, "--- is read as a divider and written back unambiguously");
+    assert.match(mdRoundTrip("***"), /^\*\*\*$/m);
   });
 
   it("table survives with correct structure", () => {
@@ -320,7 +320,7 @@ describe("Markdown string round-trip (md → blocks → md)", () => {
     const paraIdx = result.indexOf("Paragraph.");
     const listIdx = result.indexOf("- List item");
     const codeIdx = result.indexOf("code");
-    const dividerIdx = result.indexOf("---");
+    const dividerIdx = result.indexOf("***");
     const quoteIdx = result.indexOf("> Quote");
     assert.ok(titleIdx < paraIdx, "title before para");
     assert.ok(paraIdx < listIdx, "para before list");
@@ -957,4 +957,74 @@ describe("remote titles cannot forge links from any block type", () => {
       assert.ok(!links.includes("https://evil.example"), `${name} forged a link`);
     });
   }
+});
+
+describe("constructs that used to swallow or destroy neighbouring blocks", () => {
+  const ann = { bold: false, italic: false, strikethrough: false, underline: false, code: false, color: "default" };
+  const rt = (t: string) => [{ type: "text", text: { content: t, link: null }, plain_text: t, annotations: ann }];
+  const para = (t: string) => ({ id: "p", type: "paragraph", has_children: false, paragraph: { rich_text: rt(t), color: "default" } });
+
+  for (const [name, expr] of [["multi-line", "a = b\nc = d"], ["empty", ""], ["containing a $$ line", "a\n$$\nb"]] as const) {
+    it(`an equation ${name} does not swallow what follows it`, () => {
+      // The closing $$ was glued to the last line, so the parser never found a
+      // terminator and ran to end of file, absorbing every later block.
+      const eq = { id: "e", type: "equation", has_children: false, equation: { expression: expr } };
+      const out = roundTrip([eq, para("survivor")]) as any[];
+      assert.equal(out.length, 2, `${name}: the following block must survive`);
+      assert.equal(out[0].type, "equation");
+      assert.equal(out[0].equation.expression, expr, "the expression must be exact");
+      assert.equal(out[1].paragraph.rich_text[0].text.content, "survivor");
+    });
+  }
+
+  it("prose mentioning </details> keeps its text and stays inside the toggle", () => {
+    const toggle = {
+      id: "t", type: "toggle", has_children: true,
+      toggle: { rich_text: rt("HTML tips"), color: "default" },
+      _children: [para("close it with </details> at the end")],
+    };
+    const out = roundTrip([toggle]) as any[];
+    assert.equal(out.length, 1, "no stray block");
+    assert.equal(out[0].toggle.children?.length, 1, "the child must survive");
+    assert.match(JSON.stringify(out), /close it with/);
+  });
+
+  it("a toggle body mentioning <details> does not absorb the next block", () => {
+    const toggle = {
+      id: "t", type: "toggle", has_children: true,
+      toggle: { rich_text: rt("T"), color: "default" },
+      _children: [{ id: "c", type: "code", has_children: false, code: { rich_text: rt("<details>"), caption: [], language: "html" } }],
+    };
+    const out = roundTrip([toggle, para("after")]) as any[];
+    assert.equal(out.length, 2, "the sibling must stay a sibling");
+    assert.equal(out[1].type, "paragraph");
+  });
+
+  function table(cells: string[][]) {
+    return {
+      id: "t", type: "table", has_children: true,
+      table: { table_width: cells[0]!.length, has_column_header: true, has_row_header: false },
+      _children: cells.map((row, i) => ({ id: `r${i}`, type: "table_row", has_children: false, table_row: { cells: row.map(rt) } })),
+    };
+  }
+
+  it("a backtick in a cell does not merge or delete columns", () => {
+    const out = roundTrip([table([["the ` char", "backtick"], ["x", "y"]])]) as any[];
+    assert.equal(out[0].type, "table");
+    assert.equal(out[0].table.table_width, 2, "the column must not vanish");
+    const rows = out[0].table.children.map((r: any) => r.table_row.cells.map((c: any[]) => c.map((x) => x.plain_text).join("")));
+    assert.deepEqual(rows, [["the ` char", "backtick"], ["x", "y"]]);
+  });
+
+  it("a line break in a cell keeps the table a table", () => {
+    const out = roundTrip([table([["line1\nline2", "c"]])]) as any[];
+    assert.equal(out[0].type, "table", "must not degrade into paragraphs");
+    assert.equal(out[0].table.table_width, 2);
+  });
+
+  it("a pipe in a cell still round-trips", () => {
+    const out = roundTrip([table([["a | b", "c"]])]) as any[];
+    const cells = out[0].table.children[0].table_row.cells.map((c: any[]) => c.map((x) => x.plain_text).join(""));
+    assert.deepEqual(cells, ["a | b", "c"]);
+  });
 });

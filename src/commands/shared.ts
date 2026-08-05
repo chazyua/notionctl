@@ -100,8 +100,8 @@ export function readStdinBounded(
     };
 
     const onData = (c: Buffer) => {
-      armIdleTimer();
       totalBytes += c.length;
+      armIdleTimer();
       if (totalBytes > maxBytes) {
         settle(() => {
           if (stream !== process.stdin) stream.destroy();

@@ -47,7 +47,10 @@ function calloutIcon(value: string | undefined, alertType: string): CalloutIcon 
   // Anything left has to be an emoji. A hand-edited sidecar reaches here with
   // whatever was typed, and Notion rejects the whole request rather than just
   // the icon, so require an actual pictograph rather than ruling out words.
-  if (!/\p{Extended_Pictographic}|\p{Regional_Indicator}|[\uFE0F\u20E3]/u.test(value)) {
+  // Anchored: "contains an emoji" let `🚀 launch` through, and Notion rejects
+  // the whole request for a bad icon rather than just dropping it.
+  const looksLikeEmoji = /^(?:\p{Extended_Pictographic}|\p{Regional_Indicator}|[\p{Mn}\u200D\uFE0F\u20E3\u0030-\u0039#*])+$/u.test(value);
+  if (!looksLikeEmoji) {
     warnHandler?.(
       `notionctl: '${value.replace(/[\p{Cc}\p{Cf}]/gu, "")}' is not an emoji, an image URL, or notion:<name>:<colour> — the callout keeps its default icon.`,
     );
@@ -67,7 +70,9 @@ function calloutColor(value: string | undefined, alertType: string): string {
   const fallback = ALERT_TYPE_TO_COLOR[alertType] ?? "default";
   if (value === undefined) return fallback;
   if (NOTION_COLORS.has(value)) return value;
-  warnHandler?.(`notionctl: '${value}' is not a Notion colour — the callout keeps its default.`);
+  warnHandler?.(
+    `notionctl: '${value.replace(/[\p{Cc}\p{Cf}]/gu, "")}' is not a Notion colour — the callout keeps its default.`,
+  );
   return fallback;
 }
 
@@ -537,10 +542,27 @@ function markdownToBlocksInternal(md: string, ctx: ParseContext, depth: number):
       // Collect body lines until matching </details>, tracking nested depth
       const bodyLines: string[] = [];
       let detailsDepth = 0;
+      let bodyFence: RegExp | null = null;
       while (i < lines.length) {
         const bodyLine = lines[i]!;
-        if (/<details[\s>]/i.test(bodyLine)) detailsDepth++;
-        if (/<\/details>/i.test(bodyLine)) {
+        const bodyTrimmed = bodyLine.trim();
+        // Tags inside a fenced code block are content — counting them let a
+        // documented `<details>` example absorb the blocks after the toggle.
+        if (bodyFence) {
+          if (bodyFence.test(bodyTrimmed)) bodyFence = null;
+          bodyLines.push(bodyLine);
+          i++;
+          continue;
+        }
+        const openFence = /^(`{3,}|~{3,})/.exec(bodyTrimmed);
+        if (openFence) {
+          bodyFence = new RegExp(`^${openFence[1]![0]}{${openFence[1]!.length},}\\s*$`);
+          bodyLines.push(bodyLine);
+          i++;
+          continue;
+        }
+        if (/^<details[\s>]/i.test(bodyTrimmed)) detailsDepth++;
+        if (/^<\/details>\s*$/i.test(bodyTrimmed)) {
           if (detailsDepth === 0) break;
           detailsDepth--;
         }
@@ -589,12 +611,15 @@ function markdownToBlocksInternal(md: string, ctx: ParseContext, depth: number):
           i++;
         }
         i++; // consume closing $$
+        const expression = eqLines
+          .map((l) => (/^\\\$\$\s*$/.test(l) ? l.slice(1) : l))
+          .join("\n");
         blocks.push({
           object: "block",
           id: "",
           type: "equation",
           has_children: false,
-          equation: { expression: eqLines.join("\n") },
+          equation: { expression },
         } as unknown as Block);
       }
       continue;
@@ -1190,6 +1215,15 @@ function parseTableRow(line: string): string[] {
   let current = "";
   let inCode = false;
   for (let i = 0; i < trimmed.length; i++) {
+    // Escapes first: an escaped backtick is content, not a code delimiter.
+    // Checking the backtick before this let `\`` open a span that swallowed
+    // every remaining cell in the row.
+    if (trimmed[i] === "\\" && i + 1 < trimmed.length) {
+      // The pipe is ours to unescape; anything else belongs to the tokenizer.
+      current += trimmed[i + 1] === "|" ? "|" : trimmed[i]! + trimmed[i + 1]!;
+      i++;
+      continue;
+    }
     if (trimmed[i] === "`") {
       inCode = !inCode;
       current += "`";
@@ -1199,10 +1233,7 @@ function parseTableRow(line: string): string[] {
       current += trimmed[i];
       continue;
     }
-    if (trimmed[i] === "\\" && trimmed[i + 1] === "|") {
-      current += "|";
-      i++; // skip the escaped pipe
-    } else if (trimmed[i] === "|") {
+    if (trimmed[i] === "|") {
       cells.push(current.trim());
       current = "";
     } else {

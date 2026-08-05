@@ -461,13 +461,18 @@ input directly, including with `--from -`, has no time limit. Pass
 
 **Broken front-matter.** A front-matter block that opens and closes but does not
 parse is ambiguous — it may be front-matter with a mistyped line, or a horizontal
-rule above ordinary prose. `page create/append/update`, `db row create` and
-`block append` report the parse failure on stderr and write the file as it
-stands, so nothing is lost either way; the YAML may appear as page content, which
-is visible and fixable. `page sync` refuses instead, because only it acts on
-`notion_id`, and reading it wrong would orphan the existing page. A file with no
-front-matter, or one whose `---` opener is never closed, is not front-matter at
-all; a file meant to open with a horizontal rule should use `***`.
+rule above ordinary prose. What happens next depends on whether the command adds
+or replaces. `page create`, `page append`, `db row create` and `block append`
+report the parse failure on stderr and write the file as it stands: the worst
+case is YAML visible on the page, which you can see and delete. `page update` and
+`page sync` refuse, because both replace what is already there — writing the file
+would delete the page's existing blocks, or create a duplicate and orphan the
+original, and neither can be undone from the file.
+
+A file with no front-matter, or one whose `---` opener is never closed, is not
+front-matter at all. notionctl writes horizontal rules as `***` so its own output
+is never mistaken for a front-matter block; `---` is still read as a rule
+wherever it cannot be a delimiter.
 
 **Empty paragraphs are not preserved.** A blank paragraph used as spacing in
 Notion has no Markdown equivalent — a blank line is already how blocks are

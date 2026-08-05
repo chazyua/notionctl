@@ -154,9 +154,11 @@ describe("blocksToMarkdown basic blocks", () => {
     assert.ok(out.endsWith(`\n${fence}`), "closes with matching fence length");
   });
 
-  it("divider", () => {
+  it("divider renders unambiguously", () => {
+    // `***`, not `---`: the latter doubles as a front-matter delimiter and a
+    // setext underline, which cost a divider-first page its opening section.
     const blocks: Block[] = [mkBlock("divider", {})];
-    assert.match(blocksToMarkdown(blocks), /^---$/m);
+    assert.match(blocksToMarkdown(blocks), /^\*\*\*$/m);
   });
 
   it("separates sibling blocks with blank lines", () => {

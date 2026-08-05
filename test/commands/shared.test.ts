@@ -361,3 +361,24 @@ describe("readStdinBounded — an open pipe that never closes", () => {
     await assert.rejects(read, /exceeds maximum size/);
   });
 });
+
+describe("the stdin waiting notice", () => {
+  it("is not re-armed once input has arrived", async () => {
+    // The byte counter was read before it was updated, so the first chunk still
+    // looked like "nothing has arrived" and the notice fired mid-stream.
+    const stream = new PassThrough();
+    const written: string[] = [];
+    const original = process.stderr.write.bind(process.stderr);
+    (process.stderr as any).write = (c: any) => { written.push(String(c)); return true; };
+    try {
+      const read = readStdinBounded(1024, stream, 5000);
+      stream.write("hello");
+      await new Promise((r) => setTimeout(r, 30));
+      stream.end();
+      assert.equal(await read, "hello");
+      assert.ok(!written.some((w) => /waiting for input/.test(w)));
+    } finally {
+      (process.stderr as any).write = original;
+    }
+  });
+});

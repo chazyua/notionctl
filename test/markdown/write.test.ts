@@ -1211,9 +1211,18 @@ describe("markers and values the parser cannot use", () => {
   });
 
   it("a real emoji is still accepted", () => {
-    for (const value of ["🚀", "1️⃣", "🇺🇸", "👨‍👩‍👧‍👦"]) {
+    for (const value of ["🚀", "1️⃣", "🇺🇸", "👨‍👩‍👧‍👦", "❗"]) {
       const blocks = markdownToBlocks(`> [!NOTE]\n<!-- icon: ${value} -->\n> body`);
       assert.equal((blocks[0] as any).callout.icon.emoji, value);
+    }
+  });
+
+  it("an emoji with anything else beside it falls back", () => {
+    // Notion wants a single glyph and rejects the whole request otherwise, so
+    // "contains an emoji" was not a strong enough test.
+    for (const value of ["🚀 launch", "fire 🔥", "🚀!"]) {
+      const icon = (markdownToBlocks(`> [!NOTE]\n<!-- icon: ${value} -->\n> body`)[0] as any).callout.icon;
+      assert.notEqual(icon.emoji, value, `${value} must not be sent as an emoji`);
     }
   });
 });

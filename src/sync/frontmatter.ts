@@ -35,20 +35,6 @@ export function extractFrontmatter(input: string): ExtractedFrontmatter {
   const closeIdx = findClosingDelimiter(lines);
   if (closeIdx === -1) return { data: {}, body: text };
 
-  // A blank line directly under the opener means this is a horizontal rule with
-  // prose beneath it, not front-matter: YAML front-matter starts with a key on
-  // the very next line. Without this, a divider-first page read back through
-  // `block get` had its first section silently deleted whenever that prose
-  // happened to parse as YAML.
-  //
-  // A block carrying notion_id is ours whatever it looks like, and failing to
-  // see one is what makes `page sync` create a duplicate and orphan the
-  // original — so that always wins over the shape test.
-  const carriesSyncId = lines.slice(1, closeIdx).some((l) => /^\s*notion_id\s*:/.test(l));
-  if (!carriesSyncId && (lines[1] ?? "").trim().length === 0) {
-    return { data: {}, body: text };
-  }
-
   const yamlContent = lines.slice(1, closeIdx).join("\n");
   let data: YamlObject;
   try {

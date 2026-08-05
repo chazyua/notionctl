@@ -98,22 +98,23 @@ describe("extractFrontmatter — malformed blocks are distinguishable", () => {
     assert.equal(body, "# Title\n", "a BOM must not leak into page content");
   });
 
-  it("a divider-first document is not front-matter at all", () => {
-    // YAML front-matter starts with a key on the line after the opener, so a
-    // blank line there means the `---` is a horizontal rule. Without that
-    // distinction a page whose first block is a divider lost its opening
-    // section — silently, whenever the prose happened to parse as YAML.
-    const { data, body, malformed } = extractFrontmatter("---\n\nprose\n\n---\n\nmore\n");
-    assert.equal(malformed, undefined, "not a broken block — not a block at all");
+  it("a divider-first document read back from notionctl is not front-matter", () => {
+    // The read path now writes a divider as ***, so its own output can never be
+    // mistaken for a front-matter block — which is what used to cost such a
+    // page its opening section, silently, whenever the prose parsed as YAML.
+    const { data, body, malformed } = extractFrontmatter("***\n\nStatus: Done\n\n***\n\nReal content\n");
+    assert.equal(malformed, undefined);
     assert.deepEqual(data, {});
-    assert.equal(body, "---\n\nprose\n\n---\n\nmore\n", "every line must survive");
-  });
-
-  it("parseable prose under a leading rule is no longer eaten", () => {
-    // The dangerous case: it parses, so nothing was ever reported.
-    const { body } = extractFrontmatter("---\n\nStatus: Done\n\n---\n\nReal content\n");
     assert.match(body, /Status: Done/);
     assert.match(body, /Real content/);
+  });
+
+  it("front-matter that opens with a blank line is still front-matter", () => {
+    // Legal for YAML, Jekyll and Hugo. Rejecting it would put the keys on the
+    // page as content — and with no parse error, nothing would have warned.
+    const { data, body } = extractFrontmatter("---\n\ntitle: My Post\ntags: [a, b]\n---\n\nBody\n");
+    assert.equal(data.title, "My Post");
+    assert.equal(body, "Body\n");
   });
 
   it("a block carrying notion_id is always front-matter, whatever its shape", () => {

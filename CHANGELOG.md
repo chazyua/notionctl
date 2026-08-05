@@ -214,6 +214,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   anywhere. Every property type now has its value syntax in the command
   reference.
 
+**Blocks that destroyed their neighbours**
+- An equation spanning more than one line, or an empty one, swallowed the whole
+  rest of the page. Its closing `$$` was written on the same line as the last
+  line of the formula, where nothing recognises it, so everything below was read
+  as part of the equation — and it grew by another `$$` on every sync. Such an
+  equation is now written with its delimiters on their own lines.
+- A toggle whose body merely mentioned `</details>` lost that content and left a
+  stray paragraph behind; one mentioning `<details>` — a code sample, for
+  instance — pulled the blocks that followed it inside the toggle. Only a tag
+  alone on its own line, outside a code block, now opens or closes one.
+- A backtick in a table cell merged that cell with the one after it and deleted
+  the last column of every row, gaining a backslash on each sync. A line break in
+  a cell stopped the table being a table at all. Both now survive.
+
 **Markdown conversion**
 - Setext headings were mangled. `Title` followed by `===` became a single
   paragraph with the underline in the text; `Title` followed by `---` became a
