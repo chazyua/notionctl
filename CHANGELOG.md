@@ -170,6 +170,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A list item's own child blocks were written back to Markdown without
   indentation, so a `page get` followed by a `page update` moved them out of the
   list. They now round-trip in place.
+- Toggleable headings were destroyed by a round-trip. The heading was written
+  out as ordinary `# text` with its children dumped after it as siblings, and
+  nothing in Markdown could produce a toggleable heading, so `page get` followed
+  by `page update` left a plain heading with its content spilled out below and
+  the toggle gone. A toggleable heading is now written as a `<details>` block
+  preceded by a `<!-- notion-heading: N -->` marker naming its level, which
+  restores both the toggle and the nesting. Plain headings are unchanged.
+- A heading containing a line break came back as a heading plus a separate
+  paragraph, turning one block into two on every sync. Markdown headings are a
+  single line, so the break is now collapsed to a space — the heading stays one
+  block and the text is kept. **Note:** this rewrites the heading in Notion the
+  first time the page is synced.
+- A toggle whose title contained `</summary>` or `</details>` lost everything
+  after it, because the title is written inside an HTML element. Those sequences
+  are now escaped and restored.
+- A paragraph whose text happened to be one of the markers the reader emits —
+  `<!-- notion-table: ... -->`, or a lone `#` — was swallowed on the next sync,
+  and the marker went on to retype the following block. Those lines are now
+  shielded like any other prose that begins with a marker.
+- A marker left behind after hand-editing changed a block far below it: a
+  leftover table marker stripped the header row off the next table it found,
+  however many paragraphs sat in between. A marker now applies only to the block
+  directly beneath it and is otherwise ignored.
+- An empty heading came back as a paragraph containing `#`.
 
 ### Added
 - Test coverage for each fix above, alongside the module it exercises.

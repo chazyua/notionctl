@@ -509,3 +509,139 @@ describe("a heading with a soft line break", () => {
     assert.match(all, /notes/);
   });
 });
+
+describe("toggleable headings", () => {
+  function rt(text: string) {
+    return [{ type: "text", text: { content: text, link: null }, plain_text: text, annotations: { bold: false, italic: false, strikethrough: false, underline: false, code: false, color: "default" } }];
+  }
+  function heading(level: 1 | 2 | 3, text: string, toggleable: boolean, children?: any[]) {
+    const key = `heading_${level}`;
+    const b: any = { id: "1", type: key, has_children: !!children, [key]: { rich_text: rt(text), color: "default", is_toggleable: toggleable } };
+    if (children) b._children = children;
+    return b;
+  }
+  const para = (t: string) => ({ id: "2", type: "paragraph", has_children: false, paragraph: { rich_text: rt(t), color: "default" } });
+
+  for (const level of [1, 2, 3] as const) {
+    it(`an H${level} keeps is_toggleable and its children`, () => {
+      const result = roundTrip([heading(level, "Section", true, [para("hidden child")])]) as any[];
+      assert.equal(result.length, 1, "children must stay nested, not become siblings");
+      assert.equal(result[0].type, `heading_${level}`);
+      assert.equal(result[0][`heading_${level}`].is_toggleable, true);
+      const kids = result[0][`heading_${level}`].children;
+      assert.equal(kids.length, 1);
+      assert.equal(kids[0].paragraph.rich_text[0].text.content, "hidden child");
+    });
+  }
+
+  it("a toggleable heading with no children still round-trips", () => {
+    const result = roundTrip([heading(2, "Empty", true)]) as any[];
+    assert.equal(result.length, 1);
+    assert.equal(result[0].type, "heading_2");
+    assert.equal(result[0].heading_2.is_toggleable, true);
+  });
+
+  it("a plain heading stays plain", () => {
+    const result = roundTrip([heading(1, "Section", false)]) as any[];
+    assert.equal(result[0].type, "heading_1");
+    assert.equal(result[0].heading_1.is_toggleable, false);
+  });
+
+  it("a hand-written <details> with no sidecar is still a toggle", () => {
+    const result = markdownToBlocks("<details><summary>Plain</summary>\n\nbody\n\n</details>") as any[];
+    assert.equal(result[0].type, "toggle");
+  });
+
+  it("a stray heading sidecar does not attach to a later toggle", () => {
+    const result = markdownToBlocks("<!-- notion-heading: 1 -->") as any[];
+    assert.equal(result.length, 0);
+  });
+});
+
+describe("a heading containing a line break", () => {
+  function head(text: string) {
+    return [{ id: "1", type: "heading_1", has_children: false, heading_1: { rich_text: [{ type: "text", text: { content: text, link: null }, plain_text: text, annotations: { bold: false, italic: false, strikethrough: false, underline: false, code: false, color: "default" } }], color: "default", is_toggleable: false } }];
+  }
+
+  it("stays one heading, with the break normalised to a space", () => {
+    const result = roundTrip(head("Release\nnotes")) as any[];
+    assert.equal(result.length, 1, "must not split into a heading plus a paragraph");
+    assert.equal(result[0].type, "heading_1");
+    assert.equal(result[0].heading_1.rich_text.map((r: any) => r.plain_text).join(""), "Release notes");
+  });
+
+  it("keeps text that looks like a setext underline", () => {
+    const result = roundTrip(head("Release\nnotes\n===")) as any[];
+    assert.equal(result.length, 1);
+    assert.match(result[0].heading_1.rich_text.map((r: any) => r.plain_text).join(""), /===/);
+  });
+
+  it("is stable on a second pass", () => {
+    const once = roundTrip(head("Release\nnotes")) as any[];
+    const twice = roundTrip(once.map((b: any) => ({ ...b, _children: b[b.type]?.children }))) as any[];
+    assert.equal(twice.length, 1);
+    assert.equal(twice[0].heading_1.rich_text.map((r: any) => r.plain_text).join(""), "Release notes");
+  });
+});
+
+describe("HTML close tags inside a disclosure title", () => {
+  function rt(text: string) {
+    return [{ type: "text", text: { content: text, link: null }, plain_text: text, annotations: { bold: false, italic: false, strikethrough: false, underline: false, code: false, color: "default" } }];
+  }
+  const titles = ["a</summary>b", "a</details>b", "a&lt;/summary>b", "A & B", "a<details>b"];
+
+  for (const title of titles) {
+    it(`a toggle titled ${JSON.stringify(title)} survives`, () => {
+      const result = roundTrip([{ id: "1", type: "toggle", has_children: false, toggle: { rich_text: rt(title), color: "default" } }]) as any[];
+      assert.equal(result.length, 1);
+      assert.equal(result[0].toggle.rich_text.map((r: any) => r.plain_text).join(""), title);
+    });
+
+    it(`a toggleable heading titled ${JSON.stringify(title)} survives`, () => {
+      const result = roundTrip([{ id: "1", type: "heading_1", has_children: false, heading_1: { rich_text: rt(title), color: "default", is_toggleable: true } }]) as any[];
+      assert.equal(result.length, 1);
+      assert.equal(result[0].heading_1.rich_text.map((r: any) => r.plain_text).join(""), title);
+    });
+  }
+});
+
+describe("markers the parser consumes are shielded as prose", () => {
+  function para(text: string) {
+    return [{ id: "1", type: "paragraph", has_children: false, paragraph: { rich_text: [{ type: "text", text: { content: text, link: null }, plain_text: text, annotations: { bold: false, italic: false, strikethrough: false, underline: false, code: false, color: "default" } }], color: "default" } }];
+  }
+
+  for (const marker of ["<!-- notion-heading: 2 -->", "<!-- notion-table: has_column_header=false -->", "#"]) {
+    it(`a paragraph reading ${JSON.stringify(marker)} survives`, () => {
+      const result = roundTrip(para(marker)) as any[];
+      assert.equal(result.length, 1);
+      assert.equal(result[0].type, "paragraph");
+      assert.equal(result[0].paragraph.rich_text.map((r: any) => r.plain_text).join(""), marker);
+    });
+  }
+
+  it("a stray heading marker does not retype a later toggle", () => {
+    const md = "<!-- notion-heading: 1 -->\n\nSome paragraph\n\n<details><summary>Just a toggle</summary>\n\nbody\n\n</details>";
+    const result = markdownToBlocks(md) as any[];
+    assert.deepEqual(result.map((b) => b.type), ["paragraph", "toggle"]);
+  });
+
+  it("a stray table marker does not strip a later table's header", () => {
+    const md = "<!-- notion-table: has_column_header=false -->\n\nSome paragraph\n\n| A | B |\n| --- | --- |\n| 1 | 2 |";
+    const result = markdownToBlocks(md) as any[];
+    assert.equal(result[1].type, "table");
+    assert.equal(result[1].table.has_column_header, true);
+  });
+
+  it("an empty heading round-trips as a heading, not a paragraph", () => {
+    const blocks = [{ id: "1", type: "heading_1", has_children: false, heading_1: { rich_text: [], color: "default", is_toggleable: false } }];
+    const result = roundTrip(blocks) as any[];
+    assert.equal(result.length, 1);
+    assert.equal(result[0].type, "heading_1");
+  });
+
+  it("a doubly-escaped close tag in a title is not eaten", () => {
+    const title = "x&amp;lt;/summary>y";
+    const result = roundTrip([{ id: "1", type: "toggle", has_children: false, toggle: { rich_text: [{ type: "text", text: { content: title, link: null }, plain_text: title, annotations: { bold: false, italic: false, strikethrough: false, underline: false, code: false, color: "default" } }], color: "default" } }]) as any[];
+    assert.equal(result[0].toggle.rich_text.map((r: any) => r.plain_text).join(""), title);
+  });
+});

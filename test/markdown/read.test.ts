@@ -55,8 +55,18 @@ describe("blocksToMarkdown basic blocks", () => {
     );
     (parent as any)._children = [child];
     const out = blocksToMarkdown([parent]);
-    assert.match(out, /# Section/);
+    // A toggleable heading renders through <details> so its children have a
+    // place to live; the sidecar carries the heading level.
+    assert.match(out, /<!-- notion-heading: 1 -->/);
+    assert.match(out, /<summary>Section<\/summary>/);
     assert.match(out, /under the heading/);
+  });
+
+  it("a plain heading still renders as an ATX heading", () => {
+    const out = blocksToMarkdown([
+      mkBlock("heading_1", { rich_text: [rt("Section")], color: "default", is_toggleable: false }),
+    ]);
+    assert.equal(out, "# Section");
   });
 
   it("paragraph with nested children renders children after the paragraph", () => {

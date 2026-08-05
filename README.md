@@ -161,7 +161,7 @@ Bidirectional Markdown conversion with full fidelity:
 
 **Read:** headings, paragraphs, bullet/numbered/to-do lists (nested), code blocks, tables (GFM), quotes, callouts, toggles, dividers, images, equations, bold, italic, strikethrough, inline code, links.
 
-**Write:** all of the above. Nested lists use 2-space indentation and produce the corresponding nested block tree in Notion. Setext headings (`Title` underlined with `===` or `---`) are read as H1 and H2. Content indented under a list item — extra paragraphs, quotes, code blocks — stays inside that item.
+**Write:** all of the above. Nested lists use 2-space indentation and produce the corresponding nested block tree in Notion. Setext headings (`Title` underlined with `===` or `---`) are read as H1 and H2. Content indented under a list item — extra paragraphs, quotes, code blocks — stays inside that item. A toggleable heading round-trips as a `<details>` block preceded by a `<!-- notion-heading: N -->` marker; a line break inside a heading is collapsed to a space, since Markdown headings are one line.
 
 Notion accepts at most two levels of nesting below the top level of a page, and
 rejects the whole request when a write exceeds it. Blocks past that depth are

@@ -64,9 +64,10 @@ export function blocksToMarkdown(blocks: Block[], opts: RenderOptions = {}): str
 }
 
 /**
- * Append a heading/paragraph's `_children` as nested block content after the
- * block's own line. Notion lets paragraphs and toggleable headings carry
- * children; leaving them out silently drops content from `page get`. Child
+ * Append a paragraph's `_children` as nested block content after the block's
+ * own line. Notion lets paragraphs carry children; leaving them out silently
+ * drops content from `page get`. Toggleable headings do not come through here —
+ * they render as `<details>`, which nests its own children. Child
  * blocks render at the same top-level indent (not as list indentation),
  * separated by a blank line so downstream block detection still works.
  */
@@ -118,16 +119,35 @@ function escapeBlockStarts(text: string): string {
     .join("\n");
 }
 
+const HEADING_LEVEL: Record<string, 1 | 2 | 3> = { heading_1: 1, heading_2: 2, heading_3: 3 };
+
 /**
- * A heading's first line carries the `#` prefix, so it can never be re-read as
- * something else. A soft line break inside its rich_text puts later lines at
- * the start of a line, where a marker would be — `Release\nnotes\n===` came
- * back with the `===` swallowed as a setext underline. Shield those; the write
- * path unescapes them as part of the paragraph they become.
+ * A Markdown heading is a single line by definition, so a soft line break
+ * inside one has nowhere to go: written out literally it reads as a heading
+ * followed by a separate paragraph, which is what used to come back. Collapse
+ * the break to a space — a documented, stable normalisation — rather than
+ * invent syntax no other Markdown tool would understand.
  */
-function escapeHeadingText(text: string): string {
-  const nl = text.indexOf("\n");
-  return nl === -1 ? text : text.slice(0, nl + 1) + escapeBlockStarts(text.slice(nl + 1));
+function singleLine(text: string): string {
+  return text.replace(/\s*\n\s*/g, " ");
+}
+
+/**
+ * A summary sits inside an HTML element, so a literal `</summary>` or
+ * `</details>` in the title closes it early and everything after it is lost.
+ * Escape those two sequences, and anything already looking escaped, so the
+ * pair stays reversible; write.ts decodes it.
+ */
+function escapeSummary(text: string): string {
+  return text
+    .replace(/&(?=(?:amp;)*lt;\/(?:summary|details)>)/gi, "&amp;")
+    .replace(/<(\/(?:summary|details)>)/gi, "&lt;$1");
+}
+
+/** `<details>` rendering, shared by toggles and toggleable headings. */
+function renderDisclosure(summary: string, children: Block[] | undefined): string {
+  const body = children && children.length > 0 ? "\n" + blocksToMarkdown(children) + "\n" : "\n";
+  return `<details><summary>${escapeSummary(summary)}</summary>\n${body}</details>`;
 }
 
 function renderBlock(block: Block, depth: number, numberedIndex: number): string | null {
@@ -139,11 +159,22 @@ function renderBlock(block: Block, depth: number, numberedIndex: number): string
       return appendChildBlocks(text, block);
     }
     case "heading_1":
-      return appendChildBlocks(`# ${escapeHeadingText(richTextToMarkdown(block.heading_1?.rich_text ?? []))}`, block);
     case "heading_2":
-      return appendChildBlocks(`## ${escapeHeadingText(richTextToMarkdown(block.heading_2?.rich_text ?? []))}`, block);
-    case "heading_3":
-      return appendChildBlocks(`### ${escapeHeadingText(richTextToMarkdown(block.heading_3?.rich_text ?? []))}`, block);
+    case "heading_3": {
+      const level = HEADING_LEVEL[block.type]!;
+      const data = (block as unknown as Record<string, { rich_text?: RichText[]; is_toggleable?: boolean }>)[block.type];
+      const text = singleLine(richTextToMarkdown(data?.rich_text ?? []));
+      // A toggleable heading is a disclosure widget that happens to be styled
+      // as a heading, so it round-trips through <details> with a sidecar
+      // naming the level. Rendering it as `# text` would lose both the toggle
+      // and, with it, any home for its children.
+      if (data?.is_toggleable) {
+        const kids = (block as { _children?: Block[] })._children
+          ?? (data as { children?: Block[] }).children;
+        return `<!-- notion-heading: ${level} -->\n${renderDisclosure(text, kids)}`;
+      }
+      return appendChildBlocks(`${"#".repeat(level)} ${text}`, block);
+    }
     case "bulleted_list_item": {
       const text = `${indent}- ${richTextToMarkdown(block.bulleted_list_item?.rich_text ?? [])}`;
       const nested = (block as any)._children as Block[] | undefined;
@@ -219,12 +250,11 @@ function renderBlock(block: Block, depth: number, numberedIndex: number): string
       }
       return lines.join("\n");
     }
-    case "toggle": {
-      const summary = richTextToMarkdown(block.toggle.rich_text);
-      const nested = (block as any)._children as Block[] | undefined;
-      const body = nested && nested.length > 0 ? "\n" + blocksToMarkdown(nested) + "\n" : "\n";
-      return `<details><summary>${summary}</summary>\n${body}</details>`;
-    }
+    case "toggle":
+      return renderDisclosure(
+        richTextToMarkdown(block.toggle.rich_text),
+        (block as { _children?: Block[] })._children ?? block.toggle.children,
+      );
     case "equation":
       return `$$${block.equation.expression}$$`;
     case "table": {

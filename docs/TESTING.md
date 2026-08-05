@@ -385,8 +385,11 @@ Comprehensive test scenarios for notionctl. Use this for manual dogfooding, regr
       occupy a level
 - [A] A list item's continuation keeps its position relative to the item's nested
       children
-- [A] A heading whose `rich_text` contains a line break has its continuation lines
-      shielded, so a `===` line is not swallowed as a setext underline
+- [A] A heading whose `rich_text` contains a line break stays one heading, with the
+      break collapsed to a space, and is stable on a second pass
+- [A] A toggleable heading round-trips at every level with `is_toggleable` and its
+      nested children intact; a `<details>` with no marker stays a plain toggle
+- [A] A disclosure title containing `</summary>` or `</details>` survives intact
 - [A] A pathologically indented list (thousands of levels) does not exhaust the
       call stack
 - [M] Large Markdown files (100+ blocks) convert without error

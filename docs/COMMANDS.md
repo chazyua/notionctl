@@ -425,6 +425,26 @@ notionctl's Markdown engine handles bidirectional conversion:
 
 **Write (Markdown to Notion):** headings (H1-H3, ATX `#` or setext `===`/`---`), paragraphs, bullet/numbered/to-do lists (nested via 2-space indent), code blocks, tables, blockquotes, dividers, images, bold, italic, strikethrough, inline code, links.
 
+**Toggleable headings.** A heading that collapses in Notion is written as a
+`<details>` block preceded by a marker naming its level, so both the toggle and
+its nested content survive a round-trip:
+
+```markdown
+<!-- notion-heading: 2 -->
+<details><summary>Collapsible section</summary>
+
+Content inside the heading.
+
+</details>
+```
+
+A `<details>` block with no marker above it is an ordinary toggle. A heading
+written as `## text` is an ordinary, non-collapsing heading.
+
+**Line breaks in headings.** Markdown headings occupy a single line, so a line
+break inside a Notion heading is collapsed to a space when read. Syncing the file
+back rewrites the heading in Notion to match.
+
 **Multi-paragraph list items.** Content indented to the item's body column stays
 inside that item:
 

@@ -51,6 +51,13 @@ function peekSidecar(lines: string[], startIdx: number): { type: string; nextIdx
   return { type: m[1]!, nextIdx: i + 1 };
 }
 
+/** Index of the next non-blank line at or after `from`, or -1 when there is none. */
+function nextContentIdx(lines: string[], from: number): number {
+  let j = from;
+  while (j < lines.length && lines[j]!.trim().length === 0) j++;
+  return j < lines.length ? j : -1;
+}
+
 function parseBareLinkLine(line: string): { label: string; url: string } | null {
   if (!line.startsWith("[")) return null;
   let i = 1;
@@ -142,6 +149,7 @@ function markdownToBlocksInternal(md: string, ctx: ParseContext, depth: number):
   const blocks: Block[] = [];
   let i = 0;
   let tableNoHeader = false;
+  let pendingHeading: 1 | 2 | 3 | null = null;
 
   while (i < lines.length) {
     const line = lines[i]!;
@@ -251,31 +259,19 @@ function markdownToBlocksInternal(md: string, ctx: ParseContext, depth: number):
       }
     }
 
-    // Headings
-    if (/^#\s+/.test(trimmed)) {
-      blocks.push(makeHeadingBlock(1, trimmed.replace(/^#\s+/, "")));
-      i++;
-      continue;
-    }
-    if (/^##\s+/.test(trimmed)) {
-      blocks.push(makeHeadingBlock(2, trimmed.replace(/^##\s+/, "")));
-      i++;
-      continue;
-    }
-    if (/^###\s+/.test(trimmed)) {
-      blocks.push(makeHeadingBlock(3, trimmed.replace(/^###\s+/, "")));
-      i++;
-      continue;
-    }
-    if (/^#{4,6}\s+/.test(trimmed)) {
-      const text = trimmed.replace(/^#{4,6}\s+/, "");
-      if (!ctx.warnedHeadingDowngrade) {
+    // Headings. An empty body (`#` alone) is a heading with no text, which is
+    // what the read path emits for an empty Notion heading; requiring a body
+    // used to bring it back as a paragraph reading "#".
+    const atx = /^(#{1,6})(?:\s+(.*))?$/.exec(trimmed);
+    if (atx) {
+      const hashes = atx[1]!.length;
+      if (hashes > 3 && !ctx.warnedHeadingDowngrade) {
         process.stderr.write(
           "warning: Notion only supports H1-H3; H4/H5/H6 headings will be written as H3.\n",
         );
         ctx.warnedHeadingDowngrade = true;
       }
-      blocks.push(makeHeadingBlock(3, text));
+      blocks.push(makeHeadingBlock(Math.min(hashes, 3) as 1 | 2 | 3, atx[2] ?? ""));
       i++;
       continue;
     }
@@ -429,6 +425,22 @@ function markdownToBlocksInternal(md: string, ctx: ParseContext, depth: number):
       continue;
     }
 
+    // Sidecar marking the following <details> as a toggleable heading rather
+    // than a plain toggle (emitted by the read path).
+    const headingSidecar = /^<!--\s*notion-heading:\s*([123])\s*-->$/.exec(trimmed);
+    if (headingSidecar) {
+      // Bind only to a <details> that directly follows. A marker left behind by
+      // hand-editing must not retype an unrelated toggle further down.
+      const next = nextContentIdx(lines, i + 1);
+      if (next !== -1 && /^<details>/i.test(lines[next]!.trim())) {
+        pendingHeading = Number(headingSidecar[1]) as 1 | 2 | 3;
+        i = next;
+      } else {
+        i++;
+      }
+      continue;
+    }
+
     // HTML toggle: <details><summary>...</summary>...</details>
     if (/^<details>/i.test(trimmed)) {
       // Check if </details> is on the same line (inline form)
@@ -440,15 +452,10 @@ function markdownToBlocksInternal(md: string, ctx: ParseContext, depth: number):
           ? markdownToBlocksInternal(bodyText, ctx, childDepth(depth))
           : [];
         i++;
-        const toggleData: any = { rich_text: markdownToRichText(summary), color: "default" };
+        const toggleData: any = { rich_text: markdownToRichText(unescapeSummary(summary)), color: "default" };
         const togglePromoted = nestOrPromote(toggleData, childBlocks, depth, ctx);
-        blocks.push({
-          object: "block",
-          id: "",
-          type: "toggle",
-          has_children: toggleData.children !== undefined,
-          toggle: toggleData,
-        } as unknown as Block);
+        blocks.push(makeDisclosureBlock(pendingHeading, toggleData));
+        pendingHeading = null;
         blocks.push(...togglePromoted);
         continue;
       }
@@ -489,18 +496,13 @@ function markdownToBlocksInternal(md: string, ctx: ParseContext, depth: number):
         : [];
 
       const toggleData: any = {
-        rich_text: markdownToRichText(summary),
+        rich_text: markdownToRichText(unescapeSummary(summary)),
         color: "default",
       };
       const togglePromoted = nestOrPromote(toggleData, childBlocks, depth, ctx);
 
-      blocks.push({
-        object: "block",
-        id: "",
-        type: "toggle",
-        has_children: toggleData.children !== undefined,
-        toggle: toggleData,
-      } as unknown as Block);
+      blocks.push(makeDisclosureBlock(pendingHeading, toggleData));
+      pendingHeading = null;
       blocks.push(...togglePromoted);
       continue;
     }
@@ -564,8 +566,13 @@ function markdownToBlocksInternal(md: string, ctx: ParseContext, depth: number):
     // Sidecar comment for tables without a column header (emitted by read path).
     // Consume it and let the following table inherit has_column_header=false.
     if (/^<!--\s*notion-table:\s*has_column_header=false\s*-->$/.test(trimmed)) {
-      tableNoHeader = true;
-      i++;
+      const next = nextContentIdx(lines, i + 1);
+      if (next !== -1 && /^\|.*\|$/.test(lines[next]!.trim())) {
+        tableNoHeader = true;
+        i = next;
+      } else {
+        i++;
+      }
       continue;
     }
 
@@ -704,7 +711,7 @@ function setextLevel(line: string): 1 | 2 | null {
 export function isBlockStart(line: string): boolean {
   const t = line.trim();
   return (
-    /^#{1,6}\s/.test(t) ||
+    /^#{1,6}(\s|$)/.test(t) ||
     /^[-*+]\s/.test(t) ||
     /^\d+\.\s/.test(t) ||
     /^>/.test(t) ||
@@ -715,7 +722,7 @@ export function isBlockStart(line: string): boolean {
     /^\$\$/.test(t) ||
     /^!\[/.test(t) ||
     /^<details>/i.test(t) ||
-    /^<!--\s*notion-block:/.test(t)
+    /^<!--\s*notion-(?:block|heading|table):/.test(t)
   );
 }
 
@@ -751,6 +758,29 @@ function makeHeadingBlock(level: 1 | 2 | 3, text: string): Block {
     has_children: false,
     [key]: { rich_text: markdownToRichText(text), color: "default", is_toggleable: false },
   } as Block;
+}
+
+/** Undo read.ts's `escapeSummary` so a title may contain HTML close tags. */
+function unescapeSummary(text: string): string {
+  return text
+    .replace(/&lt;(\/(?:summary|details)>)/gi, "<$1")
+    .replace(/&amp;(?=(?:amp;)*lt;\/(?:summary|details)>)/gi, "&");
+}
+
+/**
+ * A `<details>` block becomes a toggleable heading when the read path marked it
+ * with a level sidecar, and a plain toggle otherwise. Both carry their body the
+ * same way, so only the wrapper differs.
+ */
+function makeDisclosureBlock(level: 1 | 2 | 3 | null, data: { children?: Block[] }): Block {
+  const key = level === null ? "toggle" : `heading_${level}` as const;
+  return {
+    object: "block",
+    id: "",
+    type: key,
+    has_children: data.children !== undefined,
+    [key]: level === null ? data : { ...data, is_toggleable: true },
+  } as unknown as Block;
 }
 
 interface ParsedListLine {
