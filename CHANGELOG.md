@@ -194,6 +194,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   however many paragraphs sat in between. A marker now applies only to the block
   directly beneath it and is otherwise ignored.
 - An empty heading came back as a paragraph containing `#`.
+- Mentions were destroyed by a round-trip. A person mention was written as
+  `@user:` followed by a raw account id, losing the name and putting an
+  identifier into the visible text; page and database mentions became links
+  pointing at a `notion://` address nothing can open. All three are now written
+  as `[Name](notion://user/<id>)` and rebuilt as real mentions on the way back,
+  so the name stays readable and the mention survives.
+- Callout icons other than emoji were replaced with a default. A custom image
+  icon or one of Notion's built-in icons was dropped on read and reinvented as
+  the emoji matching the callout's colour. Both now round-trip. An icon uploaded
+  to Notion still cannot be preserved — its address is temporary — so the
+  callout keeps a default icon and says so, instead of writing back a link that
+  has already expired.
 
 ### Added
 - Test coverage for each fix above, alongside the module it exercises.

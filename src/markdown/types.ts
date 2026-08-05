@@ -48,6 +48,21 @@ export interface MentionRichText {
   href: string | null;
 }
 
+/** Sidecar value standing in for an icon that cannot be written back. */
+export const HOSTED_ICON = "notion-hosted";
+
+/**
+ * Callout icon shapes Notion returns. `file` and `custom_emoji` cannot be
+ * written back — the first is a short-lived signed URL, the second is
+ * workspace-local — so they are marked rather than reconstructed.
+ */
+export type CalloutIcon =
+  | { type: "emoji"; emoji: string }
+  | { type: "external"; external: { url: string } }
+  | { type: "icon"; icon: { name: string; color: string } }
+  | { type: "file"; file: { url: string } }
+  | { type: "custom_emoji"; custom_emoji: { id: string; name?: string } };
+
 export interface EquationRichText {
   type: "equation";
   equation: { expression: string };
@@ -150,7 +165,7 @@ export interface CalloutBlock extends BaseBlock {
   type: "callout";
   callout: {
     rich_text: RichText[];
-    icon: { type: "emoji"; emoji: string } | { type: "external"; external: { url: string } } | null;
+    icon: CalloutIcon | null;
     color: string;
     children?: Block[];
   };

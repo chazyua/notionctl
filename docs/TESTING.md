@@ -390,6 +390,13 @@ Comprehensive test scenarios for notionctl. Use this for manual dogfooding, regr
 - [A] A toggleable heading round-trips at every level with `is_toggleable` and its
       nested children intact; a `<details>` with no marker stays a plain toggle
 - [A] A disclosure title containing `</summary>` or `</details>` survives intact
+- [A] User, page and database mentions round-trip as mentions, not as links, and
+      a person mention shows the name rather than a bare account id
+- [A] A `notion://` URL that is not a valid id stays an ordinary link
+- [A] Callout icons round-trip for emoji, external URL and built-in Notion icons;
+      a Notion-hosted icon falls back to a default and warns
+- [M] A page with mentions and custom callout icons survives `page get` →
+      `page update` with both intact on the Notion side
 - [A] A pathologically indented list (thousands of levels) does not exhaust the
       call stack
 - [M] Large Markdown files (100+ blocks) convert without error

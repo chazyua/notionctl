@@ -15,7 +15,8 @@
  */
 
 import { markdownToRichText } from "./tokenizer.js";
-import type { Block, RichText } from "./types.js";
+import type { Block, CalloutIcon, RichText } from "./types.js";
+import { HOSTED_ICON } from "./types.js";
 
 const ALERT_TYPE_TO_EMOJI: Record<string, string> = {
   NOTE: "💡",
@@ -24,6 +25,27 @@ const ALERT_TYPE_TO_EMOJI: Record<string, string> = {
   IMPORTANT: "❗",
   CAUTION: "🛑",
 };
+
+/**
+ * Rebuild a callout icon from the sidecar the read path wrote. A URL is an
+ * external icon, `notion:<name>:<color>` one of Notion's built-ins, and
+ * anything else an emoji. An icon marked as unreconstructible falls back to the
+ * alert default with a warning rather than writing a URL that has expired.
+ */
+function calloutIcon(value: string | undefined, alertType: string): CalloutIcon {
+  const fallback = { type: "emoji" as const, emoji: ALERT_TYPE_TO_EMOJI[alertType] ?? "💡" };
+  if (!value) return fallback;
+  if (value === HOSTED_ICON) {
+    warnHandler?.(
+      "notionctl: a callout icon uploaded to Notion cannot be written back — its URL is temporary. The callout keeps a default icon; set it again in Notion, or use an image URL.",
+    );
+    return fallback;
+  }
+  if (/^https?:\/\//i.test(value)) return { type: "external", external: { url: value } };
+  const builtin = /^notion:([\w-]+):([\w-]+)$/.exec(value);
+  if (builtin) return { type: "icon", icon: { name: builtin[1]!, color: builtin[2]! } };
+  return { type: "emoji", emoji: value };
+}
 
 const ALERT_TYPE_TO_COLOR: Record<string, string> = {
   NOTE: "blue_background",
@@ -410,7 +432,7 @@ function markdownToBlocksInternal(md: string, ctx: ParseContext, depth: number):
       }
       const calloutData: any = {
         rich_text: calloutRichText,
-        icon: { type: "emoji", emoji: overrideIcon ?? ALERT_TYPE_TO_EMOJI[alertType] ?? "💡" },
+        icon: calloutIcon(overrideIcon, alertType),
         color: overrideColor ?? ALERT_TYPE_TO_COLOR[alertType] ?? "default",
       };
       const calloutPromoted = nestOrPromote(calloutData, calloutChildren, depth, ctx);

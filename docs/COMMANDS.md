@@ -425,6 +425,17 @@ notionctl's Markdown engine handles bidirectional conversion:
 
 **Write (Markdown to Notion):** headings (H1-H3, ATX `#` or setext `===`/`---`), paragraphs, bullet/numbered/to-do lists (nested via 2-space indent), code blocks, tables, blockquotes, dividers, images, bold, italic, strikethrough, inline code, links.
 
+**Mentions.** A person, page or database mention is written as
+`[Name](notion://user/<id>)` (or `notion://page/`, `notion://database/`) and is
+rebuilt as a real mention when the file is written back. Editing the label is
+safe; changing the id changes who or what is mentioned.
+
+**Callout icons.** An icon that the alert type does not already imply is kept in
+a `<!-- icon: ... -->` comment above the callout body: an emoji, an image URL, or
+`notion:<name>:<colour>` for one of Notion's built-in icons. An icon uploaded to
+Notion cannot be written back — its URL expires — so it is marked
+`notion-hosted` and the callout falls back to a default icon with a warning.
+
 **Toggleable headings.** A heading that collapses in Notion is written as a
 `<details>` block preceded by a marker naming its level, so both the toggle and
 its nested content survive a round-trip:

@@ -11,7 +11,7 @@
  * conversion lives in read.ts and write.ts.
  */
 
-import type { RichText, Annotations, TextRichText } from "./types.js";
+import type { RichText, Annotations, TextRichText, MentionRichText } from "./types.js";
 import { DEFAULT_ANNOTATIONS } from "./types.js";
 
 /**
@@ -306,7 +306,7 @@ function runContent(run: RichText): string {
   if (run.type === "equation") return `$${run.equation.expression}$`;
   if (run.type === "mention") {
     const m = run.mention;
-    if (m.type === "user") return `@user:${m.user.id}`;
+    if (m.type === "user") return `[${run.plain_text}](notion://user/${m.user.id})`;
     if (m.type === "page") return `[${run.plain_text}](notion://page/${m.page.id})`;
     if (m.type === "database") return `[${run.plain_text}](notion://database/${m.database.id})`;
     if (m.type === "date") {
@@ -474,7 +474,7 @@ export function markdownToRichText(md: string): RichText[] {
             `notionctl: link URL '${url}' has an unsupported scheme — kept label '${label}' as plain text. Notion accepts: https, http, mailto, tel, notion, ftp, sms.`,
           );
         }
-        runs.push(makeRun(label, state, url));
+        runs.push(makeMentionRun(url, label, state) ?? makeRun(label, state, url));
         i = urlEnd + 1;
         continue;
       }
@@ -650,6 +650,40 @@ function splitLongRuns(runs: RichText[]): RichText[] {
     }
   }
   return result;
+}
+
+const NOTION_MENTION_RE = /^notion:\/\/(user|page|database)\/([0-9a-fA-F-]+)$/;
+
+/**
+ * `notion://user/<id>` and friends are how the read path writes a mention.
+ * Rebuilding the mention run keeps it a mention in Notion — written back as an
+ * ordinary link it would become a URL nothing can follow. Anything that is not
+ * a well-formed id falls through to the normal link handling.
+ */
+function makeMentionRun(url: string, label: string, state: ScannerState): MentionRichText | null {
+  const m = NOTION_MENTION_RE.exec(url);
+  if (!m) return null;
+  const id = m[2]!;
+  if (id.replace(/-/g, "").length !== 32) return null;
+  const kind = m[1] as "user" | "page" | "database";
+  const mention = kind === "user"
+    ? { type: "user" as const, user: { id } }
+    : kind === "page"
+      ? { type: "page" as const, page: { id } }
+      : { type: "database" as const, database: { id } };
+  return {
+    type: "mention",
+    mention,
+    annotations: {
+      ...DEFAULT_ANNOTATIONS,
+      bold: state.bold,
+      italic: state.italic,
+      strikethrough: state.strikethrough,
+      code: state.code,
+    },
+    plain_text: label,
+    href: null,
+  };
 }
 
 function makeRun(content: string, state: ScannerState, linkUrl: string | null): TextRichText {

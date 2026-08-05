@@ -698,7 +698,9 @@ describe("richTextToMarkdown — additional edge cases", () => {
       href: null,
     };
     const md = richTextToMarkdown([mention]);
-    assert.equal(md, "@user:user-123");
+    // The display name stays visible and the id moves into the link, matching
+    // how page and database mentions have always rendered.
+    assert.equal(md, "[John Doe](notion://user/user-123)");
   });
 
   it("equation run renders with dollar signs", () => {
@@ -726,7 +728,7 @@ describe("richTextToMarkdown — additional edge cases", () => {
       text(", welcome!"),
     ];
     const md = richTextToMarkdown(runs);
-    assert.equal(md, "Hello @user:abc, welcome!");
+    assert.equal(md, "Hello [Alice](notion://user/abc), welcome!");
   });
 });
 

@@ -114,15 +114,23 @@ describe("richTextToMarkdown — intraword guard edge cases", () => {
 });
 
 describe("markdownToRichText — link URL type handling", () => {
-  it("notion:// page URL: href is stored, text.link preserves the URL", () => {
-    // notion:// links should be preserved as proper link objects so they survive round-trips
+  it("notion:// page URL rebuilds the mention it came from", () => {
+    // The read path writes a page mention as [Title](notion://page/<id>), so
+    // writing it back must restore the mention rather than store a URL that
+    // Notion cannot follow.
     const runs = markdownToRichText("[My Page](notion://page/abcd1234-ef56-7890-abcd-1234567890ab)");
     assert.equal(runs.length, 1);
     const run = runs[0]!;
-    assert.equal(run.type, "text");
-    if (run.type === "text") {
-      assert.deepEqual(run.text.link, { url: "notion://page/abcd1234-ef56-7890-abcd-1234567890ab" }, "notion:// URL must be preserved as a link");
+    assert.equal(run.type, "mention");
+    if (run.type === "mention" && run.mention.type === "page") {
+      assert.equal(run.mention.page.id, "abcd1234-ef56-7890-abcd-1234567890ab");
+      assert.equal(run.plain_text, "My Page");
     }
+  });
+
+  it("a notion:// URL that is not an id stays an ordinary link", () => {
+    const runs = markdownToRichText("[Not an id](notion://page/nope)");
+    assert.equal(runs[0]!.type, "text");
   });
 
   it("http URL in link produces a proper link object", () => {

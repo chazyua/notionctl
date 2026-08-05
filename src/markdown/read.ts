@@ -13,7 +13,8 @@
 
 import { richTextToMarkdown } from "./tokenizer.js";
 import { isBlockStart } from "./write.js";
-import type { Block, RichText } from "./types.js";
+import type { Block, CalloutIcon, RichText } from "./types.js";
+import { HOSTED_ICON } from "./types.js";
 
 const EMOJI_TO_ALERT_TYPE: Record<string, string> = {
   "💡": "NOTE",
@@ -22,6 +23,21 @@ const EMOJI_TO_ALERT_TYPE: Record<string, string> = {
   "❗": "IMPORTANT",
   "🛑": "CAUTION",
 };
+
+/**
+ * The alert type already carries the icon when it is one of the five emoji GFM
+ * alerts map to; every other icon needs a sidecar or a default replaces it on
+ * the way back. Notion-hosted and custom-emoji icons cannot be rebuilt — the
+ * first is a signed URL that expires, the second is workspace-local — so they
+ * are marked as such and the write path warns instead of inventing one.
+ */
+function calloutIconSidecar(icon: CalloutIcon | null | undefined): string | null {
+  if (!icon) return null;
+  if (icon.type === "emoji") return EMOJI_TO_ALERT_TYPE[icon.emoji] ? null : icon.emoji;
+  if (icon.type === "external") return icon.external.url;
+  if (icon.type === "icon") return `notion:${icon.icon.name}:${icon.icon.color}`;
+  return HOSTED_ICON;
+}
 
 function colorToAlertType(color: string | undefined): string | null {
   if (!color) return null;
@@ -230,8 +246,9 @@ function renderBlock(block: Block, depth: number, numberedIndex: number): string
       const textPrefixed = text.split("\n").map((l) => `> ${l}`).join("\n");
       const lines: string[] = [`> [!${alertType}]`, textPrefixed];
       // Preserve icon/color as sidecar comments only when they can't be inferred from alert type
-      if (emoji && !EMOJI_TO_ALERT_TYPE[emoji]) {
-        lines.splice(1, 0, `<!-- icon: ${emoji} -->`);
+      const iconSidecar = calloutIconSidecar(icon);
+      if (iconSidecar !== null) {
+        lines.splice(1, 0, `<!-- icon: ${iconSidecar} -->`);
       }
       if (block.callout.color && block.callout.color !== "default" && !colorToAlertType(block.callout.color)) {
         lines.splice(1, 0, `<!-- color: ${block.callout.color} -->`);

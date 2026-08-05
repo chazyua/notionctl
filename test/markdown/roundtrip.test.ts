@@ -8,6 +8,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { blocksToMarkdown, markdownToBlocks } from "../../src/markdown/index.js";
+import { setMarkdownWarnHandler } from "../../src/markdown/write.js";
 
 function roundTrip(blocks: unknown[]): unknown[] {
   const md = blocksToMarkdown(blocks as any);
@@ -643,5 +644,79 @@ describe("markers the parser consumes are shielded as prose", () => {
     const title = "x&amp;lt;/summary>y";
     const result = roundTrip([{ id: "1", type: "toggle", has_children: false, toggle: { rich_text: [{ type: "text", text: { content: title, link: null }, plain_text: title, annotations: { bold: false, italic: false, strikethrough: false, underline: false, code: false, color: "default" } }], color: "default" } }]) as any[];
     assert.equal(result[0].toggle.rich_text.map((r: any) => r.plain_text).join(""), title);
+  });
+});
+
+describe("mentions round-trip as mentions", () => {
+  function mention(kind: "user" | "page" | "database", id: string, label: string) {
+    const inner = kind === "user" ? { user: { id } } : kind === "page" ? { page: { id } } : { database: { id } };
+    return [{
+      id: "1", type: "paragraph", has_children: false,
+      paragraph: {
+        rich_text: [{ type: "mention", mention: { type: kind, ...inner }, annotations: { bold: false, italic: false, strikethrough: false, underline: false, code: false, color: "default" }, plain_text: label, href: null }],
+        color: "default",
+      },
+    }];
+  }
+  const ID = "33dd872b-594c-816b-b58b-00025280b6c9";
+
+  for (const kind of ["user", "page", "database"] as const) {
+    it(`a ${kind} mention comes back as a ${kind} mention`, () => {
+      const result = roundTrip(mention(kind, ID, "@Dev Alot")) as any[];
+      const run = result[0].paragraph.rich_text[0];
+      assert.equal(run.type, "mention", "must not degrade to a link");
+      assert.equal(run.mention.type, kind);
+      assert.equal(run.mention[kind].id, ID);
+    });
+  }
+
+  it("a person mention no longer leaks a bare id as visible text", () => {
+    const md = blocksToMarkdown(mention("user", ID, "@Dev Alot") as any);
+    assert.match(md, /@Dev Alot/, "the display name must be visible");
+    assert.doesNotMatch(md, /@user:/, "the raw id must not be the visible text");
+  });
+});
+
+describe("callout icons", () => {
+  function callout(icon: any) {
+    return [{
+      id: "1", type: "callout", has_children: false,
+      callout: {
+        rich_text: [{ type: "text", text: { content: "body", link: null }, plain_text: "body", annotations: { bold: false, italic: false, strikethrough: false, underline: false, code: false, color: "default" } }],
+        icon, color: "default",
+      },
+    }];
+  }
+
+  it("an external icon URL survives", () => {
+    const url = "https://example.com/star.png";
+    const result = roundTrip(callout({ type: "external", external: { url } })) as any[];
+    assert.deepEqual(result[0].callout.icon, { type: "external", external: { url } });
+  });
+
+  it("a built-in Notion icon survives with its colour", () => {
+    const result = roundTrip(callout({ type: "icon", icon: { name: "star", color: "yellow" } })) as any[];
+    assert.deepEqual(result[0].callout.icon, { type: "icon", icon: { name: "star", color: "yellow" } });
+  });
+
+  it("a non-alert emoji icon still survives", () => {
+    const result = roundTrip(callout({ type: "emoji", emoji: "🚀" })) as any[];
+    assert.deepEqual(result[0].callout.icon, { type: "emoji", emoji: "🚀" });
+  });
+
+  it("an alert-mapped emoji needs no sidecar", () => {
+    const md = blocksToMarkdown(callout({ type: "emoji", emoji: "⚠️" }) as any);
+    assert.doesNotMatch(md, /<!-- icon:/);
+    assert.match(md, /\[!WARNING\]/);
+  });
+
+  it("a Notion-hosted icon falls back with a warning rather than a dead URL", () => {
+    const warnings: string[] = [];
+    setMarkdownWarnHandler((m) => warnings.push(m));
+    const result = roundTrip(callout({ type: "file", file: { url: "https://s3.example/signed?expires=1" } })) as any[];
+    setMarkdownWarnHandler(null);
+    assert.equal(result[0].callout.icon.type, "emoji", "must not write back an expiring URL");
+    assert.equal(warnings.length, 1);
+    assert.match(warnings[0]!, /cannot be written back/i);
   });
 });
