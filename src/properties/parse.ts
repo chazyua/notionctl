@@ -158,11 +158,10 @@ export function parseProperty(
     case "phone_number":
       return { phone_number: value };
     case "people": {
-      if (value.startsWith("[") && value.endsWith("]")) {
-        const items = parseList(value);
-        return { people: items.map((item) => resolvePersonRef(item, key)) };
-      }
-      return { people: [resolvePersonRef(value, key)] };
+      // Brackets are optional, as for multi_select — an unbracketed
+      // `user:a,user:b` used to be swallowed into one malformed id.
+      const items = parseList(value);
+      return { people: items.map((item) => resolvePersonRef(item, key)) };
     }
     case "files": {
       const prefix = /^(url|file):/.exec(value);
@@ -183,11 +182,8 @@ export function parseProperty(
       );
     }
     case "relation": {
-      if (value.startsWith("[") && value.endsWith("]")) {
-        const items = parseList(value);
-        return { relation: items.map((item) => resolveRelationRef(item, key)) };
-      }
-      return { relation: [resolveRelationRef(value, key)] };
+      const items = parseList(value);
+      return { relation: items.map((item) => resolveRelationRef(item, key)) };
     }
     default:
       throw new NotionCliError(
@@ -202,8 +198,13 @@ function resolvePersonRef(ref: string, propKey: string): { id: string } {
   if (canon) return { id: canon[1]! };
   throw new NotionCliError(
     ErrorCode.INVALID_PROPERTY,
-    `People property '${propKey}' requires 'user:<id>' format (at-name lookup not yet implemented in V1)`,
-    { suggestions: ["Use 'user:<uuid>' to specify a user by ID"] },
+    `People property '${propKey}' needs 'user:<id>', got: ${ref}`,
+    {
+      suggestions: [
+        "Write one person as user:<id>, several as user:<id>,user:<id> — 'notionctl user list' shows the ids.",
+        `Looking someone up by name is not supported. Pass an empty value (--prop '${propKey}=') to clear the property.`,
+      ],
+    },
   );
 }
 
@@ -212,8 +213,13 @@ function resolveRelationRef(ref: string, propKey: string): { id: string } {
   if (canon) return { id: canon[1]! };
   throw new NotionCliError(
     ErrorCode.INVALID_PROPERTY,
-    `Relation property '${propKey}' requires 'page:<id>' format (title lookup not yet implemented in V1)`,
-    { suggestions: ["Use 'page:<uuid>' to specify a related page by ID"] },
+    `Relation property '${propKey}' needs 'page:<id>', got: ${ref}`,
+    {
+      suggestions: [
+        "Write one relation as page:<id>, several as page:<id>,page:<id> — a Notion URL works as the id.",
+        `Looking a page up by title is not supported. Pass an empty value (--prop '${propKey}=') to clear the property.`,
+      ],
+    },
   );
 }
 

@@ -235,6 +235,12 @@ Comprehensive test scenarios for notionctl. Use this for manual dogfooding, regr
 ### 3.7 db row update
 - [M] `--prop "Status=Done"` updates a property
 - [M] Multiple `--prop` flags in one command
+- [A] `people` and `relation` accept several ids separated by commas, with or
+      without square brackets, instead of collapsing them into one bad id
+- [A] An empty value clears `people` and `relation`, as it does `multi_select`
+- [A] A people/relation value missing its `user:`/`page:` prefix names the
+      offending item and shows the accepted forms
+- [M] `--prop "Assignee=user:<id>,user:<id>"` is accepted by the live API
 - [M] `--dry-run` shows payload
 
 ### 3.8 db row delete

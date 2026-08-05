@@ -122,6 +122,12 @@ notionctl db row update <id> --prop "Status=Done"
 
 Filter DSL supports `=`, `>`, `<`, `>=`, `<=` across select, number, date, text, checkbox, and multi_select types. For complex filters: `--filter-json @filter.json`.
 
+Property values follow the column type: `Tags=a,b` for multi-select,
+`Due=2026-04-15` or `Due=start..end` for dates, `Assignee=user:<id>` for people
+and `Blocks=page:<id>` for relations — both accepting several ids separated by
+commas. An empty value clears the property. Full table in
+[docs/COMMANDS.md](docs/COMMANDS.md).
+
 ### Blocks, Files, Comments, Users
 
 ```sh

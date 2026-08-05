@@ -230,7 +230,29 @@ notionctl db row update <page-id> --prop "Status=Done" --prop "Priority=P0"
 notionctl db row update <page-id> --prop "Points="          # empty value clears the property
 ```
 
-An empty value clears `number`, `select`, `status`, and `date` properties.
+An empty value clears the property.
+
+**Property value syntax for `--prop Name=value`:**
+
+| Type | Value | Example |
+|------|-------|---------|
+| title, rich_text, url, email, phone_number | the text itself | `--prop "Name=Ship v2"` |
+| number | a number | `--prop "Points=3"` |
+| checkbox | `true` / `false` | `--prop "Done=true"` |
+| select, status | the option name | `--prop "Status=Done"` |
+| multi_select | comma-separated names | `--prop "Tags=urgent,backend"` |
+| date | a date, or `start..end` | `--prop "Due=2026-04-15"` |
+| people | `user:<id>`, comma-separated for several | `--prop "Assignee=user:<id>,user:<id>"` |
+| relation | `page:<id>`, comma-separated for several | `--prop "Blocks=page:<id>,page:<id>"` |
+| files | `url:<https-url>` | `--prop "Spec=url:https://example.com/a.pdf"` |
+
+`people` and `relation` take ids, not names — `notionctl user list` prints user
+ids, and a page id may be pasted as a Notion URL. Square brackets are optional:
+`[user:a, user:b]` and `user:a,user:b` mean the same thing. Wrap a value
+containing a comma in quotes.
+
+An empty value clears any property that can be empty — `--prop "Assignee="`
+removes everyone, `--prop "Points="` clears the number.
 
 ### db row delete
 

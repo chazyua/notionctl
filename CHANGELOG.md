@@ -150,6 +150,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   front-matter, or with an unclosed `---` opener, is unaffected; a file meant to
   open with a horizontal rule should use `***`.
 
+**Property values**
+- Setting more than one person or relation without square brackets silently
+  produced one malformed id: `--prop "Assignee=user:a,user:b"` was read as a
+  single user called `a,user:b`, and Notion rejected the row with an error that
+  did not say why. Brackets are now optional, matching `multi_select`, and an
+  empty value clears the property rather than failing. The error for a value
+  missing its prefix now names the offending item and shows the accepted forms.
+- The `user:` / `page:` prefixes and the bracket syntax were not documented
+  anywhere. Every property type now has its value syntax in the command
+  reference.
+
 **Markdown conversion**
 - Setext headings were mangled. `Title` followed by `===` became a single
   paragraph with the underline in the text; `Title` followed by `---` became a

@@ -301,3 +301,50 @@ describe("files property url: with trailing slash", () => {
     });
   });
 });
+
+describe("people and relation accept several values without brackets", () => {
+  const schema: Record<string, PropertySchema> = {
+    Assignee: { type: "people" },
+    Blocks: { type: "relation" },
+  };
+  const A = "11111111-1111-1111-1111-111111111111";
+  const B = "22222222-2222-2222-2222-222222222222";
+
+  it("an unbracketed people list is split, not swallowed into one id", () => {
+    // A greedy `^user:(.+)$` used to produce a single id of "A,user:B",
+    // which Notion rejected with a confusing error.
+    const out = parseProperty(schema, "Assignee", `user:${A},user:${B}`) as any;
+    assert.deepEqual(out.people, [{ id: A }, { id: B }]);
+  });
+
+  it("an unbracketed relation list is split too", () => {
+    const out = parseProperty(schema, "Blocks", `page:${A},page:${B}`) as any;
+    assert.deepEqual(out.relation, [{ id: A }, { id: B }]);
+  });
+
+  it("the bracketed form still works", () => {
+    const out = parseProperty(schema, "Assignee", `[user:${A}, user:${B}]`) as any;
+    assert.deepEqual(out.people, [{ id: A }, { id: B }]);
+  });
+
+  it("a single value still works", () => {
+    assert.deepEqual((parseProperty(schema, "Assignee", `user:${A}`) as any).people, [{ id: A }]);
+    assert.deepEqual((parseProperty(schema, "Blocks", `page:${A}`) as any).relation, [{ id: A }]);
+  });
+
+  it("an empty value clears the property, as it does for multi_select", () => {
+    assert.deepEqual((parseProperty(schema, "Assignee", "") as any).people, []);
+    assert.deepEqual((parseProperty(schema, "Blocks", "") as any).relation, []);
+  });
+
+  it("a value missing its prefix reports the offending item and how to fix it", () => {
+    assert.throws(
+      () => parseProperty(schema, "Assignee", `user:${A},${B}`),
+      (err: any) => {
+        assert.match(err.message, new RegExp(B), "names the item that failed");
+        assert.ok(err.suggestions.some((s: string) => s.includes("user:<id>,user:<id>")));
+        return true;
+      },
+    );
+  });
+});
