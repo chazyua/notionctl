@@ -116,6 +116,18 @@ describe("extractFrontmatter — malformed blocks are distinguishable", () => {
     assert.match(body, /Real content/);
   });
 
+  it("a block carrying notion_id is always front-matter, whatever its shape", () => {
+    // Failing to see notion_id is what makes page sync create a duplicate and
+    // orphan the original, so the id wins over the horizontal-rule heuristic.
+    const { data } = extractFrontmatter("---\n\nnotion_id: abc\n---\n\nBody\n");
+    assert.equal(data.notion_id, "abc");
+  });
+
+  it("every shape our own writer produces is recognised", () => {
+    const written = reinsertFrontmatter({ notion_id: "abc", notion_hash: "sha256:x" }, "Body\n");
+    assert.equal(extractFrontmatter(written).data.notion_id, "abc");
+  });
+
   it("real front-matter still parses", () => {
     const { data, body } = extractFrontmatter("---\ntitle: X\nnotion_id: abc\n---\n\nBody\n");
     assert.equal(data.title, "X");
