@@ -89,8 +89,14 @@ export async function authDoctorCommand(_ctx: { args: string[] }): Promise<Comma
     });
   }
 
-  // 2. Config file permissions (only if using config file)
-  if (tokenSource === AuthSource.CONFIG_FILE) {
+  // 2. Config file permissions.
+  //
+  // Also checked when the token failed to load, not only when it loaded from
+  // the file. loadToken() refuses any mode other than 0600, so gating the whole
+  // block on a successful load made the failing branch unreachable — and that
+  // branch is the one carrying the chmod command that fixes it. When the token
+  // came from the environment the file is not in use, so it is left alone.
+  if (tokenSource === AuthSource.CONFIG_FILE || tokenSource === null) {
     try {
       const st = await stat(getConfigPath());
       const mode = st.mode & 0o777;
@@ -104,7 +110,8 @@ export async function authDoctorCommand(_ctx: { args: string[] }): Promise<Comma
         });
       }
     } catch {
-      checks.push({ check: "Config file permissions", status: "warn", detail: "Could not stat config file" });
+      // No config file at all is not a fault: the token may simply be unset, or
+      // meant to come from NOTION_TOKEN. The token check above already says so.
     }
 
     // Config dir permissions
@@ -165,8 +172,15 @@ export async function authDoctorCommand(_ctx: { args: string[] }): Promise<Comma
           detail: "No pages accessible — connect the integration to pages via ··· → Connections in Notion",
         });
       }
-    } catch {
-      checks.push({ check: "Page access", status: "warn", detail: "Could not verify page access" });
+    } catch (err) {
+      // Say what went wrong — a 403, a timeout and a malformed response all
+      // used to read the same, and telling them apart is this command's job.
+      const code = err instanceof NotionCliError ? err.code : "UNKNOWN";
+      checks.push({
+        check: "Page access",
+        status: "warn",
+        detail: `Could not verify page access — ${code}: ${(err as Error).message}`,
+      });
     }
   }
 

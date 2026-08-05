@@ -48,6 +48,10 @@ Comprehensive test scenarios for notionctl. Use this for manual dogfooding, regr
 ### 1.5 Auth Doctor
 - [M] Reports token source (env var vs config file)
 - [M] Reports config file permissions (pass/fail for 0600)
+- [A] A config file with the wrong permissions is reported on its own line, with
+      the chmod command, even though the token itself failed to load
+- [A] A failing page-access check names the cause rather than saying only that
+      it could not be verified
 - [M] Reports API connectivity and integration name
 - [M] Reports workspace name
 - [M] Reports page access (at least one page accessible)

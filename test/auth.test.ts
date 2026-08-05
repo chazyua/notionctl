@@ -468,3 +468,73 @@ describe("auth status / doctor report failure through the exit code", () => {
     assert.doesNotMatch(output, /\[FAIL\]/);
   });
 });
+
+describe("auth doctor — diagnostics that used to be unreachable or blank", () => {
+  const ANN = { "content-type": "application/json" };
+
+  it("reports the cause when the page-access check fails", async () => {
+    // A 403, a timeout and a malformed response all used to read
+    // "Could not verify page access", which is no diagnosis at all.
+    const { authDoctorCommand } = await import("../src/commands/auth.js");
+    const { setTokenProvider, resetForTesting } = await import("../src/http.js");
+    const { AuthSource } = await import("../src/auth.js");
+    setTokenProvider(async () => ({ token: "ntn_test", source: AuthSource.ENV }));
+    const originalEnvToken = process.env.NOTION_TOKEN;
+    process.env.NOTION_TOKEN = "ntn_test";
+    const originalFetch = globalThis.fetch;
+    let call = 0;
+    globalThis.fetch = (async () => {
+      call++;
+      // /users/me succeeds, /search is forbidden.
+      return call === 1
+        ? new Response(JSON.stringify({ name: "it", bot: { workspace_name: "ws" } }), { status: 200, headers: ANN })
+        : new Response(JSON.stringify({ message: "Insufficient permissions." }), { status: 403, headers: ANN });
+    }) as typeof globalThis.fetch;
+    try {
+      const result = await authDoctorCommand({ args: [] });
+      const output = typeof result === "string" ? result : (result as { output: string }).output;
+      assert.match(output, /Could not verify page access/);
+      assert.match(output, /Insufficient permissions/, "the real reason must be reported");
+    } finally {
+      globalThis.fetch = originalFetch;
+      if (originalEnvToken === undefined) delete process.env.NOTION_TOKEN;
+      else process.env.NOTION_TOKEN = originalEnvToken;
+      resetForTesting();
+    }
+  });
+
+  it("reports insecure config permissions with the command that fixes them", async () => {
+    // loadToken() refuses any mode but 0600, so gating the permission check on
+    // a successful load made the failing branch unreachable — the one case a
+    // doctor exists for.
+    const { mkdtemp, writeFile, chmod, mkdir } = await import("node:fs/promises");
+    const { tmpdir } = await import("node:os");
+    const { join, dirname } = await import("node:path");
+    const dir = await mkdtemp(join(tmpdir(), "nctl-doctor-"));
+
+    const originalXdg = process.env.XDG_CONFIG_HOME;
+    const originalEnvToken = process.env.NOTION_TOKEN;
+    process.env.XDG_CONFIG_HOME = dir;
+    delete process.env.NOTION_TOKEN;
+    try {
+      const { getConfigPath } = await import("../src/auth.js");
+      // Ask the module where it will look rather than assuming: an earlier test
+      // may have left an active profile set, which changes the filename.
+      const cfgPath = getConfigPath();
+      await mkdir(dirname(cfgPath), { recursive: true, mode: 0o700 });
+      await writeFile(cfgPath, JSON.stringify({ token: "ntn_x" }));
+      await chmod(cfgPath, 0o644);
+
+      const { authDoctorCommand } = await import("../src/commands/auth.js");
+      const result = await authDoctorCommand({ args: [] });
+      const output = typeof result === "string" ? result : (result as { output: string }).output;
+      assert.match(output, /Config file permissions/, `the check must actually run; got:\n${output}`);
+      assert.match(output, /mode 0644/);
+      assert.match(output, /chmod 600/, "the report must say how to fix it");
+    } finally {
+      if (originalXdg === undefined) delete process.env.XDG_CONFIG_HOME;
+      else process.env.XDG_CONFIG_HOME = originalXdg;
+      if (originalEnvToken !== undefined) process.env.NOTION_TOKEN = originalEnvToken;
+    }
+  });
+});

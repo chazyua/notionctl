@@ -102,6 +102,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   minute per attempt. Waits are now reported.
 - Error messages could carry terminal control sequences from remote content.
 
+**Diagnostics**
+- `auth doctor` never reported insecure config file permissions. The check only
+  ran once the token had loaded, but loading refuses any mode other than 0600 —
+  so the one case it existed for could not reach it. A file with the wrong
+  permissions now gets its own line, with the `chmod` command that fixes it.
+- `auth doctor` reported a bare "Could not verify page access" for a permission
+  error, a timeout and a malformed response alike. It now names the cause, the
+  way the connectivity check above it already did.
+
 **Misleading success**
 - `auth status` and `auth doctor` exited 0 even when they reported failure, so
   `notionctl auth status || notionctl auth login` never ran the fallback and a
