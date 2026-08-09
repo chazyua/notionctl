@@ -70,7 +70,14 @@ export function classifySyncState(input: ClassifyInput): SyncState {
   if (input.remoteEditedAt && typeof lastSyncedAt === "string") {
     const remoteTime = new Date(input.remoteEditedAt).getTime();
     const syncTime = new Date(lastSyncedAt).getTime();
-    if (Number.isFinite(remoteTime) && Number.isFinite(syncTime) && remoteTime > syncTime) {
+    // A baseline that is present but unreadable is not the same as no baseline.
+    // A truncated or hand-mangled `notion_synced_at` — still valid YAML, so
+    // nothing upstream rejects it — parsed to NaN and skipped the comparison
+    // entirely, so the push went ahead and overwrote genuine remote edits with
+    // no warning and no --force. Fail closed, the same way an unreadable remote
+    // does; --force is still the way through.
+    if (!Number.isFinite(syncTime)) return SyncState.DRIFT;
+    if (Number.isFinite(remoteTime) && remoteTime > syncTime) {
       return SyncState.DRIFT;
     }
   }

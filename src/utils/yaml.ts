@@ -38,12 +38,26 @@ export function parseYaml(input: string): YamlObject {
       throw new Error(`Invalid YAML line (no key): ${rawLine}`);
     }
 
-    const key = line.slice(0, colonIdx).trim();
+    const key = parseKey(line.slice(0, colonIdx).trim());
     const rawValue = line.slice(colonIdx + 1).trim();
+    // Last-wins on a repeated key is how a second `notion_id:` line would
+    // override the real one and redirect the next sync. Nothing legitimate
+    // emits a duplicate, so refuse rather than silently pick.
+    if (Object.prototype.hasOwnProperty.call(result, key)) {
+      throw new Error(`Duplicate key '${key}'`);
+    }
     result[key] = parseValue(rawValue);
   }
 
   return result;
+}
+
+/** Undo `serializeKey`. A quoted key is one that could not be written bare. */
+function parseKey(raw: string): string {
+  if (raw.length >= 2 && raw.startsWith('"') && raw.endsWith('"')) {
+    return unescapeDoubleQuoted(raw.slice(1, -1));
+  }
+  return raw;
 }
 
 function findUnquotedColon(line: string): number {
@@ -174,9 +188,34 @@ function parseFlowSequence(inner: string): string[] {
 export function stringifyYaml(obj: YamlObject): string {
   const lines: string[] = [];
   for (const [key, value] of Object.entries(obj)) {
-    lines.push(`${key}: ${serializeValue(value)}`);
+    lines.push(`${serializeKey(key)}: ${serializeValue(value)}`);
   }
   return lines.join("\n");
+}
+
+/**
+ * Keys need the same protection values have always had. A key is a Notion
+ * property name, which is free text: `Ref: x` emitted bare re-parsed as key
+ * `Ref` with value `x: <value>`, silently renaming the column, and a name
+ * carrying a newline emitted a whole extra line — a second `notion_id:` that
+ * overrode the real one and pointed the next sync somewhere else, straight
+ * past the RESERVED_FRONTMATTER_KEYS guard.
+ */
+function serializeKey(key: string): string {
+  if (key.length === 0) return '""';
+  // A leading '#' would be read back as a comment line; a leading quote or
+  // '[' would be read as a quoted or bracketed token rather than a key.
+  //
+  // An apostrophe anywhere, not just leading: findUnquotedColon treats one as
+  // opening a quoted span, so a column named `Owner's Notes` emitted bare left
+  // the separating colon inside that span and the line read back as "no key".
+  // extractFrontmatter then reports the whole block malformed and discards it,
+  // notion_id included, which makes `page sync` refuse a file `page get` had
+  // just written — with no --force to get past it.
+  if (/[:\n\r"\\']/.test(key) || key.trim() !== key || /^[#[]/.test(key)) {
+    return `"${escapeDoubleQuoted(key)}"`;
+  }
+  return key;
 }
 
 function serializeValue(value: YamlValue): string {

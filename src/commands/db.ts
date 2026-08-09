@@ -58,6 +58,7 @@ export async function dbSchemaCommand(ctx: { args: string[] }): Promise<string> 
   if (positional.length === 0) {
     throw new NotionCliError(ErrorCode.USAGE, "Usage: notionctl db schema <id>");
   }
+  rejectExtraPositionals(positional, 1);
   const id = resolvePageId(positional[0]!);
   const { schema } = await fetchSchema(id);
   const format = chooseFormat(flags.get("format") as Format | undefined, {
@@ -248,11 +249,31 @@ export function parseSimpleSort(expr: string, schema: Record<string, PropertySch
   };
 }
 
+/**
+ * Render one property value for a table or CSV cell.
+ *
+ * List values are joined with ", ", which made a single option containing a
+ * comma ("Bug, Regression") indistinguishable from two options — and feeding
+ * that cell back through `--prop` really did create two. Quoting the items
+ * that contain a comma matches what the --prop list parser reads back.
+ */
+function formatCell(value: unknown): string {
+  if (value === null || value === undefined) return "";
+  if (Array.isArray(value)) {
+    return value
+      .map((v) => String(v))
+      .map((v) => (v.includes(",") || v.includes('"') ? `"${v.replace(/"/g, '\\"')}"` : v))
+      .join(", ");
+  }
+  return typeof value === "string" ? value : String(value);
+}
+
 export async function dbQueryCommand(ctx: { args: string[] }): Promise<string> {
   const { flags, repeated, positional } = parseFlags(ctx.args);
   if (positional.length === 0) {
     throw new NotionCliError(ErrorCode.USAGE, "Usage: notionctl db query <id> [--filter ...] [--sort ...]");
   }
+  rejectExtraPositionals(positional, 1);
   const id = resolvePageId(positional[0]!);
 
   const filterFlags = repeated.get("filter") ?? [];
@@ -306,8 +327,7 @@ export async function dbQueryCommand(ctx: { args: string[] }): Promise<string> {
   const rows = res.results.map((r) => {
     const row: string[] = [r.id];
     for (const name of Object.keys(schema)) {
-      const rendered = renderProperty(r.properties[name]);
-      row.push(rendered === null || rendered === undefined ? "" : Array.isArray(rendered) ? rendered.join(", ") : typeof rendered === "string" ? rendered : String(rendered));
+      row.push(formatCell(renderProperty(r.properties[name])));
     }
     return row;
   });
@@ -400,7 +420,8 @@ export function parseColumnSpec(spec: string): { name: string; schema: Record<st
 }
 
 export async function dbCreateCommand(ctx: { args: string[] }): Promise<string> {
-  const { flags, repeated } = parseFlags(ctx.args);
+  const { flags, repeated, positional } = parseFlags(ctx.args);
+  rejectExtraPositionals(positional, 0);
   const parent = flags.get("parent");
   const title = flags.get("title");
   if (!parent || !title) {
@@ -501,12 +522,30 @@ export async function dbUpdateCommand(ctx: { args: string[] }): Promise<string> 
 
   const properties: Record<string, unknown> = {};
 
+  // Two schema flags naming the same column silently resolved by write order:
+  // `--remove-prop X --rename-prop X=Y` renamed X instead of removing it, and
+  // because the --yes gate below inspects the assembled payload it never fired
+  // either. Refuse the ambiguity instead of picking a winner.
+  const claimedBy = new Map<string, string>();
+  const claim = (name: string, flag: string): void => {
+    const prior = claimedBy.get(name);
+    if (prior !== undefined) {
+      throw new NotionCliError(
+        ErrorCode.USAGE,
+        `Property '${name}' is named by both --${prior} and --${flag}. Apply one change per column per run.`,
+      );
+    }
+    claimedBy.set(name, flag);
+  };
+
   for (const raw of repeated.get("add-prop") ?? []) {
     const { name, schema } = parseColumnSpec(raw);
+    claim(name, "add-prop");
     properties[name] = schema;
   }
 
   for (const name of repeated.get("remove-prop") ?? []) {
+    claim(name.trim(), "remove-prop");
     properties[name.trim()] = null;
   }
 
@@ -520,6 +559,7 @@ export async function dbUpdateCommand(ctx: { args: string[] }): Promise<string> 
     if (!oldName || !newName) {
       throw new NotionCliError(ErrorCode.USAGE, `--rename-prop expects Old=New with non-empty values`);
     }
+    claim(oldName, "rename-prop");
     properties[oldName] = { name: newName };
   }
 
@@ -528,7 +568,13 @@ export async function dbUpdateCommand(ctx: { args: string[] }): Promise<string> 
     const raw = schemaJson.startsWith("@")
       ? await readFileText(schemaJson.slice(1), "schema JSON")
       : schemaJson;
-    Object.assign(properties, parseJsonObject(raw, "--schema-json"));
+    // Through claim() like every other flag. Merging straight in let a
+    // --schema-json key silently overrule a --remove-prop the user had already
+    // confirmed with --yes: the column survived and the command reported
+    // success, because the --yes gate only inspects the assembled payload.
+    const fromJson = parseJsonObject(raw, "--schema-json");
+    for (const name of Object.keys(fromJson)) claim(name, "schema-json");
+    Object.assign(properties, fromJson);
   }
 
   const hasPropertyChanges = Object.keys(properties).length > 0;
@@ -580,6 +626,7 @@ export async function dbRowGetCommand(ctx: { args: string[] }): Promise<string> 
   if (positional.length === 0) {
     throw new NotionCliError(ErrorCode.USAGE, "Usage: notionctl db row get <page-id>");
   }
+  rejectExtraPositionals(positional, 1);
   const id = resolvePageId(positional[0]!);
   const page = await fetchWith404Hint(
     () => notionRequest<{ properties: Record<string, unknown> }>("GET", `/pages/${id}`),
@@ -611,6 +658,7 @@ export async function dbRowCreateCommand(ctx: { args: string[] }): Promise<strin
   if (positional.length === 0) {
     throw new NotionCliError(ErrorCode.USAGE, "Usage: notionctl db row create <db-id> [--prop Key=value ...]");
   }
+  rejectExtraPositionals(positional, 1);
   const dbId = resolvePageId(positional[0]!);
   const { schema } = await fetchSchema(dbId);
 
@@ -679,6 +727,7 @@ export async function dbRowUpdateCommand(ctx: { args: string[] }): Promise<strin
   if (positional.length === 0) {
     throw new NotionCliError(ErrorCode.USAGE, "Usage: notionctl db row update <page-id> [--prop Key=value ...]");
   }
+  rejectExtraPositionals(positional, 1);
   const pageId = resolvePageId(positional[0]!);
   const page = await fetchWith404Hint(
     () => notionRequest<{ parent: { type: string; database_id?: string; data_source_id?: string } }>("GET", `/pages/${pageId}`),

@@ -50,7 +50,15 @@ async function readStdinToken(): Promise<string> {
   return raw.trim().split(/\r?\n/)[0] ?? "";
 }
 
-export async function authSetCommand(_ctx: { args: string[] }): Promise<string> {
+export async function authSetCommand(ctx: { args: string[] }): Promise<string> {
+  const { flags, positional } = parseFlags(ctx.args);
+  rejectExtraPositionals(positional, 0);
+  // Checked before stdin is read: this command overwrites the stored token, so
+  // --dry-run has to stop it like every other write, and a preview must not
+  // sit waiting for input it is never going to use.
+  if (getBooleanFlag(flags, "dry-run")) {
+    return renderJson({ action: "auth set", path: getConfigPath(), wouldOverwrite: true });
+  }
   const token = await readStdinToken();
   if (!token) {
     throw new NotionCliError(ErrorCode.USAGE, "No token provided");
@@ -59,7 +67,10 @@ export async function authSetCommand(_ctx: { args: string[] }): Promise<string> 
   return renderJson({ saved: true, path: getConfigPath() });
 }
 
-export async function authStatusCommand(_ctx: { args: string[] }): Promise<CommandResult> {
+export async function authStatusCommand(ctx: { args: string[] }): Promise<CommandResult> {
+  const { flags, positional } = parseFlags(ctx.args);
+  rejectExtraPositionals(positional, 0);
+  assertJsonOnlyFormat(flags, "auth status");
   try {
     const me = await notionRequest<{ name?: string; bot?: unknown }>("GET", "/users/me");
     return renderJson({ valid: true, name: me.name ?? "(unknown)" });
@@ -73,7 +84,28 @@ export async function authStatusCommand(_ctx: { args: string[] }): Promise<Comma
   }
 }
 
-export async function authDoctorCommand(_ctx: { args: string[] }): Promise<CommandResult> {
+/**
+ * README promises `--format` on every command. These four produce one shape
+ * only, and silently ignoring the flag meant `--format table` looked like it
+ * had worked. Accept the format they do produce, refuse the rest.
+ */
+function assertJsonOnlyFormat(flags: Map<string, string>, command: string): void {
+  const requested = flags.get("format");
+  if (requested !== undefined && requested !== "json") {
+    throw new NotionCliError(
+      ErrorCode.USAGE,
+      `${command} only supports --format json.`,
+    );
+  }
+}
+
+export async function authDoctorCommand(ctx: { args: string[] }): Promise<CommandResult> {
+  const { flags, positional } = parseFlags(ctx.args);
+  rejectExtraPositionals(positional, 0);
+  const format = flags.get("format");
+  if (format !== undefined && format !== "json" && format !== "table") {
+    throw new NotionCliError(ErrorCode.USAGE, "auth doctor supports --format json or table.");
+  }
   const checks: Array<{ check: string; status: "pass" | "fail" | "warn"; detail: string }> = [];
 
   // 1. Token source
@@ -219,6 +251,13 @@ export async function authDoctorCommand(_ctx: { args: string[] }): Promise<Comma
   const failed = checks.filter((c) => c.status === "fail").length;
   const warned = checks.filter((c) => c.status === "warn").length;
 
+  if (format === "json") {
+    return {
+      output: scrub(renderJson({ checks, passed, failed, warnings: warned })),
+      exitCode: failed > 0 ? EXIT_CODES.AUTH : 0,
+    };
+  }
+
   const lines: string[] = [];
   for (const c of checks) {
     const icon = c.status === "pass" ? "OK" : c.status === "fail" ? "FAIL" : "WARN";
@@ -249,8 +288,15 @@ function oneLine(text: string): string {
   return text.replace(/\s*[\r\n]+\s*/g, " ");
 }
 
-export async function authListCommand(_ctx: { args: string[] }): Promise<string> {
+export async function authListCommand(ctx: { args: string[] }): Promise<string> {
+  const { flags, positional } = parseFlags(ctx.args);
+  rejectExtraPositionals(positional, 0);
+  const format = flags.get("format");
+  if (format !== undefined && format !== "json" && format !== "table") {
+    throw new NotionCliError(ErrorCode.USAGE, "auth list supports --format json or table.");
+  }
   const profiles = await listProfiles();
+  if (format === "json") return renderJson({ profiles });
   if (profiles.length === 0) {
     return "No profiles configured. Run 'notionctl auth set' to create one.";
   }
@@ -307,7 +353,8 @@ function openBrowser(url: string): void {
 }
 
 export async function authLoginCommand(ctx: { args: string[] }): Promise<string> {
-  const { flags } = parseFlags(ctx.args);
+  const { flags, positional } = parseFlags(ctx.args);
+  rejectExtraPositionals(positional, 0);
   const clientId = flags.get("client-id") ?? process.env.NOTION_CLIENT_ID;
   const clientSecret = flags.get("client-secret") ?? process.env.NOTION_CLIENT_SECRET;
 
@@ -330,6 +377,13 @@ export async function authLoginCommand(ctx: { args: string[] }): Promise<string>
     throw new NotionCliError(ErrorCode.USAGE, `Invalid port: ${flags.get("port")}`);
   }
 
+  // This flow ends by writing the token to the config file, so it is a write
+  // like any other and --dry-run has to stop it — before a browser is opened
+  // and a listener bound, not after.
+  if (getBooleanFlag(flags, "dry-run")) {
+    return renderJson({ action: "auth login", port, path: getConfigPath(), wouldOverwrite: true });
+  }
+
   const state = randomBytes(16).toString("hex");
   const redirectUri = `http://localhost:${port}/callback`;
 
@@ -345,8 +399,34 @@ export async function authLoginCommand(ctx: { args: string[] }): Promise<string>
       fn();
     };
 
+    /**
+     * End the response, then settle once the bytes are actually out.
+     *
+     * Settling immediately after `res.end()` closed the server — and, on the
+     * success path, exited the process — while the response was still buffered,
+     * so the browser showed a connection error instead of the page telling the
+     * user the login had worked.
+     */
+    const endThen = (res: import("node:http").ServerResponse, html: string, fn: () => void) => {
+      res.writeHead(200, { "Content-Type": "text/html" });
+      res.end(html, () => settle(server, fn));
+    };
+
     let requestCount = 0;
-    const server = createServer(async (req, res) => {
+    const server = createServer((req, res) => {
+      // An async handler that throws is an unhandled rejection: it kills the
+      // process and leaves this promise unsettled with the port still bound.
+      // Nothing below is expected to throw, which is exactly why it was worth
+      // catching — the failure mode is silent.
+      void handleCallback(req, res).catch((err: unknown) => {
+        settle(server, () => reject(err));
+      });
+    });
+
+    const handleCallback = async (
+      req: import("node:http").IncomingMessage,
+      res: import("node:http").ServerResponse,
+    ): Promise<void> => {
       if (++requestCount > 10) {
         res.writeHead(429);
         res.end();
@@ -366,26 +446,20 @@ export async function authLoginCommand(ctx: { args: string[] }): Promise<string>
 
       const error = url.searchParams.get("error");
       if (error) {
-        res.writeHead(200, { "Content-Type": "text/html" });
-        res.end(oauthHtml("Authorization Failed", `Error: ${error}`));
-        settle(server, () =>
+        endThen(res, oauthHtml("Authorization Failed", `Error: ${error}`), () =>
           reject(new NotionCliError(ErrorCode.AUTH_INVALID, `OAuth denied: ${error}`)));
         return;
       }
 
       if (url.searchParams.get("state") !== state) {
-        res.writeHead(200, { "Content-Type": "text/html" });
-        res.end(oauthHtml("Authorization Failed", "State mismatch."));
-        settle(server, () =>
+        endThen(res, oauthHtml("Authorization Failed", "State mismatch."), () =>
           reject(new NotionCliError(ErrorCode.AUTH_INVALID, "OAuth state mismatch")));
         return;
       }
 
       const code = url.searchParams.get("code");
       if (!code) {
-        res.writeHead(200, { "Content-Type": "text/html" });
-        res.end(oauthHtml("Authorization Failed", "No authorization code received."));
-        settle(server, () =>
+        endThen(res, oauthHtml("Authorization Failed", "No authorization code received."), () =>
           reject(new NotionCliError(ErrorCode.AUTH_INVALID, "No authorization code in callback")));
         return;
       }
@@ -393,16 +467,13 @@ export async function authLoginCommand(ctx: { args: string[] }): Promise<string>
       try {
         const token = await exchangeOAuthCode(clientId!, clientSecret!, code, redirectUri);
         await saveToken(token);
-        res.writeHead(200, { "Content-Type": "text/html" });
-        res.end(oauthHtml("Authorized!", "You can close this tab and return to the terminal."));
-        settle(server, () =>
+        endThen(res, oauthHtml("Authorized!", "You can close this tab and return to the terminal."), () =>
           resolve(renderJson({ login: true, path: getConfigPath() })));
       } catch (err) {
-        res.writeHead(200, { "Content-Type": "text/html" });
-        res.end(oauthHtml("Token Exchange Failed", "Check the terminal for details."));
-        settle(server, () => reject(err));
+        endThen(res, oauthHtml("Token Exchange Failed", "Check the terminal for details."), () =>
+          reject(err));
       }
-    });
+    };
 
     server.on("error", (err: NodeJS.ErrnoException) => {
       const msg = err.code === "EADDRINUSE"

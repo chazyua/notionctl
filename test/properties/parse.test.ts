@@ -386,3 +386,45 @@ describe("a quoted value containing a comma stays one value", () => {
     );
   });
 });
+
+describe("property flags with quote characters", () => {
+  it("parses a property name containing an apostrophe", () => {
+    assert.deepEqual(parsePropertyFlag("Owner's Notes=hi"), { key: "Owner's Notes", value: "hi" });
+  });
+
+  it("still allows a quoted key containing '='", () => {
+    assert.deepEqual(parsePropertyFlag('"a=b"=v'), { key: "a=b", value: "v" });
+  });
+
+  it("keeps escaped quotes in a value", () => {
+    const out = parseProperty({ Notes: { type: "rich_text" } }, "Notes", '\\"hello\\"');
+    const runs = (out as { rich_text: Array<{ text: { content: string } }> }).rich_text;
+    assert.equal(runs[0]!.text.content, '"hello"');
+  });
+
+  it("still strips a genuinely quoted value", () => {
+    const out = parseProperty({ Notes: { type: "rich_text" } }, "Notes", '"hello"');
+    const runs = (out as { rich_text: Array<{ text: { content: string } }> }).rich_text;
+    assert.equal(runs[0]!.text.content, "hello");
+  });
+});
+
+describe("backslashes in property values", () => {
+  const content = (raw: string): string => {
+    const out = parseProperty({ Notes: { type: "rich_text" } }, "Notes", raw);
+    return (out as { rich_text: Array<{ text: { content: string } }> }).rich_text[0]!.text.content;
+  };
+
+  it("keeps backslashes that are not escaping a quote", () => {
+    // stripQuotes unescapes on the unquoted path too, so \\ in the escape set
+    // halved every backslash run: C:\\server\\share became C:\server\share,
+    // and again on the next get-and-write cycle.
+    assert.equal(content("C:\\\\server\\\\share"), "C:\\\\server\\\\share");
+    assert.equal(content("\\\\d+"), "\\\\d+");
+    assert.equal(content("a\\nb"), "a\\nb");
+  });
+
+  it("still unescapes an escaped quote", () => {
+    assert.equal(content('\\"hello\\"'), '"hello"');
+  });
+});

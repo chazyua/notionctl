@@ -1074,3 +1074,44 @@ describe("emphasis the escaper and the parser used to disagree about", () => {
     });
   }
 });
+
+describe("round-trip regressions from the review", () => {
+  const ann = { bold: false, italic: false, strikethrough: false, underline: false, code: false, color: "default" };
+  const rt = (content: string): any => ({ type: "text", text: { content, link: null }, annotations: { ...ann }, plain_text: content, href: null });
+  const para = (content: string, extra: Record<string, unknown> = {}): any => ({
+    object: "block", id: "p", type: "paragraph", has_children: false,
+    paragraph: { rich_text: content ? [rt(content)] : [], color: "default" }, ...extra,
+  });
+
+  it("does not open the document with blank lines", () => {
+    // An empty paragraph carrying children: leading newlines here no longer
+    // match what extractFrontmatter returns, so every sync looked CHANGED.
+    const md = blocksToMarkdown([para("", { has_children: true, _children: [para("child")] })] as any);
+    assert.ok(!md.startsWith("\n"), JSON.stringify(md));
+    assert.ok(md.includes("child"));
+  });
+
+  it("does not duplicate a sub-page link", () => {
+    // page update keeps the real child_page block, so the markdown form must
+    // write nothing back or the page gains a copy on every cycle.
+    const blocks = [{
+      object: "block", id: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+      type: "child_page", has_children: false, child_page: { title: "Sub" },
+    }];
+    const md = blocksToMarkdown(blocks as any);
+    assert.ok(md.includes("notion://page/"), md);
+    assert.deepEqual(markdownToBlocks(md), []);
+  });
+
+  it("keeps a toggle's body when a child paragraph starts with </details>", () => {
+    const toggle = [{
+      object: "block", id: "t", type: "toggle", has_children: true,
+      toggle: { rich_text: [rt("T")], color: "default" },
+      _children: [para("</details>")],
+    }];
+    const out = markdownToBlocks(blocksToMarkdown(toggle as any)) as any[];
+    assert.equal(out.length, 1);
+    assert.equal(out[0].type, "toggle");
+    assert.equal(out[0].toggle.children?.length, 1);
+  });
+});

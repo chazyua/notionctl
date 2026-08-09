@@ -229,3 +229,45 @@ describe("YAML single-quoted string escaping", () => {
     assert.deepEqual(result, { name: "it's a 'test'" });
   });
 });
+
+describe("YAML key escaping", () => {
+  it("round-trips a key containing a colon", () => {
+    const y = stringifyYaml({ notion_id: "abc", "Ref: x": "42" });
+    assert.deepEqual(parseYaml(y), { notion_id: "abc", "Ref: x": "42" });
+  });
+
+  it("round-trips keys needing quotes for other reasons", () => {
+    const obj = { "# not a comment": "a", " padded ": "b", '"quoted"': "c", "": "d" };
+    assert.deepEqual(parseYaml(stringifyYaml(obj)), obj);
+  });
+
+  it("prevents key injection via a newline-bearing key", () => {
+    // A DB column named with an embedded newline must not emit a second
+    // notion_id line that overrides the real one on read-back.
+    const y = stringifyYaml({ notion_id: "real", "Ref: x\nnotion_id": "attacker" });
+    assert.equal(parseYaml(y).notion_id, "real");
+  });
+
+  it("refuses a duplicate key rather than silently taking the last", () => {
+    assert.throws(() => parseYaml("notion_id: a\nnotion_id: b"), /Duplicate key/);
+  });
+
+  it("leaves ordinary keys unquoted", () => {
+    assert.equal(stringifyYaml({ notion_id: "x", Status: "Done" }), "notion_id: x\nStatus: Done");
+  });
+});
+
+describe("YAML keys containing an apostrophe", () => {
+  it("round-trips a property name with an apostrophe", () => {
+    // findUnquotedColon treats ' as opening a quoted span wherever it appears,
+    // so a bare `Owner's Notes: x` hid the separating colon and the line read
+    // back as "no key" — which made extractFrontmatter discard the whole block
+    // and page sync refuse a file page get had just written.
+    const obj = { notion_id: "abc", "Owner's Notes": "call back", "Q1 'goals'": "set" };
+    assert.deepEqual(parseYaml(stringifyYaml(obj)), obj);
+  });
+
+  it("quotes such a key rather than emitting it bare", () => {
+    assert.equal(stringifyYaml({ "Owner's": "v" }), `"Owner's": v`);
+  });
+});

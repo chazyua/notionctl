@@ -672,3 +672,59 @@ describe("blocks a replace must not delete", () => {
     }
   });
 });
+
+describe("a replace whose input parsed to nothing must not empty the page", () => {
+  // `page append` has always guarded this; the replace paths did not, so a
+  // --from file that reduced to no blocks deleted every block on the page,
+  // reported `deletedBlocks: N, appendedBlocks: 0`, and exited 0.
+  const runEmptyUpdate = async (extraArgs: string[]): Promise<{ calls: string[]; error?: string }> => {
+    const { mkdtemp, writeFile } = await import("node:fs/promises");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const dir = await mkdtemp(join(tmpdir(), "notionctl-empty-replace-"));
+    const mdPath = join(dir, "body.md");
+    // Only a leading H1 — it becomes the title, leaving no body blocks at all.
+    await writeFile(mdPath, "# Just A Title\n", "utf8");
+
+    const calls: string[] = [];
+    let error: string | undefined;
+    await withStubbedNotion(
+      (method, path) => {
+        calls.push(`${method} ${path}`);
+        if (method === "GET" && path === `/blocks/${STUB_PAGE_ID}/children`) {
+          return {
+            results: [stubParagraph("old-1", "Keep me."), stubParagraph("old-2", "Me too.")],
+            has_more: false,
+            next_cursor: null,
+          };
+        }
+        return { id: STUB_PAGE_ID, results: [] };
+      },
+      async () => {
+        try {
+          await pageUpdateCommand({ args: [STUB_PAGE_ID, "--from", mdPath, ...extraArgs] });
+        } catch (err) {
+          error = (err as Error).message;
+        }
+      },
+    );
+    return { calls, error };
+  };
+
+  it("refuses, and deletes nothing", async () => {
+    const { calls, error } = await runEmptyUpdate([]);
+    assert.match(error ?? "", /would delete all 2 block\(s\)/);
+    assert.equal(calls.filter((c) => c.startsWith("DELETE ")).length, 0, calls.join(", "));
+  });
+
+  it("does not change the title either — it refuses before writing anything", async () => {
+    const { calls } = await runEmptyUpdate([]);
+    assert.equal(calls.filter((c) => c === `PATCH /pages/${STUB_PAGE_ID}`).length, 0, calls.join(", "));
+  });
+
+  it("still allows it behind --force", async () => {
+    const { calls, error } = await runEmptyUpdate(["--force"]);
+    assert.equal(error, undefined, error);
+    assert.equal(calls.filter((c) => c.startsWith("DELETE ")).length, 2, calls.join(", "));
+  });
+});

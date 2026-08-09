@@ -138,10 +138,14 @@ export async function loadToken(): Promise<LoadedToken> {
     try {
       const st = await fh.stat();
       const mode = st.mode & 0o777;
-      if (mode !== 0o600) {
+      // What matters is that group and other cannot read the token, not that
+      // the mode is exactly 0600. An exact test called 0400 — a file the user
+      // had deliberately hardened — "insecure" and refused every command until
+      // they ran a chmod that *loosened* it.
+      if ((mode & 0o077) !== 0) {
         throw new NotionCliError(
           ErrorCode.AUTH_INVALID,
-          `Config file ${path} has insecure permissions (mode ${mode.toString(8)}, expected 600)`,
+          `Config file ${path} is readable by other users (mode ${mode.toString(8)})`,
           {
             suggestions: [
               `Run: chmod 600 ${path}`,
@@ -183,6 +187,17 @@ export async function loadToken(): Promise<LoadedToken> {
       ErrorCode.AUTH_INVALID,
       `Config file ${path} is not valid JSON`,
       { cause: err },
+    );
+  }
+
+  // `JSON.parse("null")` succeeds, so the catch above never fires and the
+  // property read below threw a raw TypeError that escaped as "Internal error:
+  // Cannot read properties of null" instead of naming the config file.
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new NotionCliError(
+      ErrorCode.AUTH_INVALID,
+      `Config file ${path} does not contain a JSON object`,
+      { suggestions: [`Delete it and re-run 'notionctl auth set' to recreate it.`] },
     );
   }
 

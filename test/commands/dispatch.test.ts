@@ -82,6 +82,31 @@ describe("dispatch --help and --version flags", () => {
     assert.match(stdout, /Usage:/);
   });
 
+  for (const args of [
+    ["page", "get", "11111111111111111111111111111111", "--help"],
+    ["db", "row", "get", "11111111111111111111111111111111", "--help"],
+    ["api", "GET", "/users/me", "--help"],
+    ["page", "find-replace", "11111111111111111111111111111111", "--find", "X", "--help"],
+  ]) {
+    it(`--help is honored past the head window: ${args.join(" ")}`, async () => {
+      // A two-slot window dropped every help request further along, and these
+      // died on "Flag --help requires a value" instead of printing anything.
+      const { code, stdout } = await runCli(args);
+      assert.equal(code, 0, stdout);
+      assert.match(stdout, /Usage:/);
+    });
+  }
+
+  it("--help as a flag's value does NOT hijack the command", async () => {
+    // The case the window was added for: -h here is the value of --find.
+    const { code, stdout } = await runCli([
+      "page", "find-replace", "11111111111111111111111111111111",
+      "--find", "-h", "--replace", "X",
+    ], { NOTION_TOKEN: "ntn_notarealtokenatallxxxxxxxxxxxxxxxxxxxxxxxxxxxx" });
+    assert.notEqual(code, 0, "expected the command to run and fail, not print help");
+    assert.doesNotMatch(stdout, /Usage:/);
+  });
+
   it("bare `notionctl page` (no verb) prints help, not 'Unknown verb: undefined'", async () => {
     const { code, stdout, stderr } = await runCli(["page"]);
     assert.equal(code, 0);

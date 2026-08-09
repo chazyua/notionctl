@@ -25,7 +25,12 @@ export function setTokenizerWarnHandler(fn: ((msg: string) => void) | null): voi
 }
 
 type MarkerKey = "bold" | "italic" | "strikethrough" | "code";
-const MARKER_ORDER: MarkerKey[] = ["bold", "italic", "strikethrough", "code"];
+/**
+ * `code` is deliberately absent: an inline code span needs a delimiter sized to
+ * its own content (see codeSpan), which the open/close stack cannot express.
+ * Code runs are emitted whole by runContent instead.
+ */
+const MARKER_ORDER: MarkerKey[] = ["bold", "italic", "strikethrough"];
 const MARKERS: Record<MarkerKey, string> = {
   bold: "**",
   italic: "_",
@@ -33,7 +38,15 @@ const MARKERS: Record<MarkerKey, string> = {
   code: "`",
 };
 
-export function richTextToMarkdown(runs: RichText[]): string {
+export function richTextToMarkdown(inputRuns: RichText[]): string {
+  const runs = mergeAdjacentRuns(inputRuns);
+  // Escaping is decided over the whole line, not one run at a time. Two
+  // adjacent plain runs can each hold a character that looks literal in
+  // isolation while the concatenation hands the write-path scanner a matching
+  // pair — `5*x` followed by ` and 2*3` came back with `x and 2` italicised.
+  const scope = runs
+    .map((r) => (r.type === "text" && !r.annotations.code ? r.text.content : ""))
+    .join("");
   let out = "";
   const openStack: MarkerKey[] = [];
   // Track whether italic was opened with _ or * so we close with the same char.
@@ -97,7 +110,7 @@ export function richTextToMarkdown(runs: RichText[]): string {
     // Guard against intraword underscore: if italic just closed with `_` and
     // the next content starts with a word char, switch the already-emitted `_`
     // to `*`. This handles the close side; the open side uses italicChar above.
-    const content = runContent(run);
+    const content = runContent(run, scope);
     const firstContentChar = hasLink ? "[" : (content[0] ?? "");
     if (
       out.length >= 2 &&
@@ -149,6 +162,46 @@ export function richTextToMarkdown(runs: RichText[]): string {
   }
 
   return out;
+}
+
+/**
+ * Join consecutive text runs carrying identical annotations and the same link.
+ *
+ * Notion caps a run at 2000 characters, so a longer inline code span arrives as
+ * several adjacent runs. Since `code` left MARKER_ORDER each run gets its own
+ * delimiter pair, and `a` + `b` was emitted as `` `a``b` `` — which reads back
+ * as one span whose content is ``a`b``, growing by two characters per
+ * round-trip until the annotation collapses entirely. Merging first is also
+ * exactly what the open/close stack used to do for these runs.
+ */
+function mergeAdjacentRuns(runs: RichText[]): RichText[] {
+  const out: RichText[] = [];
+  for (const run of runs) {
+    const prev = out[out.length - 1];
+    if (
+      prev !== undefined &&
+      prev.type === "text" &&
+      run.type === "text" &&
+      sameAnnotations(prev.annotations, run.annotations) &&
+      isLinkRun(prev) === isLinkRun(run) &&
+      linkUrl(prev) === linkUrl(run)
+    ) {
+      const content = prev.text.content + run.text.content;
+      out[out.length - 1] = { ...prev, text: { ...prev.text, content }, plain_text: content };
+      continue;
+    }
+    out.push(run);
+  }
+  return out;
+}
+
+function sameAnnotations(a: Annotations, b: Annotations): boolean {
+  return a.bold === b.bold
+    && a.italic === b.italic
+    && a.strikethrough === b.strikethrough
+    && a.underline === b.underline
+    && a.code === b.code
+    && a.color === b.color;
 }
 
 function activeMarkers(annotations: Annotations): MarkerKey[] {
@@ -263,18 +316,56 @@ export function findReplaceRichText(
  * - `*` : skip ALL escaping when every asterisk is between alphanumerics AND
  *         the run is not inside bold/italic context. Common win: `2*3 = 6`.
  */
-export function escapeMarkdownContent(s: string, inEmphasisCtx: boolean = false): string {
+export function escapeMarkdownContent(s: string, inEmphasisCtx: boolean = false, scope: string = s): string {
   const escUnderscore = hasEmphasisUnderscore(s);
-  const escAsterisk = inEmphasisCtx || hasEmphasisAsterisk(s);
+  const escAsterisk = inEmphasisCtx || hasEmphasisAsterisk(s, scope);
+  // Each of these scans the whole line, and runContent calls this once per run.
+  // A run with no `$` (or no `<`) cannot be changed by the answer, so skip it.
+  const escDollar = s.includes("$") && hasEquationDollar(scope);
+  const escAngle = s.includes("<") && hasDateMention(scope);
   let out = "";
   for (let i = 0; i < s.length; i++) {
     const c = s[i]!;
     if (c === "_" && escUnderscore) { out += "\\_"; }
     else if (c === "*" && escAsterisk) { out += "\\*"; }
+    else if (c === "$" && escDollar) { out += "\\$"; }
+    else if (c === "<" && escAngle) { out += "\\<"; }
     else if (c === "\\" || c === "`" || c === "~" || c === "[" || c === "]") { out += "\\" + c; }
     else { out += c; }
   }
   return out;
+}
+
+/**
+ * Whether any `$` in the text would open an inline equation when read back.
+ * Must stay in step with the scanner's rule in markdownToRichText — nothing
+ * escaped `$` at all, so a paragraph reading `The variable $n$ is the count`
+ * came back with `$n$` retyped as an equation run and the dollars gone.
+ */
+function hasEquationDollar(s: string): boolean {
+  for (let i = 0; i < s.length; i++) {
+    if (s[i] !== "$") continue;
+    const next = s[i + 1];
+    if (next === undefined || next === "$" || /\s/.test(next)) continue;
+    if (s[i - 1] === "$") continue;
+    const end = s.indexOf("$", i + 1);
+    if (end === -1 || end <= i + 1) continue;
+    if (/\s/.test(s[end - 1]!)) continue;
+    const after = s[end + 1];
+    if (after !== undefined && /[A-Za-z0-9]/.test(after)) continue;
+    return true;
+  }
+  return false;
+}
+
+/** Whether any `<...>` in the text would be read back as a date mention. */
+function hasDateMention(s: string): boolean {
+  for (let i = s.indexOf("<"); i !== -1; i = s.indexOf("<", i + 1)) {
+    const close = s.indexOf(">", i + 1);
+    if (close === -1) return false;
+    if (DATE_MENTION_RE.test(s.slice(i + 1, close))) return true;
+  }
+  return false;
 }
 
 /** True when at least one underscore could trigger italic (not purely intraword). */
@@ -295,25 +386,62 @@ function hasEmphasisUnderscore(s: string): boolean {
  * disagreed, one direction lost an annotation and the other lost the literal
  * asterisks from text such as `5*x*2`.
  */
-function hasEmphasisAsterisk(s: string): boolean {
-  for (let i = 0; i < s.length; i++) {
-    if (s[i] !== "*") continue;
-    const next = i < s.length - 1 ? s[i + 1]! : "";
+function hasEmphasisAsterisk(s: string, scope: string = s): boolean {
+  if (!s.includes("*")) return false;
+  // Scanned over `scope` — the whole line — because the write-path scanner
+  // sees the concatenation, not this run alone. Deciding from `s` let two
+  // runs each keep an asterisk that only pairs up once they are joined.
+  //
+  // Single pass. The nested "look for a closer" loop this replaces restarted
+  // from every asterisk, and its search range only ever shrank, so the first
+  // asterisk already decided the answer for all of them — the later passes
+  // were re-derived, not new information. On a line where no asterisk short-
+  // circuits (each followed by an alphanumeric, each preceded by a space —
+  // `takes *ctx and *req`) that cost was quadratic per run and quadratic
+  // again across runs: 200 runs over 23k characters took 2.5s, now ~5ms.
+  let sawOpener = false;
+  for (let i = 0; i < scope.length; i++) {
+    if (scope[i] !== "*") continue;
+    const next = i < scope.length - 1 ? scope[i + 1]! : "";
     if (!/[A-Za-z0-9]/.test(next)) return true;
     // An opener needs a closer later in the text; a lone `*` stays literal.
-    for (let j = i + 1; j < s.length; j++) {
-      if (s[j] === "*" && /\S/.test(s[j - 1] ?? "")) return true;
-    }
+    if (sawOpener && /\S/.test(scope[i - 1] ?? "")) return true;
+    sawOpener = true;
   }
   return false;
 }
 
-function runContent(run: RichText): string {
+/**
+ * An inline code span delimited by a run of backticks longer than any run
+ * inside the content, per CommonMark. A fixed single backtick truncated any
+ * span that contained one: a code run holding ``a`b`` came back as code "a"
+ * followed by the literal text "b`".
+ *
+ * A space is added each side when the content starts or ends with a backtick
+ * (or the delimiters merge into it) or with a space (or a reader strips one
+ * from each end and the content loses it). Readers remove exactly one pair.
+ *
+ * All-whitespace content is the exception: CommonMark only strips the pair
+ * when the content is *not* entirely spaces, so padding one would never be
+ * taken back and a code span holding a single space came back holding three.
+ * Unpadded it round-trips exactly, because that same rule leaves it alone.
+ */
+function codeSpan(content: string): string {
+  if (content.length === 0) return "";
+  let longest = 0;
+  for (const m of content.match(/`+/g) ?? []) if (m.length > longest) longest = m.length;
+  const fence = "`".repeat(longest + 1);
+  const needsPad = /^[`\s]/.test(content) || /[`\s]$/.test(content);
+  const pad = needsPad && content.trim().length > 0 ? " " : "";
+  return `${fence}${pad}${content}${pad}${fence}`;
+}
+
+function runContent(run: RichText, scope: string = ""): string {
   if (run.type === "text") {
-    // Code runs don't need escaping — backtick delimiters prevent reinterpretation
-    if (run.annotations.code) return run.text.content;
+    // Code content is literal, but the delimiter has to be sized to it.
+    if (run.annotations.code) return codeSpan(run.text.content);
     const inEmphasis = run.annotations.bold || run.annotations.italic;
-    return escapeMarkdownContent(run.text.content, inEmphasis);
+    return escapeMarkdownContent(run.text.content, inEmphasis, scope || run.text.content);
   }
   if (run.type === "equation") return `$${run.equation.expression}$`;
   if (run.type === "mention") {
@@ -404,7 +532,11 @@ export function markdownToRichText(md: string): RichText[] {
     // The preceding character must not be `$` either, or the second `$` of a
     // literal `$$x$$` opens an equation and rewrites the text as text+equation+text.
     if (c === "$" && next !== "$" && md[i - 1] !== "$" && next !== undefined && !/\s/.test(next)) {
-      const end = md.indexOf("$", i + 1);
+      // Skip an escaped `\$`. A literal dollar written by escapeMarkdownContent
+      // was being accepted as the closing delimiter, so a paragraph mixing
+      // prose dollars with a real equation run swallowed the equation and
+      // emitted a new one whose expression ended in the stray backslash.
+      const end = indexOfUnescaped(md, "$", i + 1);
       if (end !== -1 && end > i + 1 && !/\s/.test(md[end - 1]!)) {
         const afterClose = md[end + 1];
         if (afterClose === undefined || !/[A-Za-z0-9]/.test(afterClose)) {
@@ -423,17 +555,50 @@ export function markdownToRichText(md: string): RichText[] {
       }
     }
 
-    // Inline code — opaque, no nesting
-    if (c === "`" && !state.code) {
-      flush();
-      const end = md.indexOf("`", i + 1);
-      if (end === -1) {
-        buffer += c;
-        i++;
+    // Date mention <YYYY-MM-DD[..YYYY-MM-DD]> — the shape runContent emits.
+    // Unhandled, it came back as literal text and the mention was lost.
+    if (c === "<") {
+      const close = md.indexOf(">", i + 1);
+      const dm = close === -1 ? null : DATE_MENTION_RE.exec(md.slice(i + 1, close));
+      if (dm) {
+        flush();
+        runs.push({
+          type: "mention",
+          mention: { type: "date", date: { start: dm[1]!, end: dm[2] ?? null, time_zone: null } },
+          annotations: {
+            ...DEFAULT_ANNOTATIONS,
+            bold: state.bold,
+            italic: state.italic,
+            strikethrough: state.strikethrough,
+          },
+          plain_text: md.slice(i + 1, close),
+          href: null,
+        } as unknown as RichText);
+        i = close + 1;
         continue;
       }
-      runs.push(makeRun(md.slice(i + 1, end), { ...state, code: true }, null));
-      i = end + 1;
+    }
+
+    // Inline code — opaque, no nesting. Opened by a run of N backticks and
+    // closed by a run of exactly N, so a span containing backticks survives.
+    if (c === "`") {
+      let openLen = 1;
+      while (md[i + openLen] === "`") openLen++;
+      const end = findCodeFenceClose(md, i + openLen, openLen);
+      if (end === -1) {
+        buffer += md.slice(i, i + openLen);
+        i += openLen;
+        continue;
+      }
+      flush();
+      let inner = md.slice(i + openLen, end);
+      // CommonMark strips one space from each end when both are spaces and the
+      // content is not all spaces — exactly the pair codeSpan() adds.
+      if (inner.length >= 2 && inner.startsWith(" ") && inner.endsWith(" ") && inner.trim().length > 0) {
+        inner = inner.slice(1, -1);
+      }
+      runs.push(makeRun(inner, { ...state, code: true }, null));
+      i = end + openLen;
       continue;
     }
 
@@ -563,8 +728,41 @@ function unescapeLabel(s: string): string {
 }
 
 function isMarkerChar(c: string): boolean {
-  return c === "*" || c === "_" || c === "~" || c === "`" || c === "[" || c === "]" || c === "\\";
+  // `$` and `<` open an inline equation and a date mention respectively, so
+  // they need to be escapable too — otherwise there was no way to write either
+  // one literally.
+  return c === "*" || c === "_" || c === "~" || c === "`" || c === "["
+    || c === "]" || c === "\\" || c === "$" || c === "<";
 }
+
+/** Index of the next unescaped `ch` at or after `from`, or -1. */
+function indexOfUnescaped(md: string, ch: string, from: number): number {
+  for (let i = from; i < md.length; i++) {
+    if (md[i] === "\\") { i++; continue; }
+    if (md[i] === ch) return i;
+  }
+  return -1;
+}
+
+/** Index of a backtick run of exactly `len`, at or after `from`. */
+function findCodeFenceClose(md: string, from: number, len: number): number {
+  let i = from;
+  while (i < md.length) {
+    if (md[i] !== "`") { i++; continue; }
+    let run = 1;
+    while (md[i + run] === "`") run++;
+    if (run === len) return i;
+    i += run;
+  }
+  return -1;
+}
+
+/**
+ * A date mention as runContent writes it: an ISO date, optionally a `..` range.
+ * Anchored, so ordinary angle-bracketed text is left alone.
+ */
+const DATE_MENTION_RE =
+  /^(\d{4}-\d{2}-\d{2}(?:T[0-9:.+\-Z]+)?)(?:\.\.(\d{4}-\d{2}-\d{2}(?:T[0-9:.+\-Z]+)?))?$/;
 
 /** CommonMark rule: _ is not emphasis when both sides are word characters (e.g. multi_select) */
 function isIntraword(md: string, idx: number): boolean {

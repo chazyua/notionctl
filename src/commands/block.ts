@@ -17,6 +17,7 @@ export async function blockGetCommand(ctx: { args: string[] }): Promise<string> 
   if (positional.length === 0) {
     throw new NotionCliError(ErrorCode.USAGE, "Usage: notionctl block get <id>");
   }
+  rejectExtraPositionals(positional, 1);
   const id = resolvePageId(positional[0]!);
   const block = await fetchWith404Hint(
     () => notionRequest("GET", `/blocks/${id}`),
@@ -49,6 +50,7 @@ export async function blockChildrenCommand(ctx: { args: string[] }): Promise<str
   if (positional.length === 0) {
     throw new NotionCliError(ErrorCode.USAGE, "Usage: notionctl block children <id> [--recursive]");
   }
+  rejectExtraPositionals(positional, 1);
   const id = resolvePageId(positional[0]!);
   const recursive = getBooleanFlag(flags, "recursive");
 
@@ -71,6 +73,9 @@ export async function blockChildrenCommand(ctx: { args: string[] }): Promise<str
     defaultFormat: "md",
   });
   if (format === "json") return renderJson({ results: children });
+  if (format !== "md") {
+    throw new NotionCliError(ErrorCode.USAGE, `block children does not support --format ${format}. Use json or md.`);
+  }
   return blocksToMarkdown(children);
 }
 
@@ -79,6 +84,7 @@ export async function blockAppendCommand(ctx: { args: string[] }): Promise<strin
   if (positional.length === 0) {
     throw new NotionCliError(ErrorCode.USAGE, "Usage: notionctl block append <id> [--from file.md] [--after <block-id>]");
   }
+  rejectExtraPositionals(positional, 1);
   const id = resolvePageId(positional[0]!);
   const fromFile = flags.get("from");
   // Additive commands (append) auto-read piped stdin without requiring
@@ -113,6 +119,7 @@ export async function blockUpdateCommand(ctx: { args: string[] }): Promise<strin
   if (positional.length === 0) {
     throw new NotionCliError(ErrorCode.USAGE, "Usage: notionctl block update <id> --prop-json '<json>'");
   }
+  rejectExtraPositionals(positional, 1);
   const id = resolvePageId(positional[0]!);
   const propJson = flags.get("prop-json");
   if (!propJson) {

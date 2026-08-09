@@ -9,6 +9,200 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+**Content destruction**
+- `page update --from` and `page sync` deleted every block on a page when the
+  input parsed to no blocks at all, reported `deletedBlocks: N,
+  appendedBlocks: 0`, and exited 0. An empty file, a wrong `--from` path, or a
+  document whose only line is the `# H1` that becomes the title were all enough,
+  and nothing in the output said the content was gone. `page append` had
+  guarded this case all along; the two commands that *replace* content did not.
+  Both now refuse and explain, with `--force` still available for deliberately
+  emptying a page.
+- A truncated or hand-mangled `notion_synced_at` silently switched drift
+  detection off. The value is still valid YAML, so nothing upstream rejected it;
+  it parsed to `NaN`, the comparison was skipped, and `page sync` overwrote
+  genuine remote edits with stale local content — no warning, no `--force`
+  needed. A baseline that is present but unreadable now fails closed, the same
+  way an unreadable remote already did. A genuinely absent baseline still
+  classifies as a normal first push.
+
+**Auth**
+- A config file with permissions *stricter* than 0600 was rejected as insecure.
+  `chmod 400` — hardening the file — made every command fail with advice to run
+  a `chmod` that would loosen it again. The check now tests that group and other
+  have no access, rather than requiring the mode to equal 0600 exactly.
+- A config file containing the literal JSON `null` crashed with a raw
+  `Internal error: Cannot read properties of null`. `JSON.parse("null")`
+  succeeds, so the surrounding catch never fired. It now reports a clean auth
+  error naming the file.
+
+**Databases**
+- `--schema-json` bypassed the same-column ambiguity guard: a key in the JSON
+  silently overruled a `--remove-prop` the user had already confirmed with
+  `--yes`, so the column survived and the command reported success. Keys from
+  `--schema-json` now go through the same `claim()` check as every other flag.
+
+**Regressions in the round of fixes above**
+- An inline code span longer than 2000 characters came back with two literal
+  backticks spliced into it, and lost the `code` annotation entirely on the
+  next round-trip. Notion splits a run at 2000 characters and each run had
+  started emitting its own delimiter pair, so `` `a` `` + `` `b` `` was written
+  as `` `a``b` `` and read back as one span containing the delimiters. Runs
+  that share their annotations and link are merged before anything is emitted.
+- A paragraph mixing prose dollars with a real inline equation lost the
+  equation and gained a bogus one whose expression ended in a stray backslash.
+  The scanner searched for the closing `$` with a plain `indexOf`, so an
+  escaped `\$` written by the escaper was accepted as a delimiter. Escaped
+  dollars are now skipped. (Such an equation still degrades to literal text
+  when the closing `$` is followed by an alphanumeric — the `$…$` form cannot
+  express that — but every character survives.)
+- An inline code span consisting only of whitespace grew on every read: a
+  single space came back as three. The padding CommonMark strips is only
+  stripped when the content is not all spaces, so all-whitespace content is now
+  written unpadded, which round-trips exactly.
+- A property value containing a backslash lost half of them on every
+  `--prop` write, and again on each later cycle: `C:\\server\\share` was
+  written as `C:\server\share` and a stored `\\d+` as `\d+`. Unescaping was
+  applied to values that were never quoted, with `\\` in the escape set. Only
+  `\"` and `\'` are unescaped now.
+- Emphasis escaping scanned the whole line once per asterisk and once per run.
+  On a paragraph where no asterisk short-circuits the check — every one
+  followed by a letter and preceded by a space, as in `takes *ctx and *req` —
+  200 runs over 23k characters took 2.5 seconds per block. The scan is now
+  single-pass; the same input takes about 6ms.
+- A database column name containing an apostrophe made `page get` emit
+  front-matter it could not read back. Keys were quoted for colons and
+  newlines but not apostrophes, and the reader treats one as opening a quoted
+  span wherever it appears, so the separating colon was hidden and the line
+  parsed as "no key". The whole block was then discarded — `notion_id`
+  included — and `page sync` refused the file with no `--force` to get past it.
+- `page sync` and `page get` could fail with a bare `Internal error: EEXIST`
+  and, on a first sync, create a duplicate page on every retry. The atomic
+  write opened its temp file with `wx` at a path keyed only on the process id,
+  so any leftover — a run killed between write and rename, a pid reused across
+  containers on a shared volume — failed every later run, after the remote
+  write had already landed and before the new page id was recorded. The temp
+  name now carries random bytes, and a failed write cleans up after itself.
+- `--help` stopped working once it sat more than two arguments after the verb:
+  `db row get <id> --help`, `api GET /users/me --help` and
+  `page find-replace <id> --find X --help` all failed with "Flag --help
+  requires a value". Help is recognised anywhere again, except where the token
+  is a value belonging to the flag before it — which is the case the bounded
+  window had been introduced to handle.
+
+**Data integrity**
+- A database column whose name contained a colon corrupted the front-matter
+  `page get` and `db row get` write: `Ref: x` was emitted bare, so reading it
+  back gave the key `Ref` with the value `x: <value>` and the column was
+  silently renamed. Front-matter keys are now quoted and escaped the way values
+  always have been. With a newline in the name the same gap emitted a whole
+  extra line — a second `notion_id:` that overrode the real one and pointed the
+  next sync at another page, straight past the reserved-key guard. A repeated
+  key is now refused outright rather than resolved last-wins.
+- `page sync` overwrote remote edits without checking for drift whenever the
+  metadata fetch failed. A transient 5xx or a permissions error left no remote
+  timestamp, and the classifier silently skips the comparison when it has none,
+  so the guard degraded to off exactly when the connection was unreliable. It
+  now refuses unless `--force` is given. A missing page still reports as such.
+- `page sync` could refuse forever on a workstation whose clock ran slow.
+  `notion_synced_at` was stamped from the local clock but compared against
+  Notion's, so a sync could record a time earlier than the edit it had just
+  made and every later run read that as drift. Both `page get` and `page sync`
+  now record the remote's own `last_edited_time`.
+- A page whose first block was an empty paragraph carrying nested children was
+  rewritten in full on every sync, untouched or not — the same hash mismatch
+  fixed earlier for blank spacer paragraphs, reached by a second route.
+
+**Safety flags**
+- `auth set` and `auth login` ignored `--dry-run` and overwrote the stored token
+  anyway. Both now report what they would do and write nothing.
+- `--dry-run=yes` (and `=1`, `=on`) performed the real write. Only the literal
+  `true` was recognised, so the spellings a user reaches for when they want the
+  safe path silently selected the unsafe one. All the usual boolean spellings
+  are accepted now, and a value that is none of them is refused rather than
+  guessed in either direction.
+- `db update --remove-prop X --rename-prop X=Y` renamed the column instead of
+  removing it, and skipped the `--yes` confirmation on the way past. Two schema
+  flags naming the same column are now refused.
+- Any `-h` or `--help` appearing as a flag *value* printed help and exited 0
+  instead of running the command, so `page find-replace --find -h` reported
+  success having replaced nothing. Subcommand help is now recognised only in the
+  argument positions where it can be meant.
+
+**Network**
+- Request timeouts covered only the response headers. `fetch` resolves as soon
+  as those arrive, and the deadline was cancelled at that point, so a peer that
+  sent headers and then stopped writing hung the command forever with
+  `NOTION_TIMEOUT_MS` having no effect.
+- A hostile or broken `Retry-After` of zero or less passed straight through to
+  the backoff, firing immediately and collapsing the retry ladder into five
+  back-to-back requests. It is now clamped at both ends.
+- A paginated response whose second or later page came back without `results`
+  escaped as an opaque internal error instead of a typed API error.
+
+**Output**
+- CSV cells beginning `=`, `+`, `@`, or a tab are prefixed with `'`. A page
+  titled `=cmd|'/C calc'!A0` executed when the export was opened in Excel,
+  Sheets, or LibreOffice. Negative numbers are left alone so ordinary exports
+  stay usable.
+- Table and CSV output stripped no control characters, though the error path
+  has always done so and documents why. Remote text — a title, a property
+  value, a comment — could clear the operator's screen or forge a `notionctl:`
+  line. A lone carriage return, which the row-splitting pattern also missed,
+  overwrote the row it was printed on.
+- `--format` was silently ignored by `resolve`, `auth status`, `auth doctor`,
+  and `auth list`, and `block children --format csv` returned Markdown. Each
+  now honours the formats it can produce and refuses the rest; `resolve`,
+  `auth list`, and `auth doctor` gained real JSON output.
+
+**Markdown round-trip**
+- A sub-page link was rebuilt as a page mention on write while the real
+  sub-page block was (correctly) left in place, so every `page get` →
+  `page update` cycle added another copy of the link.
+- Ordinary text acquired emphasis it never had. Escaping was decided one
+  rich-text run at a time while the parser sees the whole line, so two adjacent
+  runs holding `5*x` and ` and 2*3` — neither an emphasis pair alone — came
+  back with `x and 2` italicised.
+- `$` was never escaped and could not be escaped, so a paragraph reading
+  `The variable $n$ is the count` came back with `$n$` retyped as an equation.
+- An inline code span containing a backtick was truncated: ``a`b`` returned as
+  code `a` followed by the text ``b` ``. The delimiter is now sized to the
+  content, as CommonMark specifies.
+- Date mentions were written as `<2024-01-01>` and read back as literal text,
+  losing the mention. They now round-trip, and an angle-bracketed date written
+  as prose stays prose.
+- A paragraph inside a toggle whose text began `</details>` closed the element
+  early and the toggle lost its body.
+
+**Argument handling**
+- `--` now ends option parsing instead of being read as a flag named `""` that
+  swallowed the argument after it.
+- A stray positional is refused by every command that has a fixed shape, not
+  just the destructive ones.
+- A property name containing an apostrophe could not be set at all:
+  `--prop "Owner's Notes=x"` was rejected as missing its `=`. A value that is
+  genuinely quoted can now be written with `\"`.
+- A list value containing a comma rendered indistinguishably from two values in
+  `db query` table and CSV output, and feeding that cell back really did create
+  two. Such values are quoted now.
+- `page duplicate` reported a bare API error when the follow-up append failed,
+  leaving a partial copy with no id to find it by — the two sibling commands
+  already handled this.
+- `--quiet` did not reach the HTTP layer's retry notices.
+
+### Security
+
+- `page open` validated only the scheme and host of the URL it handed to the
+  platform opener. On Windows that opener is `cmd /c start`, which splits on
+  shell metacharacters, so the unconstrained tail of the URL was a potential
+  injection point. The path is now restricted to the characters a Notion URL
+  actually uses.
+- The OAuth callback handler ran as an async function passed straight to
+  `createServer`, where a throw becomes an unhandled rejection: the process
+  dies and the login promise never settles, with the port still bound. It is
+  now wrapped, and the response is flushed before the server closes so the
+  success page cannot be cut short by the process exiting.
+
 **Content loss**
 - `page update` and `page sync` moved every sub-page and sub-database on the page
   to the trash, along with everything inside them. Replacing a page's content

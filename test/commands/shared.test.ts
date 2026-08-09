@@ -382,3 +382,36 @@ describe("the stdin waiting notice", () => {
     }
   });
 });
+
+describe("getBooleanFlag literals", () => {
+  const flagsFor = (arg: string): Map<string, string> => parseFlags([arg]).flags;
+
+  it("accepts every truthy spelling", () => {
+    for (const v of ["true", "1", "yes", "y", "on", "YES", " True "]) {
+      assert.equal(getBooleanFlag(flagsFor(`--dry-run=${v}`), "dry-run"), true, v);
+    }
+  });
+
+  it("accepts every falsy spelling", () => {
+    for (const v of ["false", "0", "no", "n", "off"]) {
+      assert.equal(getBooleanFlag(flagsFor(`--dry-run=${v}`), "dry-run"), false, v);
+    }
+  });
+
+  it("treats a bare flag as true and an absent one as false", () => {
+    assert.equal(getBooleanFlag(flagsFor("--dry-run"), "dry-run"), true);
+    assert.equal(getBooleanFlag(new Map(), "dry-run"), false);
+  });
+
+  it("refuses a value it cannot classify rather than guessing", () => {
+    assert.throws(() => getBooleanFlag(flagsFor("--dry-run=maybe"), "dry-run"), /takes a boolean value/);
+  });
+});
+
+describe("parseFlags end-of-options", () => {
+  it("treats -- as a terminator", () => {
+    const { positional, flags } = parseFlags(["a", "--", "--not-a-flag", "b"]);
+    assert.deepEqual(positional, ["a", "--not-a-flag", "b"]);
+    assert.equal(flags.size, 0);
+  });
+});

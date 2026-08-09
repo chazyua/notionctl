@@ -143,7 +143,9 @@ export interface ParsedFlags {
   positional: string[];
 }
 
-const BOOLEAN_FLAGS = new Set([
+/** Flags that never consume the token after them. Exported so index.ts can
+ *  tell a `--help` the user typed from one that is some flag's value. */
+export const BOOLEAN_FLAGS = new Set([
   "dry-run",
   "quiet",
   "verbose",
@@ -156,9 +158,9 @@ const BOOLEAN_FLAGS = new Set([
   "recursive",
 ]);
 
-const BOOLEAN_LITERALS = new Set([
-  "true", "false", "1", "0", "yes", "no", "y", "n", "on", "off",
-]);
+const TRUE_LITERALS = new Set(["true", "1", "yes", "y", "on"]);
+const FALSE_LITERALS = new Set(["false", "0", "no", "n", "off"]);
+const BOOLEAN_LITERALS = new Set([...TRUE_LITERALS, ...FALSE_LITERALS]);
 
 /**
  * Refuse an argument the command has no slot for.
@@ -196,6 +198,12 @@ export function parseFlags(args: string[]): ParsedFlags {
   let i = 0;
   while (i < args.length) {
     const a = args[i]!;
+    // `--` ends option parsing. Without this it parsed as a flag named "" and
+    // swallowed the argument after it.
+    if (a === "--") {
+      for (let j = i + 1; j < args.length; j++) positional.push(args[j]!);
+      break;
+    }
     if (!a.startsWith("--")) {
       positional.push(a);
       i++;
@@ -255,8 +263,25 @@ export function resolvePageId(input: string): string {
   return `${compact.slice(0, 8)}-${compact.slice(8, 12)}-${compact.slice(12, 16)}-${compact.slice(16, 20)}-${compact.slice(20, 32)}`;
 }
 
+/**
+ * Read a boolean flag, accepting every literal `rejectExtraPositionals`
+ * already names as boolean-looking.
+ *
+ * A strict `=== "true"` read anything else as false, so `--dry-run=yes` — a
+ * spelling a user reaches for precisely when they want the safe path —
+ * silently performed the real write. An unrecognised value is a typo in a
+ * safety flag, so refuse rather than guess a direction.
+ */
 export function getBooleanFlag(flags: Map<string, string>, name: string): boolean {
-  return flags.get(name) === "true";
+  const raw = flags.get(name);
+  if (raw === undefined) return false;
+  const v = raw.trim().toLowerCase();
+  if (TRUE_LITERALS.has(v)) return true;
+  if (FALSE_LITERALS.has(v)) return false;
+  throw new NotionCliError(
+    ErrorCode.USAGE,
+    `Flag --${name} takes a boolean value, got '${raw}'. Pass --${name} on its own, or --${name}=true / --${name}=false.`,
+  );
 }
 
 /**

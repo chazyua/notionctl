@@ -72,11 +72,15 @@ let cachedToken: string | undefined;
 
 let debugMode = false;
 let verboseMode = false;
+let quietMode = false;
 let requestCount = 0;
 
 export function setDebugMode(on: boolean): void { debugMode = on; }
 export function setVerboseMode(on: boolean): void { verboseMode = on; }
 export function isVerboseMode(): boolean { return verboseMode; }
+/** --quiet silences retry progress notices. Truncation and data-loss warnings
+ *  are not progress and stay on regardless. */
+export function setQuietMode(on: boolean): void { quietMode = on; }
 export function getRequestCount(): number { return requestCount; }
 
 export function setTokenProvider(provider: TokenProvider): void {
@@ -89,6 +93,7 @@ export function resetForTesting(): void {
   cachedToken = undefined;
   debugMode = false;
   verboseMode = false;
+  quietMode = false;
   requestCount = 0;
 }
 
@@ -134,7 +139,12 @@ async function notionRequestSingle<T = unknown>(
     "User-Agent": USER_AGENT,
   };
 
-  const init: RequestInit = { method, headers };
+  // Notion's API never redirects, so following one can only mean something
+  // else answered. `fetch` follows by default, and the api.notion.com check
+  // above only ever saw the *original* URL — so a 3xx would have carried the
+  // request body to whatever host the Location named, which is the one thing
+  // this module promises cannot happen. Refuse instead.
+  const init: RequestInit = { method, headers, redirect: "manual" };
   if (body !== undefined) {
     headers["Content-Type"] = "application/json";
     init.body = JSON.stringify(body);
@@ -191,12 +201,26 @@ async function notionRequestSingle<T = unknown>(
       }
       await sleep(BACKOFF_MS[attempt] ?? 4000);
       continue;
-    } finally {
-      clearTimeout(timer);
     }
+    // Deliberately no `finally: clearTimeout` here. fetch() resolves as soon as
+    // the response headers arrive, so cancelling the deadline at that point
+    // left the body read unbounded — a peer that sends headers and then stops
+    // writing hung the command forever and NOTION_TIMEOUT_MS had no effect.
+    // Every branch below either reads the body (and clears the timer once it
+    // has) or clears it before sleeping.
 
     if (debugMode) {
       process.stderr.write(`[debug] ${response.status} ${response.statusText}\n`);
+    }
+
+    // A captive portal or intercepting proxy is the realistic way this happens.
+    // Say so, rather than letting it fall through as a bare "HTTP 302".
+    if (isRedirect(response)) {
+      clearTimeout(timer);
+      throw new NotionCliError(
+        ErrorCode.NETWORK_ERROR,
+        `${path} was redirected away from api.notion.com (HTTP ${response.status}) — refusing to follow. A proxy or captive portal is probably intercepting the request.`,
+      );
     }
 
     if (response.ok) {
@@ -206,37 +230,41 @@ async function notionRequestSingle<T = unknown>(
       // token '<'", which reads like a notionctl bug rather than a network one.
       try {
         return (await response.json()) as T;
-      } catch {
+      } catch (err) {
+        if (isAbort(err)) {
+          throw new NotionCliError(
+            ErrorCode.NETWORK_ERROR,
+            `Notion sent headers for ${path} but stopped before the body finished (timed out after ${timeoutMs}ms).`,
+          );
+        }
         throw new NotionCliError(
           ErrorCode.NETWORK_ERROR,
           `Notion returned a non-JSON response for ${path} (HTTP ${response.status}). A proxy or captive portal may be intercepting the request.`,
         );
+      } finally {
+        clearTimeout(timer);
       }
     }
 
     if (!shouldRetry(response.status)) {
-      return parseResponse<T>(response, path);
+      return parseResponse<T>(response, path, undefined, timer);
     }
 
     // A 5xx (or 529 service_overload) means Notion received the request; whether
     // it applied it before failing is unknowable, unlike a 429 rejection.
     if (unsafeToRepeat && response.status !== 429) {
-      return parseResponse<T>(response, path, [NO_RETRY_HINT]);
+      return parseResponse<T>(response, path, [NO_RETRY_HINT], timer);
     }
 
     if (attempt === MAX_ATTEMPTS - 1) {
-      return parseResponse<T>(response, path);
+      return parseResponse<T>(response, path, undefined, timer);
     }
 
-    const retryAfter = response.headers.get("retry-after");
-    const retryAfterMs = retryAfter ? Number(retryAfter) * 1000 : undefined;
-    const MAX_RETRY_AFTER_MS = 60_000;
-    const backoff = retryAfterMs && Number.isFinite(retryAfterMs)
-      ? Math.min(retryAfterMs, MAX_RETRY_AFTER_MS)
-      : (BACKOFF_MS[attempt] ?? 4000);
+    clearTimeout(timer);
+    const backoff = retryDelay(response, attempt);
     // Announce waits the user would otherwise experience as a frozen terminal.
     // Rate-limit backoff can legitimately run to a minute per attempt.
-    if (backoff >= 1000) {
+    if (backoff >= 1000 && !quietMode) {
       process.stderr.write(`notionctl: rate limited or transient error — retrying in ${Math.round(backoff / 1000)}s\n`);
     }
     await sleep(backoff);
@@ -249,21 +277,62 @@ async function notionRequestSingle<T = unknown>(
   );
 }
 
-async function parseResponse<T>(response: Response, path: string, suggestions?: string[]): Promise<T> {
-  if (response.ok) {
-    return (await response.json()) as T;
-  }
-
-  let apiMessage = `HTTP ${response.status}`;
+async function parseResponse<T>(
+  response: Response,
+  path: string,
+  suggestions?: string[],
+  timer?: ReturnType<typeof setTimeout>,
+): Promise<T> {
   try {
-    const errBody = (await response.json()) as { code?: string; message?: string };
-    if (errBody.message) apiMessage = errBody.message;
-  } catch {
-    // non-JSON error body, fall through with status code only
-  }
+    if (response.ok) {
+      return (await response.json()) as T;
+    }
 
-  const code = mapStatusToErrorCode(response.status);
-  throw new NotionCliError(code, `${path}: ${apiMessage}`, suggestions ? { suggestions } : undefined);
+    let apiMessage = `HTTP ${response.status}`;
+    try {
+      const errBody = (await response.json()) as { code?: string; message?: string };
+      if (errBody.message) apiMessage = errBody.message;
+    } catch {
+      // non-JSON (or truncated) error body, fall through with status code only
+    }
+
+    const code = mapStatusToErrorCode(response.status);
+    throw new NotionCliError(code, `${path}: ${apiMessage}`, suggestions ? { suggestions } : undefined);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+}
+
+/** With `redirect: "manual"` a 3xx arrives as-is (or as an opaque redirect). */
+function isRedirect(response: Response): boolean {
+  return response.type === "opaqueredirect" || (response.status >= 300 && response.status < 400);
+}
+
+function isAbort(err: unknown): boolean {
+  const name = (err as Error)?.name;
+  return name === "AbortError" || name === "TimeoutError";
+}
+
+const MAX_RETRY_AFTER_MS = 60_000;
+const MIN_RETRY_AFTER_MS = 250;
+
+/**
+ * How long to wait before the next attempt.
+ *
+ * Retry-After is attacker-controllable by anything sitting between us and
+ * Notion. It is clamped at both ends: a negative or sub-250ms value used to
+ * pass straight through to setTimeout, which fires immediately, so a hostile
+ * `Retry-After: -1` removed backoff entirely and turned the retry ladder into
+ * five back-to-back requests. A non-numeric value (an HTTP-date is legal) or a
+ * zero falls back to the fixed ladder.
+ */
+function retryDelay(response: Response, attempt: number): number {
+  const raw = response.headers.get("retry-after");
+  const ms = raw ? Number(raw) * 1000 : NaN;
+  if (Number.isFinite(ms) && ms > 0) {
+    return Math.min(Math.max(ms, MIN_RETRY_AFTER_MS), MAX_RETRY_AFTER_MS);
+  }
+  return BACKOFF_MS[attempt] ?? 4000;
 }
 
 function mapStatusToErrorCode(status: number): ErrorCode {
@@ -324,11 +393,16 @@ export async function notionRequest<T = unknown>(
       ? appendQuery(path, "start_cursor", cursor)
       : path;
 
-    const next = await notionRequestSingle<PaginatedResponse<unknown>>(
-      method,
-      nextPath,
-      nextBody,
-    );
+    const next = await notionRequestSingle<unknown>(method, nextPath, nextBody);
+    // The first page is shape-checked by isPaginated; later ones were trusted,
+    // so a page that came back without `results` spread `undefined` and escaped
+    // as an opaque "Internal error".
+    if (!isPaginated(next)) {
+      throw new NotionCliError(
+        ErrorCode.API_ERROR,
+        `Pagination for ${path} returned a non-list page after ${allResults.length} item(s).`,
+      );
+    }
     allResults.push(...next.results);
     cursor = next.has_more ? next.next_cursor : null;
     page++;
@@ -438,6 +512,7 @@ export async function notionUploadFile(
         },
         body: formData,
         signal: controller.signal,
+        redirect: "manual",   // see notionRequestSingle: never carry the file off-host
       });
     } catch (err) {
       clearTimeout(timer);
@@ -448,11 +523,27 @@ export async function notionUploadFile(
         `File upload to /file_uploads/${session.id}/send failed: ${(err as Error).message}. The upload may have partially completed.`,
         { suggestions: [NO_RETRY_HINT] },
       );
-    } finally {
-      clearTimeout(timer);
     }
+    // No `finally: clearTimeout` — see notionRequestSingle. The deadline has to
+    // outlive the headers so a stalled body cannot hang the upload.
 
-    if (response.ok) break;
+    if (response.ok) {
+      // Same deadline reasoning as notionRequestSingle: keep the timer alive
+      // until the body has actually been read, then stop.
+      try {
+        return (await response.json()) as { id: string; status: string; [key: string]: unknown };
+      } catch (err) {
+        throw new NotionCliError(
+          ErrorCode.NETWORK_ERROR,
+          isAbort(err)
+            ? `Upload of ${fileName} completed but the response body stalled (timed out after ${timeoutMs}ms).`
+            : `Upload of ${fileName} returned a non-JSON response.`,
+          { suggestions: [NO_RETRY_HINT] },
+        );
+      } finally {
+        clearTimeout(timer);
+      }
+    }
 
     // Same reasoning as notionRequestSingle: only a 429 is provably safe to repeat.
     if (response.status !== 429 || attempt === MAX_ATTEMPTS - 1) {
@@ -461,6 +552,7 @@ export async function notionUploadFile(
         const errBody = (await response.json()) as { message?: string };
         if (errBody.message) message = errBody.message;
       } catch { /* non-JSON error */ }
+      clearTimeout(timer);
       throw new NotionCliError(
         mapStatusToErrorCode(response.status),
         `/file_uploads/${session.id}/send: ${message}`,
@@ -469,21 +561,21 @@ export async function notionUploadFile(
       );
     }
 
-    const retryAfter = response.headers.get("retry-after");
-    const retryAfterMs = retryAfter ? Number(retryAfter) * 1000 : undefined;
-    const MAX_RETRY_AFTER_MS = 60_000;
-    const backoff = retryAfterMs && Number.isFinite(retryAfterMs)
-      ? Math.min(retryAfterMs, MAX_RETRY_AFTER_MS)
-      : (BACKOFF_MS[attempt] ?? 4000);
+    clearTimeout(timer);
+    const backoff = retryDelay(response, attempt);
     // Announce waits the user would otherwise experience as a frozen terminal.
     // Rate-limit backoff can legitimately run to a minute per attempt.
-    if (backoff >= 1000) {
+    if (backoff >= 1000 && !quietMode) {
       process.stderr.write(`notionctl: rate limited or transient error — retrying in ${Math.round(backoff / 1000)}s\n`);
     }
     await sleep(backoff);
   }
 
-  return (await response!.json()) as { id: string; status: string; [key: string]: unknown };
+  throw new NotionCliError(
+    ErrorCode.API_ERROR,
+    `Upload of ${fileName} was rate limited on every attempt.`,
+    { suggestions: [NO_RETRY_HINT] },
+  );
 }
 
 /**
@@ -518,6 +610,9 @@ export async function exchangeOAuthCode(
         redirect_uri: redirectUri,
       }),
       signal: controller.signal,
+      // The single-use authorization code is in this body. Following a
+      // redirect would hand it to whatever host the Location named.
+      redirect: "manual",
     });
   } catch (err: unknown) {
     if (err instanceof Error && err.name === "AbortError") {
@@ -526,6 +621,13 @@ export async function exchangeOAuthCode(
     throw err;
   } finally {
     clearTimeout(timer);
+  }
+
+  if (isRedirect(response)) {
+    throw new NotionCliError(
+      ErrorCode.NETWORK_ERROR,
+      `OAuth token exchange was redirected away from api.notion.com (HTTP ${response.status}) — refusing to follow.`,
+    );
   }
 
   if (!response.ok) {

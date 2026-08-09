@@ -19,8 +19,8 @@ import { VERSION } from "./version.js";
 import { setActiveProfile } from "./auth.js";
 import { setMarkdownWarnHandler } from "./markdown/write.js";
 import { setTokenizerWarnHandler } from "./markdown/tokenizer.js";
-import { setDebugMode, setVerboseMode, isVerboseMode, getRequestCount } from "./http.js";
-import type { CommandResult } from "./commands/shared.js";
+import { setDebugMode, setVerboseMode, setQuietMode, isVerboseMode, getRequestCount } from "./http.js";
+import { BOOLEAN_FLAGS, type CommandResult } from "./commands/shared.js";
 
 type CommandHandler = (ctx: { args: string[] }) => Promise<CommandResult>;
 
@@ -299,11 +299,21 @@ async function main(): Promise<void> {
   if (NOUNS_WITH_VERBS.has(noun) && verb === undefined) {
     await exitAfter(process.stdout, printHelp(), 0);
   }
-  // Strip a single `--help`/`-h` that appears anywhere in the remaining args
-  // (e.g. `notionctl page get --help`) so subcommand help still works without
-  // letting a buried `-v` after a `--format` argument hijack the version path.
+  // Subcommand help (`notionctl page get --help`). The thing to exclude is a
+  // `--help`/`-h` that is some flag's *value* — `page find-replace <id> --find
+  // -h --replace X` used to print help and exit 0 while replacing nothing.
+  // That is exactly the token after a value-taking flag, so test for it
+  // directly. A fixed two-slot window was the wrong proxy: it also dropped
+  // every help request that sits further along, and `db row get <id> --help`,
+  // `api GET /users/me --help` and `page find-replace <id> --find X --help`
+  // all died on "Flag --help requires a value" instead.
   const restArgv = verb !== undefined ? argv.slice(2) : argv.slice(1);
-  const helpIdx = restArgv.findIndex((a) => HEAD_HELP.has(a));
+  const isFlagValue = (i: number): boolean => {
+    const prev = i > 0 ? restArgv[i - 1] : undefined;
+    if (prev === undefined || !prev.startsWith("--") || prev.includes("=")) return false;
+    return !BOOLEAN_FLAGS.has(prev.slice(2));
+  };
+  const helpIdx = restArgv.findIndex((a, i) => HEAD_HELP.has(a) && !isFlagValue(i));
   if (helpIdx !== -1) {
     await exitAfter(process.stdout, printHelp(), 0);
   }
@@ -317,6 +327,10 @@ async function main(): Promise<void> {
   if (quiet) {
     setMarkdownWarnHandler(null);
     setTokenizerWarnHandler(null);
+    // The retry progress notices are stderr noise the flag is supposed to
+    // cover; they ignored it entirely before. Truncation and data-loss
+    // warnings are not progress and deliberately stay on.
+    setQuietMode(true);
   }
 
   const handler = await loadCommand(noun, verb);

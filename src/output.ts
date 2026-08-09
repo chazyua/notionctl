@@ -10,7 +10,7 @@
  * coerce to JSON so scripts never receive ANSI-decorated text.
  */
 
-import { NotionCliError, ErrorCode } from "./errors.js";
+import { NotionCliError, ErrorCode, stripControlChars } from "./errors.js";
 
 export type Format = "md" | "json" | "table" | "csv";
 
@@ -92,10 +92,21 @@ function padVisual(s: string, width: number): string {
   return s + " ".repeat(width - w);
 }
 
-/** Collapse embedded newlines so a cell never spans multiple rows. */
+/**
+ * Make a cell safe to print to a terminal.
+ *
+ * Collapses anything that would break the row across lines — including a lone
+ * CR, which the old `\r?\n` pattern missed and which returns the cursor to
+ * column 0 and overwrites the row — and strips the control characters a
+ * terminal executes rather than prints. Cell content is remote text (a page
+ * title, a property value, a comment body), so without this a hostile
+ * workspace could clear the screen or forge a `notionctl:` line in the
+ * operator's output. errors.ts has always done this on the error path; the
+ * success path prints far more remote text and had no equivalent.
+ */
 function sanitizeCell(cell: string | undefined): string {
   if (!cell) return "";
-  return cell.replace(/\r?\n/g, " ");
+  return stripControlChars(cell.replace(/\r\n|\r|\n|\t/g, " "));
 }
 
 export function renderTable(input: TableInput): string {
@@ -128,10 +139,32 @@ export function renderMarkdown(content: string): string {
   return content;
 }
 
+/**
+ * A cell whose first character is `=`, `+`, `@`, or a control character is
+ * evaluated as a formula when the file is opened in Excel, Sheets, or
+ * LibreOffice — so a page titled `=cmd|'/C calc'!A0` executes on whoever opens
+ * the export. Prefixing with a single quote is the conventional neutraliser:
+ * spreadsheets show the value as text and drop the quote.
+ *
+ * A leading `-` is only dangerous when it is not simply a negative number, so
+ * numeric cells are left exactly as they are and ordinary exports stay usable.
+ */
+const CSV_FORMULA_LEAD = /^[=+@\t]/;
+const CSV_PLAIN_NUMBER = /^-\d+(\.\d+)?([eE][-+]?\d+)?$/;
+
+function neutralizeFormula(s: string): string {
+  if (CSV_FORMULA_LEAD.test(s)) return `'${s}`;
+  if (s.startsWith("-") && !CSV_PLAIN_NUMBER.test(s)) return `'${s}`;
+  return s;
+}
+
 export function renderCsv(input: TableInput): string {
   const esc = (v: string): string => {
     // Coerce non-strings defensively — JSON.stringify may feed us numbers/booleans.
-    const s = v == null ? "" : String(v);
+    // Control characters are stripped for the same reason as in sanitizeCell:
+    // a CSV is routinely `cat`ed straight to a terminal. Line feeds survive —
+    // they are meaningful in CSV and the quoting below contains them.
+    const s = neutralizeFormula(stripControlChars(v == null ? "" : String(v)));
     if (/[",\n\r]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
     return s;
   };

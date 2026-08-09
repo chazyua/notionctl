@@ -959,3 +959,170 @@ describe("round-trip marker escaping — richTextToMarkdown escapes literals", (
     assert.equal(richTextToMarkdown([text("2*3")]), "2*3", "a lone * needs no escape");
   });
 });
+
+describe("escaping decided across the whole line", () => {
+  it("does not invent emphasis from asterisks in adjacent runs", () => {
+    // Neither run pairs up alone; the concatenation does.
+    const md = richTextToMarkdown([text("5*x"), text(" and 2*3")]);
+    const back = markdownToRichText(md);
+    assert.ok(back.every((r) => !r.annotations.italic), md);
+    assert.equal(back.map((r) => r.plain_text).join(""), "5*x and 2*3");
+  });
+
+  it("still leaves a lone literal asterisk unescaped", () => {
+    assert.equal(richTextToMarkdown([text("2*3 = 6")]), "2*3 = 6");
+  });
+
+  it("keeps real emphasis working", () => {
+    const back = markdownToRichText(richTextToMarkdown([text("hi", { italic: true })]));
+    assert.equal(back.length, 1);
+    assert.ok(back[0]!.annotations.italic);
+  });
+});
+
+describe("literal dollars vs inline equations", () => {
+  it("does not retype $x$ in prose as an equation", () => {
+    const md = richTextToMarkdown([text("The variable $n$ is the count.")]);
+    const back = markdownToRichText(md);
+    assert.ok(back.every((r) => r.type !== "equation"), md);
+    assert.equal(back.map((r) => r.plain_text).join(""), "The variable $n$ is the count.");
+  });
+
+  it("leaves currency alone", () => {
+    assert.equal(richTextToMarkdown([text("$5 and $10")]), "$5 and $10");
+  });
+
+  it("still parses a real inline equation", () => {
+    const back = markdownToRichText("before $x^2$ after");
+    assert.ok(back.some((r) => r.type === "equation"));
+  });
+});
+
+describe("inline code delimiters", () => {
+  it("survives content containing a backtick", () => {
+    const back = markdownToRichText(richTextToMarkdown([text("a`b", { code: true })]));
+    assert.equal(back.length, 1);
+    assert.equal(back[0]!.plain_text, "a`b");
+    assert.ok(back[0]!.annotations.code);
+  });
+
+  it("keeps the plain form a single backtick", () => {
+    assert.equal(richTextToMarkdown([text("x", { code: true })]), "`x`");
+  });
+
+  it("preserves leading and trailing spaces", () => {
+    const back = markdownToRichText(richTextToMarkdown([text(" pad ", { code: true })]));
+    assert.equal(back[0]!.plain_text, " pad ");
+  });
+
+  it("keeps annotations outside the code span", () => {
+    const md = richTextToMarkdown([text("x", { code: true, bold: true })]);
+    assert.equal(md, "**`x`**");
+  });
+});
+
+describe("date mentions", () => {
+  const dateMention = (start: string, end: string | null): RichText => ({
+    type: "mention",
+    mention: { type: "date", date: { start, end, time_zone: null } },
+    annotations: { ...DEFAULT_ANNOTATIONS },
+    plain_text: start,
+    href: null,
+  }) as RichText;
+
+  it("round-trips a single date", () => {
+    const back = markdownToRichText(richTextToMarkdown([dateMention("2024-01-01", null)]));
+    assert.equal(back[0]!.type, "mention");
+    assert.deepEqual((back[0] as { mention: { date: { start: string } } }).mention.date.start, "2024-01-01");
+  });
+
+  it("round-trips a range", () => {
+    const back = markdownToRichText(richTextToMarkdown([dateMention("2024-01-01", "2024-01-05")]));
+    const m = (back[0] as { mention: { date: { start: string; end: string } } }).mention;
+    assert.equal(m.date.start, "2024-01-01");
+    assert.equal(m.date.end, "2024-01-05");
+  });
+
+  it("leaves an angle-bracketed date in prose as text", () => {
+    const back = markdownToRichText(richTextToMarkdown([text("due <2024-01-01> ok")]));
+    assert.ok(back.every((r) => r.type === "text"));
+    assert.equal(back.map((r) => r.plain_text).join(""), "due <2024-01-01> ok");
+  });
+});
+
+describe("regressions found reviewing the escaping/code-span fixes", () => {
+  it("does not inject delimiters between adjacent code runs", () => {
+    // Notion caps a run at 2000 chars, so a longer inline code span arrives
+    // split. One delimiter pair per run turned `a` + `b` into `a``b`.
+    const md = richTextToMarkdown([text("a", { code: true }), text("b", { code: true })]);
+    assert.equal(md, "`ab`");
+    const back = markdownToRichText(md);
+    assert.equal(back.length, 1);
+    assert.equal(back[0]!.plain_text, "ab");
+    assert.ok(back[0]!.annotations.code);
+  });
+
+  it("keeps a split code span byte-identical across repeated round-trips", () => {
+    let runs: RichText[] = [text("x".repeat(2000), { code: true }), text("yz", { code: true })];
+    for (let cycle = 0; cycle < 3; cycle++) {
+      runs = markdownToRichText(richTextToMarkdown(runs));
+      const content = runs.filter((r) => r.annotations.code).map((r) => r.plain_text).join("");
+      assert.equal(content.length, 2002, `cycle ${cycle}`);
+      assert.ok(content.endsWith("xyz"), `cycle ${cycle}: ${JSON.stringify(content.slice(-8))}`);
+    }
+  });
+
+  it("still separates adjacent code runs that differ in annotation", () => {
+    const md = richTextToMarkdown([text("a", { code: true, bold: true }), text("b", { code: true })]);
+    assert.equal(md, "**`a`**`b`");
+    const back = markdownToRichText(md);
+    assert.equal(back.length, 2);
+    assert.ok(back[0]!.annotations.bold && back[0]!.annotations.code);
+    assert.ok(!back[1]!.annotations.bold && back[1]!.annotations.code);
+  });
+
+  for (const content of [" ", "  ", "\t"]) {
+    it(`round-trips a code span of only whitespace: ${JSON.stringify(content)}`, () => {
+      // CommonMark only strips the padding pair when the content is not all
+      // spaces, so padding one was never taken back: " " came back as "   ".
+      const back = markdownToRichText(richTextToMarkdown([text(content, { code: true })]));
+      assert.equal(back.length, 1);
+      assert.equal(back[0]!.plain_text, content);
+      assert.ok(back[0]!.annotations.code);
+    });
+  }
+
+  it("does not let an escaped dollar close an inline equation", () => {
+    const runs: RichText[] = [
+      text("a $b"),
+      { type: "equation", equation: { expression: "c" }, annotations: { ...DEFAULT_ANNOTATIONS }, plain_text: "$c$", href: null } as unknown as RichText,
+      text("d$ e"),
+    ];
+    const back = markdownToRichText(richTextToMarkdown(runs));
+    // The equation degrades to text here (a closing $ cannot be followed by an
+    // alphanumeric), but every character must survive. Previously the escaped
+    // `\$` was taken as a closer, producing an equation whose expression was
+    // `d\` and dropping the real one.
+    assert.equal(back.map((r) => r.plain_text).join(""), "a $b$c$d$ e");
+    assert.ok(back.every((r) => r.type !== "equation" || r.plain_text !== "$d\\$"));
+  });
+
+  it("still parses a real equation whose closer is followed by a space", () => {
+    const back = markdownToRichText("cost $5 and $x^2$ more");
+    const eq = back.filter((r) => r.type === "equation");
+    assert.equal(eq.length, 1);
+    assert.equal((eq[0] as unknown as { equation: { expression: string } }).equation.expression, "x^2");
+  });
+
+  it("scans asterisk emphasis in linear time", () => {
+    // Every '*' followed by an alphanumeric and preceded by a space: no early
+    // exit, no closer. The nested scan this replaced took 2.5s here.
+    const chunk = "The handler takes *ctx and *req and *buf, then returns. ".repeat(4);
+    const runs: RichText[] = [];
+    for (let k = 0; k < 100; k++) { runs.push(text(chunk)); runs.push(text("term", { bold: true })); }
+    const started = process.hrtime.bigint();
+    richTextToMarkdown(runs);
+    const ms = Number(process.hrtime.bigint() - started) / 1e6;
+    assert.ok(ms < 500, `took ${ms.toFixed(0)}ms for ${runs.length} runs`);
+  });
+});

@@ -136,3 +136,44 @@ describe("RESERVED_FRONTMATTER_KEYS", () => {
     assert.equal(RESERVED_FRONTMATTER_KEYS.has("status"), false);
   });
 });
+
+describe("an unreadable notion_synced_at must not disable drift detection", () => {
+  // A truncated or hand-mangled timestamp is still valid YAML, so nothing
+  // upstream rejects it. Parsing it to NaN silently skipped the comparison and
+  // the push overwrote real remote edits with no warning and no --force.
+  for (const bad of ["2026-04-01T10:0", "not-a-date", "", "2026-13-45T99:99:99Z"]) {
+    it(`fails closed on notion_synced_at: ${JSON.stringify(bad)}`, () => {
+      const state = classifySyncState({
+        frontmatter: { notion_id: "abc", notion_hash: "sha256:stale", notion_synced_at: bad },
+        localBody: "# Local edit",
+        remoteEditedAt: "2026-04-01T10:05:00.000Z",
+      });
+      assert.equal(state, SyncState.DRIFT, `expected DRIFT for ${JSON.stringify(bad)}`);
+    });
+  }
+
+  it("still treats a genuinely absent baseline as CHANGED, not drift", () => {
+    // No notion_synced_at at all is the "never synced before" case and must
+    // keep pushing — only a present-but-unreadable value fails closed.
+    const state = classifySyncState({
+      frontmatter: { notion_id: "abc", notion_hash: "sha256:stale" },
+      localBody: "# Local edit",
+      remoteEditedAt: "2026-04-01T10:05:00.000Z",
+    });
+    assert.equal(state, SyncState.CHANGED);
+  });
+
+  it("still reports UNCHANGED when the hash matches, whatever the timestamp says", () => {
+    const body = "# Same";
+    const state = classifySyncState({
+      frontmatter: {
+        notion_id: "abc",
+        notion_hash: computeContentHash(body),
+        notion_synced_at: "garbage",
+      },
+      localBody: body,
+      remoteEditedAt: "2026-04-01T10:05:00.000Z",
+    });
+    assert.equal(state, SyncState.UNCHANGED);
+  });
+});

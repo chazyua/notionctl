@@ -92,6 +92,12 @@ const PASS_THROUGH_RE = /^<!--\s*notion-block:\s*(\w+)\s+id=([\w-]+)(?:\s[^>]*)?
 
 const MEDIA_SIDECAR_TYPES = new Set(["image", "video", "file", "pdf"]);
 const LINK_SIDECAR_TYPES = new Set(["bookmark", "link_preview", "embed"]);
+/**
+ * A link line whose sidecar names one of these is a *reference* to a block the
+ * replace path deliberately leaves in place. Writing anything for it would sit
+ * alongside the block that was kept, so the pair is consumed and dropped.
+ */
+const PRESERVED_SIDECAR_TYPES = new Set(["child_page", "child_database"]);
 
 function peekSidecar(lines: string[], startIdx: number): { type: string; nextIdx: number } | null {
   let i = startIdx;
@@ -288,6 +294,12 @@ function markdownToBlocksInternal(md: string, ctx: ParseContext, depth: number):
       const parsedLink = parseBareLinkLine(trimmed);
       if (parsedLink) {
         const sidecar = peekSidecar(lines, i + 1);
+        if (sidecar && PRESERVED_SIDECAR_TYPES.has(sidecar.type)) {
+          // The sub-page itself is untouched by a replace — see
+          // LIVE_REFERENCE_TYPES in commands/page.ts. Emit nothing.
+          i = sidecar.nextIdx;
+          continue;
+        }
         if (sidecar && LINK_SIDECAR_TYPES.has(sidecar.type)) {
           if (sidecar.type === "embed") {
             blocks.push({
@@ -813,6 +825,10 @@ export function isBlockStart(line: string): boolean {
     /^\$\$/.test(t) ||
     /^!\[/.test(t) ||
     /^<details>/i.test(t) ||
+    // The closing tag too: only the opener was shielded, so a paragraph inside
+    // a toggle whose text began `</details>` closed the element early and the
+    // toggle lost its body.
+    /^<\/details>/i.test(t) ||
     /^<!--\s*notion-(?:block|heading|table):/.test(t)
   );
 }

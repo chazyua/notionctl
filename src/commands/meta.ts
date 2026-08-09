@@ -17,7 +17,8 @@ export interface CommandContext {
 }
 
 export async function whoamiCommand(ctx: CommandContext): Promise<string> {
-  const { flags } = parseFlags(ctx.args);
+  const { flags, positional } = parseFlags(ctx.args);
+  rejectExtraPositionals(positional, 0);
   const me = await notionRequest<{ bot?: { owner?: { user?: { name?: string } } }; name?: string }>("GET", "/users/me");
   const format = chooseFormat(flags.get("format") as Format | undefined, {
     isTty: isStdoutTty(),
@@ -39,11 +40,19 @@ export async function whoamiCommand(ctx: CommandContext): Promise<string> {
 }
 
 export async function resolveCommand(ctx: CommandContext): Promise<string> {
-  const { positional } = parseFlags(ctx.args);
+  const { flags, positional } = parseFlags(ctx.args);
   if (positional.length === 0) {
     throw new NotionCliError(ErrorCode.USAGE, "Usage: notionctl resolve <url>");
   }
-  return resolvePageId(positional[0]!);
+  rejectExtraPositionals(positional, 1);
+  const format = flags.get("format");
+  // Was silently ignored, so `--format json` returned a bare id that no JSON
+  // parser would accept.
+  if (format !== undefined && format !== "json" && format !== "table") {
+    throw new NotionCliError(ErrorCode.USAGE, "resolve supports --format json or table.");
+  }
+  const id = resolvePageId(positional[0]!);
+  return format === "json" ? renderJson({ id }) : id;
 }
 
 export async function searchCommand(ctx: CommandContext): Promise<string> {

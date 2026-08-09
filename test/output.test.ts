@@ -208,3 +208,43 @@ describe("unsupported format values must be catchable", () => {
     // The command would then: if (format !== "json") throw USAGE error
   });
 });
+
+describe("output.renderCsv formula injection", () => {
+  const cell = (v: string): string => renderCsv({ columns: ["C"], rows: [[v]] }).split("\n")[1]!;
+
+  it("neutralises cells a spreadsheet would evaluate", () => {
+    for (const v of ["=cmd|'/C calc'!A0", "+1+1", "@SUM(A1)", "\tx"]) {
+      assert.ok(cell(v).replace(/^"/, "").startsWith("'"), `not neutralised: ${v}`);
+    }
+  });
+
+  it("leaves negative numbers alone", () => {
+    assert.equal(cell("-5"), "-5");
+    assert.equal(cell("-3.14"), "-3.14");
+    assert.equal(cell("-1e5"), "-1e5");
+  });
+
+  it("neutralises a leading dash that is not a number", () => {
+    assert.ok(cell("-notes").startsWith("'-notes"));
+  });
+
+  it("strips control characters", () => {
+    assert.ok(!cell("a\x1b[2Jb").includes("\x1b"));
+  });
+});
+
+describe("output.renderTable control characters", () => {
+  it("strips escape sequences and lone carriage returns", () => {
+    const out = renderTable({ columns: ["T"], rows: [["a\x1b[2Jb\rc"]] });
+    // The ESC byte goes; the "[2J" it introduced stays as inert text, which is
+    // exactly what scrub() does on the error path.
+    assert.ok(!out.includes("\x1b"));
+    assert.ok(!out.includes("\r"));
+    assert.ok(out.includes("a[2Jb c"), JSON.stringify(out));
+  });
+
+  it("keeps a cell on one row", () => {
+    const out = renderTable({ columns: ["T"], rows: [["a\nb"]] });
+    assert.equal(out.split("\n").length, 3);
+  });
+});

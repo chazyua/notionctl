@@ -112,6 +112,12 @@ function appendChildBlocks(headLine: string, block: Block): string {
   if (!children || children.length === 0) return headLine;
   const rendered = blocksToMarkdown(children);
   if (rendered.length === 0) return headLine;
+  // An empty paragraph carrying children has no head line, and joining anyway
+  // opened the block — and, when it came first, the whole document — with blank
+  // lines. `extractFrontmatter` strips leading newlines on read-back, so the
+  // file no longer matched the hash `page get` had just written for it and the
+  // next `page sync` deleted and recreated every block on an untouched file.
+  if (headLine.length === 0) return rendered;
   return `${headLine}\n\n${rendered}`;
 }
 
@@ -383,7 +389,13 @@ function renderBlock(block: Block, depth: number, numberedIndex: number): string
       const body = (block as unknown as { [key: string]: { title?: string } })[block.type];
       const title = body?.title ?? "Untitled";
       const kind = block.type === "child_page" ? "page" : "database";
-      return `[${escapeMarkdownContent(title)}](notion://${kind}/${block.id})`;
+      // The sidecar makes the write path drop this line instead of rebuilding
+      // it as a page mention. A replace already *keeps* the real child_page
+      // block (deleting it would trash the sub-page), so recreating it as a
+      // mention added a second copy — and one more on every round-trip after
+      // that. The link still renders for a human reading the file.
+      return `[${escapeMarkdownContent(title)}](notion://${kind}/${block.id})\n`
+        + `<!-- notion-block: ${block.type} id=${block.id} -->`;
     }
     case "column_list": {
       const columns = (block as { _children?: Block[] })._children;

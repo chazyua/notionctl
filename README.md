@@ -202,11 +202,28 @@ Each sync stores a SHA-256 content hash and timestamp in the file's YAML frontma
 | TTY (interactive) | Human-friendly (table, Markdown) | `--format json` |
 | Piped (scripts) | JSON | `--format table` |
 
-All commands support `--format md|json|table|csv`.
+Read commands do not all produce every shape. One that doesn't will reject the
+flag rather than ignore it:
+
+| Commands | Formats |
+|----------|---------|
+| `db query`, `db schema`, `search`, `whoami`, `user list`, `user me`, `comment list` | `json`, `table`, `csv` |
+| `page get`, `db row get`, `block get`, `block children` | `json`, `md` |
+| `resolve`, `auth list`, `auth doctor` | `json`, `table` |
+| `auth status` | `json` |
+
+Write commands — `page create/append/update/sync/delete/move/duplicate/restore/find-replace/open`,
+`db create/update`, `db row create/update/delete`, `block append/update/delete`,
+`comment add`, `file upload`, `api`, `auth set/clear/login` — always report their
+result as JSON and accept `--format` without acting on it.
+
+CSV cells beginning `=`, `+`, `@`, or a tab are prefixed with `'` so a spreadsheet
+shows them as text instead of evaluating them as a formula. Negative numbers are
+left alone.
 
 ## Testing
 
-731 automated tests. Zero test framework dependencies (uses Node.js built-in `node:test`).
+1054 automated tests. Zero test framework dependencies (uses Node.js built-in `node:test`).
 
 ```sh
 npm test                    # Full suite

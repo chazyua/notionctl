@@ -103,11 +103,18 @@ const LEGACY_SECRET_PATTERN = /secret_[a-zA-Z0-9]{30,}/g;
  */
 const CONTROL_CHARS = /[\x00-\x08\x0B-\x1F\x7F]/g;
 
+/** Exported so the output path can apply the same rule — it prints far more
+ *  remote text than the error path and had no equivalent guard. */
+export function stripControlChars(text: string): string {
+  return text.replace(CONTROL_CHARS, "");
+}
+
 export function scrub(text: string): string {
-  return text
-    .replace(TOKEN_PATTERN, "ntn_***")
-    .replace(LEGACY_SECRET_PATTERN, "secret_***")
-    .replace(CONTROL_CHARS, "");
+  return stripControlChars(
+    text
+      .replace(TOKEN_PATTERN, "ntn_***")
+      .replace(LEGACY_SECRET_PATTERN, "secret_***"),
+  );
 }
 
 export function formatErrorJson(err: NotionCliError): string {

@@ -66,17 +66,26 @@ export function parsePropertyFlag(flag: string): FlagPair {
   };
 }
 
+/**
+ * Index of the '=' that separates key from value.
+ *
+ * Only a quote at position 0 opens a quoted key — that is the whole point of
+ * the quoting, which exists so a key containing '=' can be written as
+ * `"a=b"=value`. Treating a quote anywhere as an opener meant an apostrophe in
+ * an ordinary column name swallowed the separator: `--prop "Owner's Notes=x"`
+ * was rejected as "missing '='" and there was no way to set the property at all.
+ */
 function findUnquotedEquals(s: string): number {
-  let inQuote = false;
-  let quoteChar = "";
-  for (let i = 0; i < s.length; i++) {
+  const quoteChar = s[0] === '"' || s[0] === "'" ? s[0] : "";
+  let inQuote = quoteChar !== "";
+  for (let i = inQuote ? 1 : 0; i < s.length; i++) {
     const c = s[i]!;
     if (inQuote) {
-      if (c === quoteChar && s[i - 1] !== "\\") inQuote = false;
-    } else {
-      if (c === '"' || c === "'") { inQuote = true; quoteChar = c; }
-      else if (c === "=") return i;
+      if (c === "\\") { i++; continue; }
+      if (c === quoteChar) inQuote = false;
+      continue;
     }
+    if (c === "=") return i;
   }
   return -1;
 }
@@ -274,12 +283,28 @@ function parseCheckboxValue(key: string, raw: string): boolean {
  */
 function stripQuotes(s: string): string {
   const q = s[0];
-  if ((q !== '"' && q !== "'") || s.length < 2 || s[s.length - 1] !== q) return s;
+  if ((q !== '"' && q !== "'") || s.length < 2 || s[s.length - 1] !== q) return unescapeQuotes(s);
   for (let i = 1; i < s.length - 1; i++) {
     if (s[i] === "\\") { i++; continue; }
-    if (s[i] === q) return s;   // closes before the end: not one quoted value
+    if (s[i] === q) return unescapeQuotes(s);   // closes before the end: not one quoted value
   }
-  return s.slice(1, -1);
+  return unescapeQuotes(s.slice(1, -1));
+}
+
+/**
+ * The escape hatch for a value that is genuinely quoted. Stripping the outer
+ * pair means a rich_text value of `"hello"` — quotes included — round-tripped
+ * out of `page get` and back in as `hello`, with no way to say otherwise.
+ * `--prop 'Notes=\"hello\"'` now writes the quotes.
+ *
+ * Only the quote characters. `\\` was in this set too, and because the
+ * unquoted path unescapes as well, every ordinary value lost half its
+ * backslashes: `--prop 'Notes=C:\\server\\share'` wrote `C:\server\share` and
+ * a stored regex `\\d+` became `\d+`, halving again on each get-and-write
+ * cycle. A backslash is not a quoting character here and needs no escape.
+ */
+function unescapeQuotes(s: string): string {
+  return s.replace(/\\(["'])/g, "$1");
 }
 
 function suggestKey(input: string, candidates: string[]): string[] {

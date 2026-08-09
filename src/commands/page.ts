@@ -7,9 +7,10 @@
  * (from --from file or stdin) and convert to blocks.
  */
 
-import { writeFile, rename, realpath } from "node:fs/promises";
+import { open, rename, realpath, rm } from "node:fs/promises";
 import { resolve, sep } from "node:path";
 import { execFile } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import { extractFrontmatter, frontmatterBody, malformedFrontmatterError, reinsertFrontmatter } from "../sync/frontmatter.js";
 import { classifySyncState, computeContentHash, SyncState, RESERVED_FRONTMATTER_KEYS } from "../sync/sync.js";
 import { notionRequest, appendBlocksChunked } from "../http.js";
@@ -27,6 +28,7 @@ export async function pageGetCommand(ctx: { args: string[] }): Promise<string> {
   if (positional.length === 0) {
     throw new NotionCliError(ErrorCode.USAGE, "Usage: notionctl page get <id>");
   }
+  rejectExtraPositionals(positional, 1);
   const id = resolvePageId(positional[0]!);
 
   const page = await fetchWith404Hint(
@@ -36,6 +38,7 @@ export async function pageGetCommand(ctx: { args: string[] }): Promise<string> {
       properties: Record<string, unknown>;
       parent: { type: string; database_id?: string };
       url: string;
+      last_edited_time?: string;
     }>("GET", `/pages/${id}`),
     `Page ${id}`,
   );
@@ -92,7 +95,10 @@ export async function pageGetCommand(ctx: { args: string[] }): Promise<string> {
   const fullBody = `${titleLine}${body}`;
   const bodyForHash = fullBody.endsWith("\n") ? fullBody : fullBody + "\n";
   frontmatter.notion_hash = computeContentHash(bodyForHash);
-  frontmatter.notion_synced_at = new Date().toISOString();
+  // The remote's own timestamp, not ours — `page sync` compares this against
+  // last_edited_time, and a local clock running slow made that comparison
+  // report drift on a file nobody had touched. See remoteSyncedAt().
+  frontmatter.notion_synced_at = page.last_edited_time ?? new Date().toISOString();
   const yaml = stringifyYaml(frontmatter);
   // Emit exactly the bytes that were hashed. Appending another "\n" here when
   // fullBody already ended in one made the written body differ from the hashed
@@ -204,6 +210,39 @@ function warnAboutPreservedReferences(action: string, kept: Block[]): void {
   );
 }
 
+/**
+ * Refuse a replace whose input parsed to no blocks at all.
+ *
+ * `page append` has always guarded this; the two commands that *replace*
+ * content did not. A `--from` file that reduces to nothing — an empty file,
+ * the wrong path, a document whose only line is the `# H1` that gets consumed
+ * as the title — deleted every block on the page, reported `deletedBlocks: N,
+ * appendedBlocks: 0`, and exited 0. Nothing in the output said the content was
+ * gone, and there is no undo on the Notion side.
+ *
+ * Emptying a page on purpose is legitimate, so it stays available behind
+ * --force rather than being blocked outright.
+ */
+function assertReplacementNotEmpty(
+  action: string,
+  existing: Block[],
+  newBlocks: unknown[],
+  flags: Map<string, string>,
+): void {
+  if (newBlocks.length > 0 || existing.length === 0) return;
+  if (getBooleanFlag(flags, "force")) return;
+  throw new NotionCliError(
+    ErrorCode.USAGE,
+    `${action} would delete all ${existing.length} block(s) on this page — the input parsed to no blocks at all.`,
+    {
+      suggestions: [
+        "Check the input has the content you expect: an empty file, a wrong path, or a document whose only line is the title all parse to nothing.",
+        "Re-run with --force if you really do mean to empty the page.",
+      ],
+    },
+  );
+}
+
 function warnAboutDestructiveReplace(action: string, existing: Block[]): void {
   const hostedMedia = existing.filter((b) => {
     const t = b.type;
@@ -226,7 +265,7 @@ function warnAboutDestructiveReplace(action: string, existing: Block[]): void {
 }
 
 export async function pageCreateCommand(ctx: { args: string[] }): Promise<string> {
-  const { flags } = parseFlags(ctx.args);
+  const { flags, positional } = parseFlags(ctx.args);
   const parent = flags.get("parent");
   const title = flags.get("title");
   if (!parent || !title) {
@@ -235,6 +274,7 @@ export async function pageCreateCommand(ctx: { args: string[] }): Promise<string
       "Usage: notionctl page create --parent <id> --title <text> [--from file.md]",
     );
   }
+  rejectExtraPositionals(positional, 0);
   const parentId = resolvePageId(parent);
 
   const parentKey = await detectParentKey(parentId);
@@ -295,6 +335,7 @@ export async function pageAppendCommand(ctx: { args: string[] }): Promise<string
   if (positional.length === 0) {
     throw new NotionCliError(ErrorCode.USAGE, "Usage: notionctl page append <id> [--from file.md]");
   }
+  rejectExtraPositionals(positional, 1);
   const id = resolvePageId(positional[0]!);
   const bodyMd = stripFrontmatter(await readInputMarkdown(flags), inputLabel(flags));
   const blocks = markdownToBlocks(bodyMd);
@@ -316,6 +357,7 @@ export async function pageUpdateCommand(ctx: { args: string[] }): Promise<string
   if (positional.length === 0) {
     throw new NotionCliError(ErrorCode.USAGE, "Usage: notionctl page update <id> [--title <text>] [--from file.md]");
   }
+  rejectExtraPositionals(positional, 1);
   const id = resolvePageId(positional[0]!);
   const title = flags.get("title");
   // page update requires explicit --from to read body content. Unlike
@@ -339,9 +381,12 @@ export async function pageUpdateCommand(ctx: { args: string[] }): Promise<string
     let bodyForBlocks = raw;
     if (!resolvedTitle) {
       // No explicit --title: use the leading H1 as the new title and strip
-      // it from the body so it isn't duplicated.
-      const { title: h1Title, syncBody } = extractSyncTitle({}, raw);
-      if (h1Title !== "Untitled") {
+      // it from the body so it isn't duplicated. Test the `explicit` flag, not
+      // the title string — comparing against "Untitled" meant a document whose
+      // leading heading really is `# Untitled` collided with the sentinel, so
+      // the page kept its old name and the H1 stayed in the body as a duplicate.
+      const { title: h1Title, syncBody, explicit } = extractSyncTitle({}, raw);
+      if (explicit) {
         resolvedTitle = h1Title;
         bodyForBlocks = syncBody;
       }
@@ -362,6 +407,15 @@ export async function pageUpdateCommand(ctx: { args: string[] }): Promise<string
 
   const result: Record<string, unknown> = {};
 
+  // Read the current blocks before anything is written, so a replace that
+  // would empty the page is refused while the page is still untouched — the
+  // title included.
+  let existing: { results: Block[] } | null = null;
+  if (newBlocks !== null) {
+    existing = await notionRequest<{ results: Block[] }>("GET", `/blocks/${id}/children`);
+    assertReplacementNotEmpty("page update", existing.results, newBlocks, flags);
+  }
+
   if (resolvedTitle) {
     await notionRequest("PATCH", `/pages/${id}`, {
       properties: { title: { title: [{ type: "text", text: { content: resolvedTitle, link: null } }] } },
@@ -369,8 +423,7 @@ export async function pageUpdateCommand(ctx: { args: string[] }): Promise<string
     result["title"] = resolvedTitle;
   }
 
-  if (newBlocks !== null) {
-    const existing = await notionRequest<{ results: Block[] }>("GET", `/blocks/${id}/children`);
+  if (newBlocks !== null && existing !== null) {
     warnAboutDestructiveReplace("page update", existing.results);
     // Append the replacement content BEFORE deleting the old blocks. Deleting
     // first meant any failure in the append (a block Notion rejects, a dropped
@@ -401,6 +454,7 @@ export async function pageDuplicateCommand(ctx: { args: string[] }): Promise<str
       "Usage: notionctl page duplicate <page-id> [--parent <new-parent-id>] [--title <new-title>]",
     );
   }
+  rejectExtraPositionals(positional, 1);
   const sourceId = resolvePageId(positional[0]!);
 
   const sourcePage = await fetchWith404Hint(
@@ -543,7 +597,24 @@ export async function pageDuplicateCommand(ctx: { args: string[] }): Promise<str
 
   const created = await notionRequest<{ id: string; url: string }>("POST", "/pages", payload);
   if (overflow.length > 0) {
-    await appendBlocksChunked(created.id, overflow);
+    try {
+      await appendBlocksChunked(created.id, overflow);
+    } catch (err) {
+      // Same hazard `page create` and `db row create` already handle: the copy
+      // exists but is incomplete, and without the id in the error there is no
+      // way to find or clean up what was just made.
+      const detail = err instanceof NotionCliError ? err.message : String(err);
+      throw new NotionCliError(
+        ErrorCode.API_ERROR,
+        `Duplicate was created but only the first ${firstChunk.length} blocks were copied: ${detail}`,
+        {
+          suggestions: [
+            `The partial copy is ${created.url} (id ${created.id}).`,
+            "Delete it and retry, or re-run `page update` against that id.",
+          ],
+        },
+      );
+    }
   }
   return renderJson({ id: created.id, url: created.url, copiedFrom: sourceId });
 }
@@ -556,6 +627,7 @@ export async function pageMoveCommand(ctx: { args: string[] }): Promise<string> 
       "Usage: notionctl page move <page-id> --to <new-parent-page-id>",
     );
   }
+  rejectExtraPositionals(positional, 1);
   const id = resolvePageId(positional[0]!);
   const to = flags.get("to");
   if (!to) {
@@ -586,6 +658,7 @@ export async function pageOpenCommand(ctx: { args: string[] }): Promise<string> 
   if (positional.length === 0) {
     throw new NotionCliError(ErrorCode.USAGE, "Usage: notionctl page open <id-or-url>");
   }
+  rejectExtraPositionals(positional, 1);
   const id = resolvePageId(positional[0]!);
   const page = await fetchWith404Hint(
     () => notionRequest<{ url: string }>("GET", `/pages/${id}`),
@@ -594,7 +667,10 @@ export async function pageOpenCommand(ctx: { args: string[] }): Promise<string> 
   const url = page.url;
 
   // Only open known-safe Notion URLs — reject file://, data:, javascript:, etc.
-  if (!/^https:\/\/(www\.)?notion\.so\//.test(url)) {
+  // The character class matters as much as the host: on Windows the opener runs
+  // through `cmd /c start`, which splits on `&` and friends, so anything outside
+  // the set a Notion URL actually uses is refused rather than passed along.
+  if (!/^https:\/\/(www\.)?notion\.so\/[A-Za-z0-9\-._~/?#[\]@!$'()*+,;=%:]*$/.test(url)) {
     throw new NotionCliError(ErrorCode.GENERIC, `Refusing to open non-Notion URL: ${url}`);
   }
 
@@ -741,6 +817,7 @@ export async function pageFindReplaceCommand(ctx: { args: string[] }): Promise<s
       "Usage: notionctl page find-replace <id> --find <text> --replace <text>",
     );
   }
+  rejectExtraPositionals(positional, 1);
   const id = resolvePageId(positional[0]!);
   const findStr = flags.get("find");
   const replaceStr = flags.get("replace");
@@ -830,6 +907,7 @@ export async function pageRestoreCommand(ctx: { args: string[] }): Promise<strin
   if (positional.length === 0) {
     throw new NotionCliError(ErrorCode.USAGE, "Usage: notionctl page restore <id>");
   }
+  rejectExtraPositionals(positional, 1);
   const id = resolvePageId(positional[0]!);
   if (getBooleanFlag(flags, "dry-run")) {
     return renderJson({ action: "page restore", pageId: id, wouldRestore: true });
@@ -916,10 +994,61 @@ export function extractSyncTitle(
   return { title: "Untitled", syncBody: body, explicit: false };
 }
 
+/**
+ * Write-then-rename. The temp path must not be guessable, so `writeFile` —
+ * which follows symlinks — cannot be talked into writing through one a
+ * same-UID process had planted there. `wx` refuses to open an existing path at
+ * all, symlink or not, which is the same protection auth.ts applies to the
+ * config file.
+ *
+ * The random suffix is what makes `wx` safe to use here. Keyed on the pid
+ * alone, any leftover temp — a run killed between open and rename, a write
+ * that failed on a full disk, two containers sharing a volume and a pid
+ * number — made every later run fail EEXIST. That lands as a bare
+ * "Internal error" *after* the remote write, which on the create path means
+ * the new page id is never recorded and the next sync makes a second page:
+ * precisely the orphan the caller takes care to avoid. A fresh name cannot
+ * collide, so the open only fails for reasons worth failing on.
+ */
 async function atomicWriteFile(path: string, content: string): Promise<void> {
-  const tmp = `${path}.tmp-${process.pid}`;
-  await writeFile(tmp, content, "utf8");
-  await rename(tmp, path);
+  const tmp = `${path}.tmp-${process.pid}-${randomBytes(6).toString("hex")}`;
+  const fh = await open(tmp, "wx");
+  try {
+    await fh.writeFile(content, "utf8");
+  } catch (err) {
+    // Leaving a half-written temp behind is litter next to the user's file.
+    await fh.close();
+    await rm(tmp, { force: true });
+    throw err;
+  }
+  await fh.close();
+  try {
+    await rename(tmp, path);
+  } catch (err) {
+    await rm(tmp, { force: true });
+    throw err;
+  }
+}
+
+/**
+ * Timestamp a sync against Notion's clock rather than ours.
+ *
+ * `notion_synced_at` is compared to the remote `last_edited_time` on the next
+ * run, so recording the local clock made the comparison cross-clock: a
+ * workstation running a couple of minutes slow stamped a sync time earlier
+ * than the edit it had just made, and every later run saw remote > local and
+ * refused as DRIFT forever, needing --force each time.
+ */
+async function remoteSyncedAt(pageId: string): Promise<string> {
+  try {
+    const page = await notionRequest<{ last_edited_time?: string }>("GET", `/pages/${pageId}`);
+    if (typeof page.last_edited_time === "string" && page.last_edited_time.length > 0) {
+      return page.last_edited_time;
+    }
+  } catch {
+    // Fall back to the local clock rather than failing a sync that has landed.
+  }
+  return new Date().toISOString();
 }
 
 export async function pageSyncCommand(ctx: { args: string[] }): Promise<string> {
@@ -927,6 +1056,7 @@ export async function pageSyncCommand(ctx: { args: string[] }): Promise<string> 
   if (positional.length === 0) {
     throw new NotionCliError(ErrorCode.USAGE, "Usage: notionctl page sync <file.md>");
   }
+  rejectExtraPositionals(positional, 1);
   const file = resolve(positional[0]!);
   const cwd = process.cwd();
   const cwdPrefix = cwd.endsWith(sep) ? cwd : cwd + sep;
@@ -985,6 +1115,7 @@ export async function pageSyncCommand(ctx: { args: string[] }): Promise<string> 
   let remoteEditedAt: string | undefined;
   let validatedNotionId: string | undefined;
   let remoteFetchFailed = false;
+  let remoteFetchWasNotFound = false;
   if (typeof frontmatter.notion_id === "string" && frontmatter.notion_id) {
     validatedNotionId = resolvePageId(frontmatter.notion_id);
     try {
@@ -993,8 +1124,12 @@ export async function pageSyncCommand(ctx: { args: string[] }): Promise<string> 
         `/pages/${validatedNotionId}`,
       );
       remoteEditedAt = remotePage.last_edited_time;
-    } catch {
+    } catch (err) {
       remoteFetchFailed = true;
+      // A missing page is not an unverifiable page: the CHANGED branch below
+      // reports it with the instruction that actually helps (drop notion_id and
+      // re-create), so let it through rather than masking it as drift.
+      remoteFetchWasNotFound = err instanceof NotionCliError && err.code === ErrorCode.NOT_FOUND;
     }
   }
 
@@ -1016,6 +1151,25 @@ export async function pageSyncCommand(ctx: { args: string[] }): Promise<string> 
       );
     }
     return renderJson({ file, state, message: "no changes to sync" });
+  }
+
+  // Drift detection needs the remote timestamp. When the fetch above failed we
+  // do not have one, and classifySyncState silently skips the check — so a
+  // transient 5xx or a 403 downgraded the guard to off and the next write blew
+  // away remote edits without ever reporting DRIFT. Refuse instead, on the same
+  // terms as real drift.
+  if (remoteFetchFailed && !remoteFetchWasNotFound && !getBooleanFlag(flags, "force")) {
+    throw new NotionCliError(
+      ErrorCode.SYNC_DRIFT,
+      `Could not read the remote page ${validatedNotionId} to check whether it changed — refusing to overwrite it unchecked.`,
+      {
+        suggestions: [
+          "Re-run once the API is reachable, so drift detection can do its job.",
+          "Check the page still exists and the integration is still connected to it.",
+          "Or use --force to overwrite remote with your local version regardless.",
+        ],
+      },
+    );
   }
 
   if (state === SyncState.DRIFT && !getBooleanFlag(flags, "force")) {
@@ -1074,7 +1228,7 @@ export async function pageSyncCommand(ctx: { args: string[] }): Promise<string> 
       await appendBlocksChunked(created.id, overflow);
     }
     frontmatter.notion_hash = computeContentHash(body);
-    frontmatter.notion_synced_at = new Date().toISOString();
+    frontmatter.notion_synced_at = await remoteSyncedAt(created.id);
     await atomicWriteFile(file, reinsertFrontmatter(frontmatter, body));
     return renderJson({ file, state, createdId: created.id });
   }
@@ -1096,6 +1250,7 @@ export async function pageSyncCommand(ctx: { args: string[] }): Promise<string> 
       throw err;
     }
     const newBlocks = markdownToBlocks(syncBody);
+    assertReplacementNotEmpty("page sync", existing.results, newBlocks, flags);
     warnAboutDestructiveReplace("page sync", existing.results);
     // Only PATCH the title when the file explicitly specifies one (via
     // frontmatter `title:` or a leading `# H1`). Otherwise, a DB row or
@@ -1116,7 +1271,7 @@ export async function pageSyncCommand(ctx: { args: string[] }): Promise<string> 
       await notionRequest("DELETE", `/blocks/${b.id}`);
     }
     frontmatter.notion_hash = computeContentHash(body);
-    frontmatter.notion_synced_at = new Date().toISOString();
+    frontmatter.notion_synced_at = await remoteSyncedAt(pageId);
     await atomicWriteFile(file, reinsertFrontmatter(frontmatter, body));
     return renderJson({ file, state, updatedId: pageId });
   }
