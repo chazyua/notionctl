@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.5] — 2026-08-09
+
+### Changed
+- CSV output no longer rewrites cells that a spreadsheet might evaluate as a
+  formula. Prefixing them with `'` was not the stored data: every international
+  phone number came out as `'+1 555 0100`, and writing that back through
+  `--prop` persisted the corruption. The rewrite also only ever covered the
+  first character of a `--format csv` cell, so the same value still reached a
+  spreadsheet unescaped via `--format json | jq -r @csv` or the table output —
+  it was never the boundary that could enforce this. The CSV now holds the data
+  unchanged, and a cell that really does look executable (`=…`, or `+`/`-`/`@`
+  followed by a call or a DDE pipe) is reported on stderr with the column that
+  contains it, so stdout stays clean for the consumer.
+
 ### Fixed
 
 **Content destruction**

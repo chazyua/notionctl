@@ -217,13 +217,16 @@ Write commands — `page create/append/update/sync/delete/move/duplicate/restore
 `comment add`, `file upload`, `api`, `auth set/clear/login` — always report their
 result as JSON and accept `--format` without acting on it.
 
-CSV cells beginning `=`, `+`, `@`, or a tab are prefixed with `'` so a spreadsheet
-shows them as text instead of evaluating them as a formula. Negative numbers are
-left alone.
+CSV output carries your data unchanged — notionctl does not add a `'` prefix or
+otherwise rewrite cells, so a phone number stays `+1 555 0100` and a script gets
+exactly what the workspace holds. When a cell does look like something Excel or
+Sheets would run (`=…`, or `+`/`-`/`@` followed by a call or a DDE pipe), the
+column is named on stderr and stdout is left alone. Treat a CSV you did not
+author as untrusted input, the same as any other file.
 
 ## Testing
 
-1054 automated tests. Zero test framework dependencies (uses Node.js built-in `node:test`).
+1067 automated tests. Zero test framework dependencies (uses Node.js built-in `node:test`).
 
 ```sh
 npm test                    # Full suite

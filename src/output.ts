@@ -140,38 +140,52 @@ export function renderMarkdown(content: string): string {
 }
 
 /**
- * A cell whose first character is `=`, `+`, `@`, or a control character is
- * evaluated as a formula when the file is opened in Excel, Sheets, or
- * LibreOffice — so a page titled `=cmd|'/C calc'!A0` executes on whoever opens
- * the export. Prefixing with a single quote is the conventional neutraliser:
- * spreadsheets show the value as text and drop the quote.
+ * Values a spreadsheet would run as a formula rather than show as text.
  *
- * A leading `-` is only dangerous when it is not simply a negative number, so
- * numeric cells are left exactly as they are and ordinary exports stay usable.
+ * Deliberately advisory, not a rewrite. The conventional defence is to prefix
+ * the cell with `'`, and this file used to — but that corrupts the value for
+ * every consumer that is not a spreadsheet, and a CSV emitted by a CLI is read
+ * by a script far more often than opened in Excel. Every international phone
+ * number came out as `'+1 555 0100`, which is simply not the stored data, and
+ * the damage compounded when that CSV was fed back in.
+ *
+ * The rewrite also only ever guarded the first character of a `--format csv`
+ * cell. The same value reaches a spreadsheet unescaped through `--format json`
+ * piped to `jq -r @csv`, or by pasting the table output — so it never was the
+ * boundary that could enforce this. A partial control is not worth certain
+ * corruption of correct data.
+ *
+ * So the CSV carries the data unchanged and the risk is reported on stderr,
+ * for the same reason the pagination-truncation notice goes there: stdout is
+ * the data, and a notice written into it would corrupt the thing it warns
+ * about. The pattern below is matched loosely on purpose — it should catch
+ * `=cmd|'/C calc'!A0` and `@SUM(A1)` without firing on `+1 555 0100`,
+ * `-3 degrees`, or `@channel`.
  */
-const CSV_FORMULA_LEAD = /^[=+@\t]/;
-const CSV_PLAIN_NUMBER = /^-\d+(\.\d+)?([eE][-+]?\d+)?$/;
-
-function neutralizeFormula(s: string): string {
-  if (CSV_FORMULA_LEAD.test(s)) return `'${s}`;
-  if (s.startsWith("-") && !CSV_PLAIN_NUMBER.test(s)) return `'${s}`;
-  return s;
-}
+const CSV_EXECUTABLE = /^=|^[+\-@][^\s]*[(|]/;
 
 export function renderCsv(input: TableInput): string {
-  const esc = (v: string): string => {
+  const flagged = new Set<string>();
+  const esc = (v: string, column?: string): string => {
     // Coerce non-strings defensively — JSON.stringify may feed us numbers/booleans.
-    // Control characters are stripped for the same reason as in sanitizeCell:
-    // a CSV is routinely `cat`ed straight to a terminal. Line feeds survive —
-    // they are meaningful in CSV and the quoting below contains them.
-    const s = neutralizeFormula(stripControlChars(v == null ? "" : String(v)));
+    // Control characters are stripped because a CSV is routinely `cat`ed
+    // straight to a terminal and they are never meaningful data. Line feeds
+    // survive — they are meaningful in CSV and the quoting below contains them.
+    const s = stripControlChars(v == null ? "" : String(v));
+    if (column !== undefined && CSV_EXECUTABLE.test(s)) flagged.add(column);
     if (/[",\n\r]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
     return s;
   };
   const lines: string[] = [];
-  lines.push(input.columns.map(esc).join(","));
+  lines.push(input.columns.map((c) => esc(c)).join(","));
   for (const row of input.rows) {
-    lines.push(row.map(esc).join(","));
+    lines.push(row.map((cell, i) => esc(cell, input.columns[i] ?? `column ${i + 1}`)).join(","));
+  }
+  if (flagged.size > 0) {
+    process.stderr.write(
+      `notionctl: ${[...flagged].join(", ")} contain values a spreadsheet would run as a formula. `
+      + `The CSV has your data unchanged — open it as text, or treat it as untrusted if you did not write it.\n`,
+    );
   }
   return lines.join("\n");
 }

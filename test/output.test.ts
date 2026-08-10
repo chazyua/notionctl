@@ -209,27 +209,79 @@ describe("unsupported format values must be catchable", () => {
   });
 });
 
-describe("output.renderCsv formula injection", () => {
+describe("output.renderCsv carries values through unchanged", () => {
   const cell = (v: string): string => renderCsv({ columns: ["C"], rows: [[v]] }).split("\n")[1]!;
 
-  it("neutralises cells a spreadsheet would evaluate", () => {
-    for (const v of ["=cmd|'/C calc'!A0", "+1+1", "@SUM(A1)", "\tx"]) {
-      assert.ok(cell(v).replace(/^"/, "").startsWith("'"), `not neutralised: ${v}`);
-    }
+  it("does not rewrite a value a spreadsheet might evaluate", () => {
+    // The `'` prefix this used to add was not the stored data. A script reading
+    // the CSV got a value the workspace never held, and feeding it back in
+    // wrote the corruption to Notion.
+    // No RFC 4180 quoting either: the value contains no comma, quote, or newline.
+    assert.equal(cell("=cmd|'/C calc'!A0"), "=cmd|'/C calc'!A0");
+    assert.equal(cell("@SUM(A1)"), "@SUM(A1)");
   });
 
-  it("leaves negative numbers alone", () => {
+  it("keeps an international phone number byte-for-byte", () => {
+    // The common case the rewrite broke: every `+`-prefixed number.
+    assert.equal(cell("+1 555 0100"), "+1 555 0100");
+    assert.equal(cell("+44 20 7946 0958"), "+44 20 7946 0958");
+  });
+
+  it("keeps negative numbers and leading-dash text", () => {
     assert.equal(cell("-5"), "-5");
     assert.equal(cell("-3.14"), "-3.14");
-    assert.equal(cell("-1e5"), "-1e5");
+    assert.equal(cell("-notes"), "-notes");
   });
 
-  it("neutralises a leading dash that is not a number", () => {
-    assert.ok(cell("-notes").startsWith("'-notes"));
-  });
-
-  it("strips control characters", () => {
+  it("still strips control characters", () => {
     assert.ok(!cell("a\x1b[2Jb").includes("\x1b"));
+  });
+
+  it("still quotes and escapes per RFC 4180", () => {
+    assert.equal(cell("a,b"), '"a,b"');
+    assert.equal(cell('say "hi"'), '"say ""hi"""');
+  });
+});
+
+describe("output.renderCsv warns about formula-looking cells on stderr", () => {
+  const captureStderr = (fn: () => void): string => {
+    const original = process.stderr.write.bind(process.stderr);
+    let captured = "";
+    (process.stderr as { write: unknown }).write = (chunk: string): boolean => {
+      captured += chunk;
+      return true;
+    };
+    try { fn(); } finally { (process.stderr as { write: unknown }).write = original; }
+    return captured;
+  };
+
+  it("names the column when a cell would execute", () => {
+    const out = captureStderr(() => {
+      renderCsv({ columns: ["Name", "Notes"], rows: [["ok", "=cmd|'/C calc'!A0"]] });
+    });
+    assert.match(out, /Notes/);
+    assert.match(out, /run as a formula/);
+    assert.doesNotMatch(out, /Name/);
+  });
+
+  it("stays quiet for phone numbers and ordinary text", () => {
+    const out = captureStderr(() => {
+      renderCsv({
+        columns: ["Phone", "Handle", "Temp"],
+        rows: [["+1 555 0100", "@channel", "-3 degrees"]],
+      });
+    });
+    assert.equal(out, "", `expected no warning, got: ${out}`);
+  });
+
+  it("writes the notice to stderr, never into the CSV", () => {
+    let csv = "";
+    const out = captureStderr(() => {
+      csv = renderCsv({ columns: ["C"], rows: [["=1+1"]] });
+    });
+    assert.ok(out.length > 0);
+    assert.doesNotMatch(csv, /notionctl:/);
+    assert.equal(csv.split("\n")[1], "=1+1");
   });
 });
 
