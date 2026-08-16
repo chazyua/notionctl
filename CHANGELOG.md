@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.1.5] — 2026-08-09
+## [0.1.5] — 2026-08-16
 
 ### Changed
 - CSV output no longer rewrites cells that a spreadsheet might evaluate as a
@@ -22,6 +22,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   contains it, so stdout stays clean for the consumer.
 
 ### Fixed
+
+**Rendering and reachability**
+- A callout's icon and colour sidecar was written beside the blockquote rather
+  than inside it. An HTML-comment line ends a blockquote under CommonMark's
+  laziness rule, so GitHub, VS Code and Obsidian drew the alert marker and its
+  body as two disconnected quote boxes. Notion's default callout colour is
+  precisely the case that emits a sidecar, so this affected the commonest
+  callout there is. The sidecar now sits inside the quote; the bare form that
+  earlier versions wrote is still read back, so existing files keep working.
+- `block update`, `block delete`, `comment list` and `comment add` returned a
+  bare "Could not find …" for a page the integration is not connected to, while
+  `page get` and `block get` explained how to fix it. Not being connected is the
+  usual first-time mistake, and half the commands did not say so. All of them
+  now carry the same Connections hint.
+- A files property could not be cleared. `--prop 'Attachment='` — the documented
+  way to clear every other list-valued property — was rejected as a malformed
+  value, so there was no way to detach a file through the CLI at all.
 
 **Content destruction**
 - `page update --from` and `page sync` deleted every block on a page when the

@@ -226,7 +226,7 @@ author as untrusted input, the same as any other file.
 
 ## Testing
 
-1067 automated tests. Zero test framework dependencies (uses Node.js built-in `node:test`).
+1072 automated tests. Zero test framework dependencies (uses Node.js built-in `node:test`).
 
 ```sh
 npm test                    # Full suite

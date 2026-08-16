@@ -280,12 +280,19 @@ function renderBlock(block: Block, depth: number, numberedIndex: number): string
       const textPrefixed = text.split("\n").map((l) => `> ${l}`).join("\n");
       const lines: string[] = [`> [!${alertType}]`, textPrefixed];
       // Preserve icon/color as sidecar comments only when they can't be inferred from alert type
+      // Inside the blockquote, not beside it. Emitted bare, an HTML comment
+      // line ends the blockquote under CommonMark's laziness rule, so GitHub,
+      // VS Code and Obsidian drew the alert marker and its body as two
+      // disconnected quote boxes. Notion's default callout colour is exactly
+      // the case that emits a sidecar, so this hit the commonest callout there
+      // is. notionctl's own parser strips the `>` before matching, so the
+      // round-trip is unaffected.
       const iconSidecar = calloutIconSidecar(icon);
       if (iconSidecar !== null) {
-        lines.splice(1, 0, `<!-- icon: ${iconSidecar} -->`);
+        lines.splice(1, 0, `> <!-- icon: ${iconSidecar} -->`);
       }
       if (block.callout.color && ALERT_TYPE_TO_COLOR_BY_NAME[alertType] !== block.callout.color) {
-        lines.splice(1, 0, `<!-- color: ${block.callout.color} -->`);
+        lines.splice(1, 0, `> <!-- color: ${block.callout.color} -->`);
       }
       // Render nested children as continuation lines. Insert a blank `>`
       // line between the main text and the first child so a child paragraph

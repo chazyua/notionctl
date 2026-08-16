@@ -129,7 +129,10 @@ export async function blockUpdateCommand(ctx: { args: string[] }): Promise<strin
   if (getBooleanFlag(flags, "dry-run")) {
     return renderJson({ action: "block update", id, body });
   }
-  const res = await notionRequest("PATCH", `/blocks/${id}`, body);
+  const res = await fetchWith404Hint(
+    () => notionRequest("PATCH", `/blocks/${id}`, body),
+    `Block ${id}`,
+  );
   return renderJson(res);
 }
 
@@ -146,6 +149,9 @@ export async function blockDeleteCommand(ctx: { args: string[] }): Promise<strin
   if (getBooleanFlag(flags, "dry-run")) {
     return renderJson({ action: "block delete", id });
   }
-  const res = await notionRequest("DELETE", `/blocks/${id}`);
+  const res = await fetchWith404Hint(
+    () => notionRequest("DELETE", `/blocks/${id}`),
+    `Block ${id}`,
+  );
   return renderJson(res);
 }

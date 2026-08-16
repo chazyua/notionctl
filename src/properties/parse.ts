@@ -175,6 +175,10 @@ export function parseProperty(
       return { people: items.map((item) => resolvePersonRef(item, key)) };
     }
     case "files": {
+      // Empty clears, the same contract every other list-valued property has.
+      // Without this there was no way to detach a file through --prop at all:
+      // the prefix check below rejected the empty value as malformed.
+      if (value.length === 0) return { files: [] };
       const prefix = /^(url|file):/.exec(value);
       if (!prefix) {
         throw new NotionCliError(

@@ -1115,3 +1115,40 @@ describe("round-trip regressions from the review", () => {
     assert.equal(out[0].toggle.children?.length, 1);
   });
 });
+
+describe("a callout sidecar must not break the blockquote", () => {
+  const ann = { bold: false, italic: false, strikethrough: false, underline: false, code: false, color: "default" };
+  const rt = (content: string): any => ({ type: "text", text: { content, link: null }, annotations: { ...ann }, plain_text: content, href: null });
+  const callout = (color: string): any => ({
+    object: "block", id: "c", type: "callout", has_children: false,
+    callout: { rich_text: [rt("Remember to save your work.")], icon: { type: "emoji", emoji: "💡" }, color },
+  });
+
+  it("emits the sidecar inside the quote, not beside it", () => {
+    // A bare `<!-- … -->` line ends a blockquote under CommonMark's laziness
+    // rule, so GitHub and VS Code drew the alert marker and its body as two
+    // separate quote boxes. Notion's default colour is exactly the case that
+    // emits a sidecar, so this hit the commonest callout there is.
+    const md = blocksToMarkdown([callout("default")] as any);
+    for (const line of md.split("\n")) {
+      assert.ok(line.startsWith(">"), `line escapes the blockquote: ${JSON.stringify(line)}`);
+    }
+    assert.match(md, /<!-- color: default -->/);
+  });
+
+  it("still round-trips the colour through notionctl", () => {
+    const out = markdownToBlocks(blocksToMarkdown([callout("default")] as any)) as any[];
+    assert.equal(out.length, 1);
+    assert.equal(out[0].type, "callout");
+    assert.equal(out[0].callout.color, "default");
+  });
+
+  it("still reads the bare sidecar written by an earlier version", () => {
+    // Files on disk from 0.1.4 have the un-prefixed form; they must keep working.
+    const legacy = "> [!NOTE]\n<!-- color: default -->\n> Remember to save your work.";
+    const out = markdownToBlocks(legacy) as any[];
+    assert.equal(out.length, 1, JSON.stringify(out.map((b) => b.type)));
+    assert.equal(out[0].type, "callout");
+    assert.equal(out[0].callout.color, "default");
+  });
+});

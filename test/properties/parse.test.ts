@@ -428,3 +428,19 @@ describe("backslashes in property values", () => {
     assert.equal(content('\\"hello\\"'), '"hello"');
   });
 });
+
+describe("clearing a files property", () => {
+  it("an empty value detaches the file, like every other list property", () => {
+    // The prefix check rejected an empty value as malformed, so there was no
+    // way to remove an attachment through --prop at all.
+    const out = parseProperty({ Attachment: { type: "files" } }, "Attachment", "");
+    assert.deepEqual(out, { files: [] });
+  });
+
+  it("still rejects a non-empty value with no url:/file: prefix", () => {
+    assert.throws(
+      () => parseProperty({ Attachment: { type: "files" } }, "Attachment", "just-text"),
+      /requires url: or file: prefix/,
+    );
+  });
+});

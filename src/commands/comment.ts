@@ -1,6 +1,6 @@
 import { notionRequest } from "../http.js";
 import { markdownToRichText } from "../markdown/index.js";
-import { resolvePageId, parseFlags, getBooleanFlag } from "./shared.js";
+import { resolvePageId, parseFlags, getBooleanFlag, fetchWith404Hint } from "./shared.js";
 import { NotionCliError, ErrorCode } from "../errors.js";
 import { renderJson, renderTable, renderCsv, chooseFormat, isStdoutTty, type Format } from "../output.js";
 
@@ -10,7 +10,10 @@ export async function commentListCommand(ctx: { args: string[] }): Promise<strin
     throw new NotionCliError(ErrorCode.USAGE, "Usage: notionctl comment list <page-id>");
   }
   const id = resolvePageId(positional[0]!);
-  const res = await notionRequest<{ results: Array<{ id: string; created_time: string; rich_text: Array<{ plain_text: string }>; created_by: { id: string } }> }>("GET", `/comments?block_id=${encodeURIComponent(id)}`);
+  const res = await fetchWith404Hint(
+    () => notionRequest<{ results: Array<{ id: string; created_time: string; rich_text: Array<{ plain_text: string }>; created_by: { id: string } }> }>("GET", `/comments?block_id=${encodeURIComponent(id)}`),
+    `Page ${id}`,
+  );
   const format = chooseFormat(flags.get("format") as Format | undefined, {
     isTty: isStdoutTty(),
     defaultFormat: "table",
@@ -47,6 +50,9 @@ export async function commentAddCommand(ctx: { args: string[] }): Promise<string
     rich_text: markdownToRichText(text),
   };
   if (getBooleanFlag(flags, "dry-run")) return renderJson({ action: "comment add", payload });
-  const res = await notionRequest("POST", "/comments", payload);
+  const res = await fetchWith404Hint(
+    () => notionRequest("POST", "/comments", payload),
+    `Page ${id}`,
+  );
   return renderJson(res);
 }

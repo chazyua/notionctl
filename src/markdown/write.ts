@@ -438,8 +438,13 @@ function markdownToBlocksInternal(md: string, ctx: ParseContext, depth: number):
       let overrideColor: string | undefined;
       while (i < lines.length) {
         const next = lines[i]!.trim();
-        const iconComment = /^<!--\s*icon:\s*(.+?)\s*-->$/.exec(next);
-        const colorComment = /^<!--\s*color:\s*(.+?)\s*-->$/.exec(next);
+        // The read path writes these sidecars *inside* the blockquote (`> <!-- … -->`)
+        // so an HTML comment line cannot end the quote early in CommonMark
+        // renderers. The bare form is still accepted — files written by an
+        // earlier version have it, and must keep round-tripping.
+        const sidecarLine = next.replace(/^>\s?/, "");
+        const iconComment = /^<!--\s*icon:\s*(.+?)\s*-->$/.exec(sidecarLine);
+        const colorComment = /^<!--\s*color:\s*(.+?)\s*-->$/.exec(sidecarLine);
         if (iconComment) { overrideIcon = iconComment[1]!; i++; continue; }
         if (colorComment) { overrideColor = colorComment[1]!; i++; continue; }
         // Any other comment here is not ours — a hand-edited sidecar, a stray
@@ -447,7 +452,7 @@ function markdownToBlocksInternal(md: string, ctx: ParseContext, depth: number):
         // the break below ended it and left its body as a separate quote. Our
         // own markers are excluded so they keep reaching the handlers that
         // warn about them rather than vanishing.
-        if (/^<!--.*-->$/.test(next) && !/^<!--\s*notion-/.test(next)) { i++; continue; }
+        if (/^<!--.*-->$/.test(sidecarLine) && !/^<!--\s*notion-/.test(sidecarLine)) { i++; continue; }
         if (/^>\s/.test(next)) {
           continuationLines.push(next.slice(2));
           i++;
